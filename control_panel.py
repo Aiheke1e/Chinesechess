@@ -30,6 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STOP_FILE = os.path.join(HERE, "work", "stop.request")
 PANEL_LOG = os.path.join(HERE, "work", "control_panel.log")
 ASSISTANT_CFG = os.path.join(HERE, "assistant_config.json")
+UI_CFG = os.path.join(HERE, "work", "ui_settings.json")
 DEFAULT_ASSISTANT_CFG = {
     "emulator_path": r"D:\software\leidian\LDPlayer9\dnplayer.exe",
     "jj_package": "cn.jj.chess",
@@ -56,12 +57,58 @@ RUNTIME_STAGE_LABELS = {
 
 TURN_LABEL_TO_CODE = {"自动判断": "auto", "红方": "r", "黑方": "b"}
 
-THEME = {
-    "bg": "#07111f", "panel": "#0d1b2a", "panel2": "#12243a",
-    "border": "#20364f", "text": "#e8f0f7", "muted": "#8fa6bc",
-    "jade": "#20c997", "jade2": "#123d36", "gold": "#f5b942",
-    "red": "#ef6a6a", "blue": "#5ca9ff", "purple": "#a78bfa",
+THEMES = {
+    "青瓷清风": {
+        "bg": "#eaf3f1", "panel": "#ffffff", "panel2": "#e5f0ed",
+        "border": "#c7dcd6", "text": "#173832", "muted": "#68817c",
+        "jade": "#15977a", "jade2": "#d8eee8", "gold": "#c8892f",
+        "red": "#d85461", "blue": "#347fba", "purple": "#806bc0",
+        "console": "#f6faf9", "console_text": "#203c37",
+        "editor": "#f2f8f6", "select": "#bfe2d9",
+        "button": "#dbeae6", "button_active": "#c9dfd9",
+        "ok_bg": "#d9f1e9", "ok_fg": "#13765e",
+        "wait_bg": "#f8edcf", "wait_fg": "#90631d",
+        "error_bg": "#f7dfe2", "error_fg": "#a33d49",
+    },
+    "深海极光": {
+        "bg": "#07111f", "panel": "#0d1b2a", "panel2": "#12243a",
+        "border": "#20364f", "text": "#e8f0f7", "muted": "#8fa6bc",
+        "jade": "#20c997", "jade2": "#123d36", "gold": "#f5b942",
+        "red": "#ef6a6a", "blue": "#5ca9ff", "purple": "#a78bfa",
+        "console": "#081523", "console_text": "#dce8f3",
+        "editor": "#0a1726", "select": "#23594c",
+        "button": "#23364d", "button_active": "#304a68",
+        "ok_bg": "#16362f", "ok_fg": "#8ff0cd",
+        "wait_bg": "#4a3a17", "wait_fg": "#ffd678",
+        "error_bg": "#4a222a", "error_fg": "#ff9c9c",
+    },
+    "墨玉流金": {
+        "bg": "#101713", "panel": "#17221c", "panel2": "#203027",
+        "border": "#34483b", "text": "#f0eee4", "muted": "#a5ad9f",
+        "jade": "#55b78a", "jade2": "#244534", "gold": "#ddb35d",
+        "red": "#db6f72", "blue": "#6fa8c9", "purple": "#a892c7",
+        "console": "#0f1813", "console_text": "#e3e6dc",
+        "editor": "#142019", "select": "#365b45",
+        "button": "#2a3d31", "button_active": "#395342",
+        "ok_bg": "#244534", "ok_fg": "#85d6aa",
+        "wait_bg": "#493d22", "wait_fg": "#efd080",
+        "error_bg": "#4b292c", "error_fg": "#f2a0a2",
+    },
 }
+THEME = dict(THEMES["青瓷清风"])
+
+
+def load_ui_settings():
+    defaults = {"theme": "青瓷清风", "opacity": 96}
+    try:
+        with open(UI_CFG, encoding="utf-8") as stream:
+            saved = json.load(stream)
+        if saved.get("theme") in THEMES:
+            defaults["theme"] = saved["theme"]
+        defaults["opacity"] = max(72, min(100, int(saved.get("opacity", 96))))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        pass
+    return defaults
 
 
 def valid_turns(squares):
@@ -79,6 +126,12 @@ def valid_turns(squares):
 class ControlPanel:
     def __init__(self, root, autostart=False):
         self.root = root
+        ui = load_ui_settings()
+        THEME.clear()
+        THEME.update(THEMES[ui["theme"]])
+        self.theme_name = tk.StringVar(value=ui["theme"])
+        self.opacity = tk.IntVar(value=ui["opacity"])
+        self.current_palette = dict(THEME)
         self.process = None
         self.output = queue.Queue()
         self.status = tk.StringVar(value="正在检查设备…")
@@ -123,6 +176,10 @@ class ControlPanel:
         root.geometry("1180x820")
         root.minsize(1080, 700)
         root.configure(bg=THEME["bg"])
+        try:
+            root.attributes("-alpha", ui["opacity"] / 100)
+        except tk.TclError:
+            pass
         self._build()
         self.status.trace_add("write", self._sync_status_badges)
         self.speech_status.trace_add("write", self._sync_live_badges)
@@ -170,9 +227,10 @@ class ControlPanel:
         style.map("TCheckbutton", indicatorcolor=[("selected", THEME["jade"])],
                   foreground=[("active", THEME["text"])],
                   background=[("active", THEME["panel"])])
-        style.configure("TButton", background="#23364d", foreground=THEME["text"],
+        style.configure("TButton", background=THEME["button"], foreground=THEME["text"],
                         borderwidth=0, padding=(12, 7), font=font)
-        style.map("TButton", background=[("active", "#304a68"), ("pressed", "#1a2a3d")])
+        style.map("TButton", background=[("active", THEME["button_active"]),
+                                          ("pressed", THEME["panel2"])])
         for name, color, active, fg in (
                 ("Primary", THEME["jade"], "#38d9a9", "#041711"),
                 ("Gold", THEME["gold"], "#ffd166", "#211600"),
@@ -188,6 +246,7 @@ class ControlPanel:
                         relief="solid", borderwidth=1)
         style.configure("Panel.TLabelframe.Label", background=THEME["panel"],
                         foreground=THEME["gold"], font=("Microsoft YaHei UI", 10, "bold"))
+        self._configure_theme_styles()
 
         def card(parent, **pack):
             outer = tk.Frame(parent, bg=THEME["panel"], highlightthickness=1,
@@ -195,46 +254,53 @@ class ControlPanel:
             outer.pack(**pack)
             return outer
 
-        header = tk.Frame(self.root, bg=THEME["panel"], height=82,
+        header = tk.Frame(self.root, bg=THEME["panel"], height=70,
                           highlightthickness=1, highlightbackground=THEME["border"])
-        header.pack(fill="x", padx=14, pady=(14, 9))
+        header.pack(fill="x", padx=14, pady=(14, 8))
         header.pack_propagate(False)
-        emblem = tk.Canvas(header, width=58, height=58, bg=THEME["panel"],
+        emblem = tk.Canvas(header, width=46, height=46, bg=THEME["panel"],
                            highlightthickness=0)
-        emblem.pack(side="left", padx=(16, 10), pady=11)
-        emblem.create_oval(5, 5, 53, 53, fill=THEME["jade2"],
+        emblem.pack(side="left", padx=(15, 9), pady=11)
+        emblem.create_oval(3, 3, 43, 43, fill=THEME["jade2"],
                            outline=THEME["jade"], width=2)
-        emblem.create_polygon(29, 9, 35, 20, 48, 22, 39, 31, 42, 44,
-                              29, 38, 16, 44, 19, 31, 10, 22, 23, 20,
-                              fill="#15352f", outline=THEME["gold"])
-        emblem.create_text(29, 28, text="帅", fill=THEME["gold"],
-                           font=("Microsoft YaHei UI", 16, "bold"))
+        emblem.create_text(23, 23, text="帅", fill=THEME["gold"],
+                           font=("Microsoft YaHei UI", 15, "bold"))
+        self.emblem = emblem
         title_box = tk.Frame(header, bg=THEME["panel"])
-        title_box.pack(side="left", fill="y", pady=13)
+        title_box.pack(side="left", fill="y", pady=12)
         tk.Label(title_box, text="JJ 象棋直播助手", bg=THEME["panel"],
-                 fg=THEME["text"], font=("Microsoft YaHei UI", 19, "bold")).pack(anchor="w")
-        tk.Label(title_box, text="AI 对弈 · 实时解说 · 弹幕互动 · 连续直播",
-                 bg=THEME["panel"], fg=THEME["muted"],
-                 font=("Microsoft YaHei UI", 9)).pack(anchor="w", pady=(2, 0))
+                 fg=THEME["text"], font=("Microsoft YaHei UI", 18, "bold")).pack(anchor="w")
+        tk.Label(title_box, text="LIVE CONTROL", bg=THEME["jade2"],
+                 fg=THEME["jade"], padx=7, pady=1,
+                 font=("Segoe UI", 7, "bold")).pack(anchor="w", pady=(1, 0))
         right_header = tk.Frame(header, bg=THEME["panel"])
-        right_header.pack(side="right", padx=14, pady=12)
-        ttk.Button(right_header, text="开播体检", style="Gold.TButton",
-                   command=self.run_health_check).pack(side="right", padx=(8, 0))
+        right_header.pack(side="right", padx=13, pady=11)
+        ttk.Combobox(right_header, textvariable=self.theme_name, state="readonly",
+                     values=tuple(THEMES), width=9).pack(side="right", padx=(8, 0))
+        self.theme_name.trace_add("write", self._change_theme)
+        tk.Scale(right_header, from_=72, to=100, orient="horizontal",
+                 variable=self.opacity, command=self._change_opacity,
+                 showvalue=False, length=92, resolution=1, bd=0,
+                 highlightthickness=0, bg=THEME["panel"],
+                 troughcolor=THEME["panel2"], activebackground=THEME["jade"]).pack(
+                     side="right", padx=(9, 0))
+        tk.Label(right_header, text="透明", bg=THEME["panel"], fg=THEME["muted"],
+                 font=("Microsoft YaHei UI", 8)).pack(side="right")
         self.header_status = tk.Label(
-            right_header, textvariable=self.status, bg="#16362f", fg="#8ff0cd",
-            padx=13, pady=8, font=("Microsoft YaHei UI", 9, "bold"),
-            wraplength=350, justify="left")
-        self.header_status.pack(side="right")
+            right_header, textvariable=self.status, bg=THEME["ok_bg"], fg=THEME["ok_fg"],
+            padx=11, pady=7, font=("Microsoft YaHei UI", 9, "bold"),
+            wraplength=280, justify="left")
+        self.header_status.pack(side="right", padx=(0, 8))
 
         indicators = tk.Frame(self.root, bg=THEME["bg"])
-        indicators.pack(fill="x", padx=14, pady=(0, 9))
+        indicators.pack(fill="x", padx=14, pady=(0, 8))
         specs = (("device", "模拟器", self.device_state, THEME["blue"]),
                  ("board", "棋局状态", self.board_state, THEME["gold"]),
                  ("voice", "语音通道", self.voice_state, THEME["purple"]),
                  ("stream", "直播互动", self.stream_state, THEME["muted"]))
         for index, (key, label, variable, color) in enumerate(specs):
             box = tk.Frame(indicators, bg=THEME["panel"], highlightthickness=1,
-                           highlightbackground=THEME["border"], height=54)
+                           highlightbackground=THEME["border"], height=43)
             box.pack(side="left", fill="x", expand=True,
                      padx=(0 if index == 0 else 5, 0))
             box.pack_propagate(False)
@@ -243,49 +309,57 @@ class ControlPanel:
             dot.pack(side="left", padx=(12, 7))
             oval = dot.create_oval(4, 4, 14, 14, fill=color, outline=color)
             labels = tk.Frame(box, bg=THEME["panel"])
-            labels.pack(side="left", fill="y", pady=7)
-            tk.Label(labels, text=label, bg=THEME["panel"], fg=THEME["muted"],
-                     font=("Microsoft YaHei UI", 8)).pack(anchor="w")
+            labels.pack(side="left", fill="y", pady=10)
+            tk.Label(labels, text=label + " ·", bg=THEME["panel"], fg=THEME["muted"],
+                     font=("Microsoft YaHei UI", 9)).pack(side="left")
             tk.Label(labels, textvariable=variable, bg=THEME["panel"],
-                     fg=THEME["text"], font=("Microsoft YaHei UI", 10, "bold")).pack(anchor="w")
+                     fg=THEME["text"], font=("Microsoft YaHei UI", 9, "bold")).pack(
+                         side="left", padx=(4, 0))
             self.indicators[key] = (dot, oval)
 
-        config = card(self.root, fill="x", padx=14, pady=(0, 9))
-        config_inner = ttk.Frame(config, style="Card.TFrame", padding=(12, 9))
+        config = card(self.root, fill="x", padx=14, pady=(0, 8))
+        config_inner = ttk.Frame(config, style="Card.TFrame", padding=(12, 7))
         config_inner.pack(fill="x")
-        ttk.Label(config_inner, text="对弈参数", style="Section.TLabel").grid(
-            row=0, column=0, sticky="w", padx=(0, 14))
-        ttk.Label(config_inner, text="思考毫秒", style="Muted.TLabel").grid(row=0, column=1)
-        ttk.Entry(config_inner, textvariable=self.movetime, width=8).grid(row=0, column=2, padx=(5, 13))
-        ttk.Label(config_inner, text="最多步数", style="Muted.TLabel").grid(row=0, column=3)
-        ttk.Entry(config_inner, textvariable=self.max_moves, width=8).grid(row=0, column=4, padx=(5, 13))
-        ttk.Label(config_inner, text="残局轮次", style="Muted.TLabel").grid(row=0, column=5)
+        ttk.Label(config_inner, text="思考", style="Muted.TLabel").grid(row=0, column=0)
+        ttk.Entry(config_inner, textvariable=self.movetime, width=7).grid(row=0, column=1, padx=(5, 11))
+        ttk.Label(config_inner, text="步数", style="Muted.TLabel").grid(row=0, column=2)
+        ttk.Entry(config_inner, textvariable=self.max_moves, width=7).grid(row=0, column=3, padx=(5, 11))
+        ttk.Label(config_inner, text="轮次", style="Muted.TLabel").grid(row=0, column=4)
         ttk.Combobox(config_inner, textvariable=self.turn_choice, state="readonly", width=9,
-                     values=("自动判断", "红方", "黑方")).grid(row=0, column=6, padx=(5, 14))
-        ttk.Checkbutton(config_inner, text="只读检查", variable=self.dry).grid(row=0, column=7, padx=5)
-        ttk.Checkbutton(config_inner, text="持续下棋", variable=self.continuous).grid(row=0, column=8, padx=5)
-        config_inner.columnconfigure(9, weight=1)
+                     values=("自动判断", "红方", "黑方")).grid(row=0, column=5, padx=(5, 12))
+        ttk.Checkbutton(config_inner, text="只读", variable=self.dry).grid(row=0, column=6, padx=5)
+        ttk.Checkbutton(config_inner, text="连续对弈", variable=self.continuous).grid(row=0, column=7, padx=5)
+        config_inner.columnconfigure(8, weight=1)
         ttk.Label(config_inner, textvariable=self.runtime_stats, style="Muted.TLabel").grid(
-            row=0, column=9, sticky="e", padx=(12, 0))
+            row=0, column=8, sticky="e", padx=(12, 0))
 
-        actions = card(self.root, fill="x", padx=14, pady=(0, 9))
-        action_inner = ttk.Frame(actions, style="Card.TFrame", padding=(10, 9))
+        actions = card(self.root, fill="x", padx=14, pady=(0, 8))
+        action_inner = ttk.Frame(actions, style="Card.TFrame", padding=(10, 7))
         action_inner.pack(fill="x")
-        ttk.Button(action_inner, text="▶  开始自动", style="Primary.TButton",
-                   command=lambda: self.start(False)).pack(side="left", padx=3)
-        ttk.Button(action_inner, text="走一手", style="Blue.TButton",
-                   command=lambda: self.start(True)).pack(side="left", padx=3)
-        ttk.Button(action_inner, text="■  安全停止", style="Danger.TButton",
-                   command=self.stop).pack(side="left", padx=(3, 12))
-        ttk.Button(action_inner, text="等待新棋", command=self.prepare_and_wait).pack(side="left", padx=3)
-        ttk.Button(action_inner, text="刷新设备", command=self.refresh_device).pack(side="left", padx=3)
-        ttk.Button(action_inner, text="自动标定", command=self.calibrate).pack(side="left", padx=3)
-        ttk.Button(action_inner, text="故障截图", command=self.open_diagnostics).pack(side="right", padx=3)
-        ttk.Button(action_inner, text="清理缓存", command=self.clean_cache).pack(side="right", padx=3)
+        ttk.Button(action_inner, text="▶  一键接管", style="Primary.TButton",
+                   command=self.prepare_and_wait).pack(side="left", padx=3)
+        ttk.Button(action_inner, text="■  停止", style="Danger.TButton",
+                   command=self.stop).pack(side="left", padx=(3, 8))
+        tools_button = ttk.Menubutton(action_inner, text="更多工具  ···")
+        tools_menu = tk.Menu(tools_button, tearoff=False, bg=THEME["panel"],
+                             fg=THEME["text"], activebackground=THEME["jade2"],
+                             activeforeground=THEME["text"], bd=0)
+        self.tools_menu = tools_menu
+        tools_menu.add_command(label="直接开始当前局", command=lambda: self.start(False))
+        tools_menu.add_command(label="只运行一手", command=lambda: self.start(True))
+        tools_menu.add_separator()
+        tools_menu.add_command(label="刷新模拟器", command=self.refresh_device)
+        tools_menu.add_command(label="重新标定棋盘", command=self.calibrate)
+        tools_menu.add_command(label="开播体检", command=self.run_health_check)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="打开故障截图", command=self.open_diagnostics)
+        tools_menu.add_command(label="清理缓存", command=self.clean_cache)
+        tools_button.configure(menu=tools_menu)
+        tools_button.pack(side="left", padx=3)
         self.broadcaster_button = ttk.Button(
-            action_inner, text="主播工作台  ▶", style="Gold.TButton",
+            action_inner, text="主播台  ▶", style="Gold.TButton",
             command=self.toggle_broadcaster_mode)
-        self.broadcaster_button.pack(side="right", padx=(3, 10))
+        self.broadcaster_button.pack(side="right", padx=3)
 
         self.body = tk.PanedWindow(self.root, orient="horizontal", bg=THEME["bg"],
                                    sashwidth=6, sashrelief="flat", bd=0)
@@ -299,8 +373,9 @@ class ControlPanel:
         chess, live = self.chess_panel, self.live_panel
         self.body.add(chess, stretch="always", minsize=520)
 
-        self.log = tk.Text(chess, bg="#081523", fg="#dce8f3", insertbackground="white",
-                           selectbackground="#23594c", font=("Cascadia Mono", 10),
+        self.log = tk.Text(chess, bg=THEME["console"], fg=THEME["console_text"],
+                           insertbackground=THEME["text"],
+                           selectbackground=THEME["select"], font=("Cascadia Mono", 10),
                            wrap="word", state="disabled", relief="flat", padx=12, pady=11,
                            highlightthickness=1, highlightbackground="#172d43")
         self.log.pack(fill="both", expand=True)
@@ -308,9 +383,9 @@ class ControlPanel:
         status_row = tk.Frame(live, bg=THEME["panel2"], padx=10, pady=7)
         status_row.pack(fill="x", pady=(0, 7))
         tk.Label(status_row, textvariable=self.live_status, bg=THEME["panel2"],
-                 fg="#8ff0cd", font=("Microsoft YaHei UI", 10, "bold")).pack(side="left")
+                 fg=THEME["jade"], font=("Microsoft YaHei UI", 10, "bold")).pack(side="left")
         tk.Label(status_row, textvariable=self.speech_status, bg=THEME["panel2"],
-                 fg="#c4b5fd").pack(side="right")
+                 fg=THEME["purple"]).pack(side="right")
 
         room_row = ttk.Frame(live, style="Card.TFrame")
         room_row.pack(fill="x", pady=3)
@@ -343,8 +418,9 @@ class ControlPanel:
         ttk.Checkbutton(options, text="欢迎进场", variable=self.live_welcome).grid(row=0, column=6, padx=5)
         ttk.Checkbutton(options, text="礼物答谢", variable=self.live_gifts).grid(row=0, column=7, padx=5)
 
-        text_style = dict(bg="#0a1726", fg=THEME["text"], insertbackground="white",
-                          selectbackground="#23594c", relief="flat", padx=8, pady=5,
+        text_style = dict(bg=THEME["editor"], fg=THEME["text"],
+                          insertbackground=THEME["text"],
+                          selectbackground=THEME["select"], relief="flat", padx=8, pady=5,
                           highlightthickness=1, highlightbackground=THEME["border"],
                           font=("Microsoft YaHei UI", 9), wrap="word")
         edit_grid = ttk.Frame(live, style="Card.TFrame")
@@ -374,17 +450,153 @@ class ControlPanel:
         ttk.Button(test_row, text="测试弹幕", command=self.test_live_chat).pack(side="left", padx=2)
         ttk.Button(test_row, text="测试礼物", command=self.test_live_gift).pack(side="left", padx=2)
 
-        self.live_log = tk.Text(live, bg="#081523", fg="#dce8f3", insertbackground="white",
-                                selectbackground="#23594c", font=("Microsoft YaHei UI", 9),
+        self.live_log = tk.Text(live, bg=THEME["console"], fg=THEME["console_text"],
+                                insertbackground=THEME["text"],
+                                selectbackground=THEME["select"], font=("Microsoft YaHei UI", 9),
                                 wrap="word", state="disabled", relief="flat", padx=10, pady=9,
                                 highlightthickness=1, highlightbackground="#172d43")
         self.live_log.pack(fill="both", expand=True)
-        for tag, color in (("礼物", THEME["gold"]), ("弹幕", "#68c6ff"),
-                           ("讲解", "#79e2b5"), ("回复", "#c4b5fd"),
-                           ("错误", "#ff8f8f"), ("系统", THEME["muted"]),
-                           ("语音", "#d8b4fe")):
+        for tag, color in (("礼物", THEME["gold"]), ("弹幕", THEME["blue"]),
+                           ("讲解", THEME["jade"]), ("回复", THEME["purple"]),
+                           ("错误", THEME["red"]), ("系统", THEME["muted"]),
+                           ("语音", THEME["purple"])):
             self.live_log.tag_configure(tag, foreground=color,
                                         font=("Microsoft YaHei UI", 9, "bold"))
+
+    def _configure_theme_styles(self):
+        style = ttk.Style(self.root)
+        font = ("Microsoft YaHei UI", 10)
+        style.configure(".", font=font, background=THEME["bg"],
+                        foreground=THEME["text"])
+        style.configure("App.TFrame", background=THEME["bg"])
+        style.configure("Card.TFrame", background=THEME["panel"])
+        style.configure("TLabel", background=THEME["bg"], foreground=THEME["text"])
+        style.configure("Card.TLabel", background=THEME["panel"], foreground=THEME["text"])
+        style.configure("Muted.TLabel", background=THEME["panel"], foreground=THEME["muted"])
+        style.configure("Section.TLabel", background=THEME["panel"],
+                        foreground=THEME["text"],
+                        font=("Microsoft YaHei UI", 11, "bold"))
+        style.configure("TEntry", fieldbackground=THEME["panel2"],
+                        foreground=THEME["text"], insertcolor=THEME["text"],
+                        bordercolor=THEME["border"], padding=6)
+        style.configure("TCombobox", fieldbackground=THEME["panel2"],
+                        foreground=THEME["text"], arrowcolor=THEME["text"], padding=5)
+        style.map("TCombobox", fieldbackground=[("readonly", THEME["panel2"])],
+                  foreground=[("readonly", THEME["text"])])
+        style.configure("TCheckbutton", background=THEME["panel"],
+                        foreground=THEME["text"], indicatorcolor=THEME["panel2"])
+        style.map("TCheckbutton", indicatorcolor=[("selected", THEME["jade"])],
+                  foreground=[("active", THEME["text"])],
+                  background=[("active", THEME["panel"])])
+        style.configure("TButton", background=THEME["button"],
+                        foreground=THEME["text"], borderwidth=0,
+                        padding=(12, 7), font=font)
+        style.configure("TMenubutton", background=THEME["button"],
+                        foreground=THEME["text"], borderwidth=0, padding=(12, 7))
+        for widget_style in ("TButton", "TMenubutton"):
+            style.map(widget_style,
+                      background=[("active", THEME["button_active"]),
+                                  ("pressed", THEME["panel2"])])
+        for name, color, active, fg in (
+                ("Primary", THEME["jade"], THEME["jade2"], "#ffffff"),
+                ("Gold", THEME["gold"], THEME["wait_bg"], "#ffffff"),
+                ("Danger", THEME["red"], THEME["error_bg"], "#ffffff"),
+                ("Blue", THEME["blue"], THEME["panel2"], "#ffffff")):
+            style.configure(f"{name}.TButton", background=color, foreground=fg,
+                            borderwidth=0, padding=(13, 7),
+                            font=("Microsoft YaHei UI", 10, "bold"))
+            style.map(f"{name}.TButton", background=[("active", active),
+                                                     ("pressed", color)])
+        style.configure("Panel.TLabelframe", background=THEME["panel"],
+                        foreground=THEME["muted"], bordercolor=THEME["border"],
+                        relief="solid", borderwidth=1)
+        style.configure("Panel.TLabelframe.Label", background=THEME["panel"],
+                        foreground=THEME["gold"],
+                        font=("Microsoft YaHei UI", 10, "bold"))
+
+    def _walk_widgets(self, widget):
+        yield widget
+        for child in widget.winfo_children():
+            yield from self._walk_widgets(child)
+
+    def _change_theme(self, *_):
+        name = self.theme_name.get()
+        if name not in THEMES:
+            return
+        old = dict(self.current_palette)
+        THEME.clear()
+        THEME.update(THEMES[name])
+        color_map = {old[key].lower(): THEME[key]
+                     for key in old if key in THEME}
+        self.root.configure(bg=THEME["bg"])
+        self._configure_theme_styles()
+        for widget in self._walk_widgets(self.root):
+            for option in ("background", "foreground", "highlightbackground",
+                           "highlightcolor", "insertbackground",
+                           "selectbackground", "troughcolor",
+                           "activebackground"):
+                try:
+                    current = str(widget.cget(option)).lower()
+                    if current in color_map:
+                        widget.configure(**{option: color_map[current]})
+                except (tk.TclError, AttributeError):
+                    pass
+            if isinstance(widget, tk.Canvas):
+                for item in widget.find_all():
+                    for option in ("fill", "outline"):
+                        try:
+                            current = str(widget.itemcget(item, option)).lower()
+                            if current in color_map:
+                                widget.itemconfigure(item, **{option: color_map[current]})
+                        except tk.TclError:
+                            pass
+        if hasattr(self, "live_log"):
+            for tag, color in (("礼物", THEME["gold"]),
+                               ("弹幕", THEME["blue"]),
+                               ("讲解", THEME["jade"]),
+                               ("回复", THEME["purple"]),
+                               ("错误", THEME["red"]),
+                               ("系统", THEME["muted"]),
+                               ("语音", THEME["purple"])):
+                self.live_log.tag_configure(tag, foreground=color)
+        if hasattr(self, "tools_menu"):
+            self.tools_menu.configure(
+                bg=THEME["panel"], fg=THEME["text"],
+                activebackground=THEME["jade2"],
+                activeforeground=THEME["text"])
+        self.current_palette = dict(THEME)
+        self._sync_status_badges()
+        self._sync_live_badges()
+        self._schedule_ui_save()
+
+    def _change_opacity(self, value=None):
+        try:
+            opacity = max(72, min(100, int(float(
+                self.opacity.get() if value is None else value))))
+            self.root.attributes("-alpha", opacity / 100)
+            self._schedule_ui_save()
+        except (tk.TclError, ValueError):
+            pass
+
+    def _schedule_ui_save(self):
+        previous = getattr(self, "_ui_save_job", None)
+        if previous:
+            try:
+                self.root.after_cancel(previous)
+            except tk.TclError:
+                pass
+        self._ui_save_job = self.root.after(250, self._save_ui_settings)
+
+    def _save_ui_settings(self):
+        self._ui_save_job = None
+        try:
+            os.makedirs(os.path.dirname(UI_CFG), exist_ok=True)
+            with open(UI_CFG, "w", encoding="utf-8") as stream:
+                json.dump({"theme": self.theme_name.get(),
+                           "opacity": int(self.opacity.get())},
+                          stream, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
 
     def _set_indicator(self, key, color):
         item = self.indicators.get(key)
@@ -396,11 +608,11 @@ class ControlPanel:
         text = self.status.get()
         lowered = text.lower()
         if any(word in text for word in ("失败", "未找到", "异常")):
-            color, bg = "#ff9c9c", "#4a222a"
+            color, bg = THEME["error_fg"], THEME["error_bg"]
         elif any(word in text for word in ("等待", "准备", "检查", "连接")):
-            color, bg = "#ffd678", "#4a3a17"
+            color, bg = THEME["wait_fg"], THEME["wait_bg"]
         elif any(word in text for word in ("运行", "接管", "检测到", "正常")):
-            color, bg = "#8ff0cd", "#16362f"
+            color, bg = THEME["ok_fg"], THEME["ok_bg"]
         else:
             color, bg = THEME["muted"], THEME["panel2"]
         self.header_status.configure(fg=color, bg=bg)
@@ -455,12 +667,12 @@ class ControlPanel:
         if self.broadcaster_open:
             self.body.forget(self.live_panel)
             self.broadcaster_open = False
-            self.broadcaster_button.configure(text="主播工作台  ▶")
+            self.broadcaster_button.configure(text="主播台  ▶")
             self.root.geometry(f"1180x{max(700, self.root.winfo_height())}")
         else:
             self.body.add(self.live_panel, stretch="always", minsize=650)
             self.broadcaster_open = True
-            self.broadcaster_button.configure(text="收起工作台  ◀")
+            self.broadcaster_button.configure(text="收起主播台  ◀")
             self.root.geometry(f"1540x{max(780, self.root.winfo_height())}")
 
     def append_live(self, label, text):
@@ -1155,6 +1367,7 @@ class ControlPanel:
 
     def close(self):
         self.closing = True
+        self._save_ui_settings()
         self.waiting_for_board = False
         if self.live_controller:
             self.live_controller.close()
