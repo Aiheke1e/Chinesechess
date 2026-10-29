@@ -1129,8 +1129,10 @@ class LiveController:
         if reason == "让过河兵参与进攻":
             return f"{move}，把过河兵顶上去，多添一个进攻点。"
         if reason.startswith("吃掉"):
-            return cls._synced_move_text(notation, number=number)
-        return cls._quiet_move_text(move, number)
+            return ""  # The exact capture was already called at the move.
+        # Generic placement labels have no demonstrable tactical content.
+        # Stay quiet until the engine provides a specific consequence.
+        return ""
 
     @staticmethod
     def _is_near_win(event):
@@ -1407,13 +1409,15 @@ class LiveController:
             return
         self.quiet_move_count = getattr(self, "quiet_move_count", 0) + 1
         if self._needs_silence_filler():
-            self.pipeline.prepare_idle({
+            idle_text = self._idle_move_text(
+                notation, event.get("queen_evidence") or {},
+                event.get("number", 0))
+            if idle_text:
+                self.pipeline.prepare_idle({
                 **payload,
                 "要求": ("现在是等棋空档，不要念走法；用两句口语讲当前的主要思路"
                          "和接下来值得看的一个点，不念评分或技术字段"),
-            }, direct_text=self._idle_move_text(
-                notation, event.get("queen_evidence") or {},
-                event.get("number", 0)))
+                }, direct_text=idle_text)
 
     def receive(self, event, force=False):
         kind = event.get("type", "chat")
