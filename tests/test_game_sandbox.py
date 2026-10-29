@@ -194,6 +194,38 @@ class GameSandboxTests(unittest.TestCase):
         self.assertFalse(result["opponent_move_interrupts"])
         self.assertEqual(result["completed"], 3)
 
+    def test_sandbox_retries_one_unconfirmed_route_step(self):
+        board = Board.from_fen(START_FEN)
+        route = []
+        probe = board.copy()
+        for _ in range(3):
+            move = probe.legal_moves()[0]
+            route.append({"ucci": Board.ucci(move),
+                          "notation": move_description(probe, move)})
+            probe.apply(move)
+        frame = np.zeros((1920, 1080, 3), dtype=np.uint8)
+        confirmations = [False, True, True, True]
+        with patch.object(game_sandbox, "_wait_for_position",
+                          return_value=frame), \
+             patch.object(game_sandbox, "screenshot", return_value=frame), \
+             patch.object(game_sandbox, "_region_difference", return_value=5.0), \
+             patch.object(game_sandbox, "_detect_sandbox_exit",
+                          return_value=(220, 1850)), \
+             patch.object(game_sandbox, "_position_matches", return_value=True), \
+             patch.object(game_sandbox, "_endpoint_confirmed",
+                          side_effect=confirmations), \
+             patch.object(game_sandbox, "_dismiss_interruption",
+                          return_value=None), \
+             patch.object(game_sandbox, "_return_to_live", return_value=True), \
+             patch.object(game_sandbox, "tap") as tap_mock, \
+             patch.object(game_sandbox.time, "sleep"):
+            result = game_sandbox.play_plan(
+                "device", board, "red_bottom", {"route": route},
+                review_seconds=0)
+        self.assertEqual(result["completed"], 3)
+        self.assertIsNone(result["failed_step"])
+        self.assertGreaterEqual(tap_mock.call_count, 9)
+
     def test_unconfirmed_entry_never_clicks_route(self):
         board = Board.from_fen(START_FEN)
         route = []

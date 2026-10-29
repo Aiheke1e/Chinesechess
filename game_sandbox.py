@@ -423,10 +423,18 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
                     frame = screenshot(device)
                     last_sandbox_frame = frame
             else:
-                time.sleep(0.3)
+                # JJ highlights can briefly hide one endpoint.  Repeating the
+                # same local-sandbox move once is safe and prevents a cosmetic
+                # miss from shortening a three-step route to one or two steps.
+                time.sleep(0.25)
+                tap(fx, fy, device=device)
+                time.sleep(0.18)
+                tap(tx, ty, device=device)
+                time.sleep(0.42)
                 frame = screenshot(device)
                 last_sandbox_frame = frame
             if not _endpoint_confirmed(sandbox_board, move, frame, orientation):
+                failed_step = number
                 break
         sandbox_board.apply(move)
         completed += 1
@@ -449,6 +457,7 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
         initial_image=last_sandbox_frame)
     return {"entered": True, "safe_exit": safe_exit,
             "completed": completed,
+            "failed_step": locals().get("failed_step"),
             "observed_reply": observed_reply,
             "timed_out": timed_out,
             # Opponent activity is intentionally not an exit condition.  On

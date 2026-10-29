@@ -205,9 +205,37 @@ class SpeechPipeline:
     def _clean_text(text):
         return re.sub(r"[\r\n*_#`]+", "", str(text)).strip()
 
+    @staticmethod
+    def _own_side(payload):
+        side = str(payload.get("主播执棋") or "").strip()
+        if side in ("红方", "黑方"):
+            return side
+        notation = str(payload.get("我方计划走法") or
+                       payload.get("当前走子") or "").strip()
+        if notation.startswith("红方 "):
+            return "红方"
+        if notation.startswith("黑方 "):
+            return "黑方"
+        return ""
+
+    @classmethod
+    def _first_person_text(cls, text, payload):
+        """Keep internal side facts, but never read them like a neutral robot."""
+        cleaned = cls._clean_text(text)
+        cleaned = re.sub(r"^(?:棋小雅|主播|解说)\s*[：:]\s*", "", cleaned)
+        own = cls._own_side(payload)
+        other = "黑方" if own == "红方" else "红方" if own == "黑方" else ""
+        if own:
+            cleaned = cleaned.replace(own, "咱们")
+        if other:
+            cleaned = cleaned.replace(other, "对面")
+        return (cleaned.replace("我方", "咱们")
+                .replace("对方", "对面")
+                .replace("对手", "对面"))
+
     @classmethod
     def _short_chess_text(cls, text):
-        """Keep chess commentary natural and cap every sentence at 20 chars."""
+        """Keep at most two complete sentences; never cut speech mid-thought."""
         cleaned = cls._clean_text(text)
         if not cleaned:
             return ""
@@ -218,7 +246,7 @@ class SpeechPipeline:
             if not body:
                 continue
             punctuation = part[-1] if part[-1] in "。！？!?" else "。"
-            result.append(body[:20] + punctuation)
+            result.append(body + punctuation)
         return "".join(result)
 
     def prepare_move(self, kind, payload, direct_text=None):
@@ -249,6 +277,7 @@ class SpeechPipeline:
             text = direct_text or self.llm(
                 kind, {"主播设定": self.settings.persona, **payload},
                 list(self.history), model=self.settings.model)
+            text = self._first_person_text(text, payload)
             text = self._short_chess_text(text)
             if not text:
                 return
@@ -269,7 +298,7 @@ class SpeechPipeline:
             if tts_error:
                 self.notify("error", tts_error, {"kind": kind})
             elif audio and self.settings.speech_enabled:
-                self.notify("speech_status", "落子已确认，播放预热语音", payload)
+                self.notify("speech_status", "落子即将执行，播放预热语音", payload)
                 self._mark_speech_started(payload)
                 self.cancel_idle()
                 with self.high_speech_lock:
@@ -283,7 +312,7 @@ class SpeechPipeline:
                                 self.current_playback = None
                 self._prune_audio(Path(audio).parent)
             else:
-                self.notify("speech_status", "落子已确认，仅显示文本", payload)
+                self.notify("speech_status", "落子即将执行，仅显示文本", payload)
             self.history.extend([
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
                 {"role": "assistant", "content": text}])
@@ -375,8 +404,9 @@ class SpeechPipeline:
             text = state.get("direct_text") or self.llm(
                 kind, {"主播设定": self.settings.persona, **payload},
                 list(self.history), model=self.settings.model)
+            text = self._first_person_text(text, payload)
             text = (self._short_chess_text(text) if kind == "应手预判"
-                    else self._clean_text(text)[:120])
+                    else text[:120])
             if not text or state["cancel"].is_set():
                 return
             if self.settings.speech_enabled:
@@ -473,7 +503,7 @@ class SpeechPipeline:
                 text = direct or self.llm(
                     kind, {"主播设定": self.settings.persona, **payload},
                     list(self.history), model=self.settings.model)
-                text = self._clean_text(text)[:300]
+                text = self._first_person_text(text, payload)[:300]
                 if not text:
                     continue
                 if epoch != self.cancel_epoch:
@@ -1000,6 +1030,24 @@ class LiveController:
             )
         return variants[(max(1, int(number or 1)) - 1) % len(variants)]
 
+    @classmethod
+    def _synced_move_text(cls, notation, reasons=(), number=0,
+                          sandtable=False):
+        """Fast first-person line: no LLM wait on the move-critical path."""
+        move = cls._spoken_notation(notation)
+        captured = move.rsplit("吃", 1)[-1][:1] if "吃" in move else ""
+        if captured in "车马炮":
+            follow = ("来，沙盘摆三手，看看怎么把优势接住。"
+                      if sandtable else "这波交换挺划算。")
+            return f"好家伙，咱们走{move}，直接收下这枚{captured}。{follow}"
+        action = {
+            "马": "跳马", "车": "开车", "炮": "架炮", "兵": "拱兵",
+            "卒": "拱卒", "相": "飞相", "象": "飞象", "仕": "补仕",
+            "士": "补士", "帅": "挪帅", "将": "挪将",
+        }.get(move[:1], "走一手")
+        reason = next((str(item) for item in reasons if item), "先把位置站住")
+        return f"咱们先{action}，{move}。{reason}，接着看。"
+
     @staticmethod
     def _is_near_win(event):
         analysis = event.get("analysis") or {}
@@ -1095,10 +1143,16 @@ class LiveController:
                     oldest = next(iter(pending))
                     pending.pop(oldest, None)
             return
+        if event.get("event") == "move_command":
+            token = str(event.get("speech_token") or "")
+            # Normal move speech starts before ADB taps.  Sandtable speech is
+            # held until JJ's sandbox is visibly open.
+            if token and token not in getattr(
+                    self, "sandbox_speech_tokens", set()):
+                self.pipeline.commit_move(token)
+            return
         if event.get("event") == "move_applied":
             token = str(event.get("speech_token") or "")
-            if token not in getattr(self, "sandbox_speech_tokens", set()):
-                self.pipeline.commit_move(token)
             getattr(self, "pending_move_events", {}).pop(
                 token, None)
             self._record_opening_move(notation)
@@ -1137,6 +1191,9 @@ class LiveController:
             self._record_opening_move(notation)
             return
         payload = {"我方计划走法": notation,
+                   "主播执棋": ("红方" if str(event.get("side")) == "r"
+                                else "黑方" if str(event.get("side")) == "b"
+                                else ""),
                    "speech_token": event.get("speech_token"),
                    "子力盘点": event.get("material"),
                    "局势分析": event.get("summary"),
@@ -1153,6 +1210,7 @@ class LiveController:
             payload["沙盘路线"] = [
                 item["notation"] for item in sandtable["route"]]
             payload["沙盘触发"] = sandtable["reason"]
+            payload["沙盘起因走法"] = notation
             if token := str(event.get("speech_token") or ""):
                 tokens = getattr(self, "sandbox_speech_tokens", None)
                 if tokens is None:
@@ -1191,6 +1249,10 @@ class LiveController:
                     kind = "收官解说"
                     direct = self._closing_move_text(
                         notation, event.get("number", 0), forced_win)
+            elif importance >= threshold:
+                direct = self._synced_move_text(
+                    notation, reasons, event.get("number", 0),
+                    sandtable=bool(sandtable))
             if token:
                 self.pipeline.prepare_move(kind, important_payload,
                                            direct_text=direct)
@@ -1388,7 +1450,7 @@ class ChessEventTailer(threading.Thread):
                             continue
                         if event.get("event") in (
                                 "start",
-                                "move_selected", "move_applied", "move_rejected",
+                                "move_selected", "move_command", "move_applied", "move_rejected",
                                 "move_preview", "engine_analysis", "opponent_move",
                                 "game_sandbox",
                                 "waiting_for_opponent", "game_over"):

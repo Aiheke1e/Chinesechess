@@ -108,12 +108,20 @@ class LiveHostTests(unittest.TestCase):
                         if call.args and call.args[0] is not None]
         self.assertEqual(played_files, [])
 
-    def test_chess_sentence_is_capped_at_twenty_characters(self):
+    def test_chess_sentence_is_never_cut_mid_thought(self):
         text = SpeechPipeline._short_chess_text(
             "这是一句明显超过二十个汉字而且非常像机器报告的解说。第二句也很长很长。")
-        sentences = [part for part in text.replace("！", "。").split("。") if part]
-        self.assertTrue(sentences)
-        self.assertTrue(all(len(part) <= 20 for part in sentences))
+        self.assertEqual(
+            text,
+            "这是一句明显超过二十个汉字而且非常像机器报告的解说。第二句也很长很长。")
+
+    def test_chess_speech_is_rewritten_to_first_person(self):
+        text = SpeechPipeline._first_person_text(
+            "棋小雅：黑方这车一压，红方马得退。",
+            {"主播执棋": "黑方"})
+        self.assertEqual(text, "咱们这车一压，对面马得退。")
+        for forbidden in ("红方", "黑方", "我方", "对方", "对手"):
+            self.assertNotIn(forbidden, text)
 
     def test_high_move_call_is_short_and_has_no_side_label(self):
         text = LiveController._high_move_text("黑方 马8进7")
@@ -422,7 +430,9 @@ class LiveHostTests(unittest.TestCase):
             "notation": "红方 炮五进四，吃马", "summary": "我方稍优",
             "analysis": {"score_type": "cp", "score": 120},
             "candidates": [], "pv": []})
-        self.assertEqual(submitted, [("关键走棋解说", None)])
+        self.assertEqual(submitted[0][0], "关键走棋解说")
+        self.assertIn("咱们", submitted[0][1])
+        self.assertIn("收下这枚马", submitted[0][1])
 
     def test_key_own_move_is_preheated_before_click_confirmation(self):
         prepared = []
@@ -532,6 +542,22 @@ class LiveHostTests(unittest.TestCase):
             "speech_token": "sand-1"})
         self.assertEqual(decisions, [("commit", "sand-1")])
         self.assertNotIn("sand-1", controller.sandbox_speech_tokens)
+
+    def test_normal_speech_commits_before_adb_move(self):
+        decisions = []
+
+        class Pipeline:
+            def commit_move(self, token):
+                decisions.append(("commit", token))
+
+        controller = object.__new__(LiveController)
+        controller.pipeline = Pipeline()
+        controller.settings = LiveSettings(commentary_enabled=True)
+        controller.sandbox_speech_tokens = set()
+        controller.submit_chess({
+            "event": "move_command", "notation": "红方 马二进三",
+            "speech_token": "normal-1"})
+        self.assertEqual(decisions, [("commit", "normal-1")])
 
     def test_speech_worker_survives_idle_timeouts(self):
         pipeline = SpeechPipeline(

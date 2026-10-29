@@ -24,6 +24,7 @@ from runtime_status import write_runtime_status
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(HERE, "player_config.json")
+LIVE_CFG_PATH = os.path.join(HERE, "live_config.json")
 DEFAULT_CFG = {
     "my_color": "r",
     "orientation": "auto",
@@ -73,6 +74,18 @@ def load_cfg():
         except (OSError, json.JSONDecodeError) as error:
             print(f"[!] 配置文件读取失败，使用默认值: {error}")
     return c
+
+
+def speech_lead_seconds():
+    """Give preheated TTS a small head start without slowing silent runs."""
+    try:
+        with open(LIVE_CFG_PATH, encoding="utf-8") as stream:
+            live = json.load(stream)
+        if live.get("commentary_enabled") and live.get("speech_enabled"):
+            return 0.9
+    except (OSError, ValueError):
+        pass
+    return 0.0
 
 
 def read_squares(device, orientation="auto"):
@@ -634,11 +647,15 @@ def main():
                         pv=[{"ucci": move_ucci, "notation": text}
                             for move_ucci, text in pv_line])
             print("[语音同步] 落子与短解说预生成已并行启动；"
-                  "校验成功后立即播放。", flush=True)
+                  "将在点击棋子前开始播放。", flush=True)
             events.emit("move_command", number=n + 1, ucci=u, notation=d,
+                        speech_token=speech_token,
                         from_index=mv[0], to_index=mv[1],
                         from_screen=from_xy, to_screen=to_xy,
                         orientation=orientation)
+            lead = speech_lead_seconds()
+            if lead:
+                time.sleep(lead)
 
             confirmation_seconds = 0.0
             if cfg["dry_run"]:
