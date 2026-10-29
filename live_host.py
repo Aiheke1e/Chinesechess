@@ -921,32 +921,28 @@ class LiveController:
 
     @classmethod
     def _sandtable_plan(cls, event):
+        from board import Board
+        from game_sandbox import build_plan
         notation = str(event.get("notation") or "")
-        big_capture = any(f"吃{piece}" in notation for piece in "车马炮")
-        confidence = cls._kill_confidence(event)
-        route = []
-        for item in event.get("pv", [])[:5]:
-            ucci = str(item.get("ucci") or "")
-            text = str(item.get("notation") or "")
-            if re.fullmatch(r"[a-i][0-9][a-i][0-9]", ucci) and text:
-                route.append({"ucci": ucci, "notation": text})
-        executed = str(event.get("ucci") or "")
-        if route and route[0]["ucci"] == executed:
-            route.pop(0)
-        route = route[:3]
-        if len(route) < 3 or not (big_capture or confidence >= 80):
+        try:
+            board = Board.from_fen(event["fen_before"])
+        except (KeyError, ValueError, TypeError):
             return None
-        reasons = []
-        if big_capture:
-            reasons.append("吃掉车马炮大子")
-        if confidence >= 80:
-            reasons.append(f"杀势置信度 {confidence}%")
+        plan = build_plan(
+            notation, event.get("analysis") or {},
+            [(item.get("ucci"), item.get("notation"))
+             for item in event.get("pv", [])],
+            event.get("ucci"), board=board)
+        if not plan:
+            return None
         return {
             "action": "show",
             "title": "关键战术沙盘",
-            "reason": " · ".join(reasons),
-            "confidence": confidence,
-            "route": route,
+            "reason": plan["reason"],
+            "confidence": plan["confidence"],
+            "route": plan["route"],
+            "target": plan["target"],
+            "target_kind": plan["target_kind"],
             "review_seconds": 6.5,
             "speech_token": event.get("speech_token"),
         }
@@ -1321,6 +1317,7 @@ class LiveController:
                 item["notation"] for item in sandtable["route"]]
             payload["沙盘触发"] = sandtable["reason"]
             payload["沙盘起因走法"] = notation
+            payload["沙盘战术落点"] = sandtable["target"]
         near_win, forced_win = self._is_near_win(event)
         importance, reasons = self._commentary_importance(event)
         if sandtable:
@@ -1369,6 +1366,10 @@ class LiveController:
                     self.sandbox_speech_by_move[token] = sandbox_token
                     self.pipeline.prepare_move(
                         "沙盘推演解说", sandbox_payload,
+                        direct_text=(
+                            "来，沿着这条路线摆到"
+                            f"{self._spoken_notation(sandtable['target'])}，"
+                            f"看看这手{sandtable['target_kind']}。"),
                         replace_older=True)
                     self.pipeline.prepare_move(
                         kind, important_payload, direct_text=direct,

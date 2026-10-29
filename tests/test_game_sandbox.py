@@ -133,10 +133,20 @@ class GameSandboxTests(unittest.TestCase):
             "红方 车一平二，吃炮",
             {"score_type": "cp", "score": 900, "depth": 18},
             line, line[0][0])
-        self.assertIsNotNone(plan)
-        self.assertEqual(plan["route"][0]["ucci"], line[1][0])
-        self.assertNotIn(line[0][0],
-                         [item["ucci"] for item in plan["route"]])
+        self.assertIsNone(plan)  # No own tactical target follows the capture.
+
+    def test_plan_reaches_own_big_capture_from_real_engine_line(self):
+        board = Board.from_fen(
+            "1rbakab1r/9/2n6/p3p3p/2p1cNp2/1C7/P1P1N3P/4C4/4A2n1/1RBAK1c2 b - - 0 1")
+        line = [("i9h9", "黑方 车9平8"),
+                ("e2e5", "红方 炮五进三，吃炮"),
+                ("e6e5", "黑方 卒5进1，吃炮"),
+                ("b0b2", "红方 车八进二")]
+        plan = game_sandbox.build_plan(
+            line[0][1], {"score_type": "cp", "score": 796, "depth": 21},
+            line, line[0][0], board=board)
+        self.assertEqual(plan["target"], line[2][1])
+        self.assertEqual(plan["route"][1]["ucci"], "e6e5")
 
     def test_ordinary_move_does_not_open_sandbox(self):
         line = [("h2e2", "红方 炮二平五"),

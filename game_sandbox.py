@@ -47,7 +47,7 @@ def kill_confidence(analysis):
     return max(0, min(95, confidence))
 
 
-def build_plan(notation, analysis, pv_line, executed_ucci):
+def build_plan(notation, analysis, pv_line, executed_ucci, board=None):
     """Build the post-move route to play inside JJ's real sandbox."""
     big_capture = any(f"吃{piece}" in str(notation) for piece in "车马炮")
     confidence = kill_confidence(analysis or {})
@@ -60,13 +60,31 @@ def build_plan(notation, analysis, pv_line, executed_ucci):
     route = route[:3]
     if len(route) < 3 or not (big_capture or confidence >= 80):
         return None
+    # After the real move, the next own move is the second sandbox ply.
+    # Only demonstrate a PV that actually reaches an own tactical action.
+    target = route[1]
+    own_big_capture = any(
+        f"吃{piece}" in target["notation"] for piece in "车马炮")
+    own_check = False
+    if board is not None:
+        try:
+            probe = board.copy()
+            probe.apply(Board.from_ucci(executed_ucci))
+            for item in route[:2]:
+                probe.apply(Board.from_ucci(item["ucci"]))
+            own_check = probe.in_check(probe.turn)
+        except (ValueError, KeyError, TypeError):
+            own_check = False
+    if not (own_big_capture or own_check):
+        return None
     reasons = []
     if big_capture:
         reasons.append("吃掉大子")
     if confidence >= 80:
         reasons.append(f"杀势 {confidence}%")
     return {"reason": " · ".join(reasons), "confidence": confidence,
-            "route": route}
+            "route": route, "target": target["notation"],
+            "target_kind": "吃大子" if own_big_capture else "将军"}
 
 
 def build_deferred_plan(reason, pv_line):

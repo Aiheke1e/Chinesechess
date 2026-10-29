@@ -515,14 +515,16 @@ class LiveHostTests(unittest.TestCase):
             (kind, text, data or {}))
         controller.submit_chess({
             "event": "engine_analysis", "number": 6,
-            "notation": "红方 车八进五，吃车", "summary": "红方占优",
-            "analysis": {"score_type": "cp", "score": 520, "depth": 18},
+            "notation": "黑方 车9平8", "summary": "黑方占优",
+            "fen_before": "1rbakab1r/9/2n6/p3p3p/2p1cNp2/1C7/P1P1N3P/4C4/4A2n1/1RBAK1c2 b - - 0 1",
+            "ucci": "i9h9", "side": "b",
+            "analysis": {"score_type": "cp", "score": 796, "depth": 21},
             "speech_token": "sand-6", "candidates": [],
             "pv": [
-                {"ucci": "b4b9", "notation": "红方 车八进五，吃车"},
-                {"ucci": "c7b9", "notation": "黑方 马3退2，吃车"},
-                {"ucci": "h2e2", "notation": "红方 炮二平五"},
-                {"ucci": "h9g7", "notation": "黑方 马8进7"},
+                {"ucci": "i9h9", "notation": "黑方 车9平8"},
+                {"ucci": "e2e5", "notation": "红方 炮五进三，吃炮"},
+                {"ucci": "e6e5", "notation": "黑方 卒5进1，吃炮"},
+                {"ucci": "b0b2", "notation": "红方 车八进二"},
             ]})
         show = [item for item in notices
                 if item[0] == "sandtable" and item[2].get("action") == "show"]
@@ -532,6 +534,7 @@ class LiveHostTests(unittest.TestCase):
         self.assertEqual(len(prepared[0][1]["沙盘路线"]), 3)
         self.assertEqual(prepared[0][0], "沙盘推演解说")
         self.assertEqual(prepared[0][1]["speech_token"], "sand-6:sandbox")
+        self.assertIn("卒5进1", prepared[0][2])
         self.assertEqual(prepared[1][0], "关键走棋解说")
         self.assertEqual(prepared[1][1]["speech_token"], "sand-6")
         self.assertNotIn("收下这枚。", prepared[1][2])

@@ -655,7 +655,7 @@ def main():
             try:
                 from game_sandbox import build_plan as build_sandbox_plan
                 sandbox_plan = build_sandbox_plan(
-                    d, analysis, pv_line, u)
+                    d, analysis, pv_line, u, board=b)
             except Exception:
                 sandbox_plan = None
 
