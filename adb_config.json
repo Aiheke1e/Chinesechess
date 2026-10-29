@@ -1,0 +1,9 @@
+{
+  "my_color": "r",
+  "engine_mode": "pikafish",
+  "engine_path": "engine_bin/Pikafish-Windows-x86-64-universal.exe",
+  "think_depth": 4,
+  "move_interval": 1.5,
+  "max_moves": 200,
+  "swipe_ms": 150
+}

@@ -1,0 +1,21 @@
+{
+  "title": "JJ象棋",
+  "my_color": "r",
+  "engine_mode": "pikafish",
+  "engine_path": "engine_bin/Pikafish-Windows-x86-64-universal.exe",
+  "think_depth": 6,
+  "move_interval": 1.2,
+  "max_moves": 200,
+  "templates_dir": "templates",
+  "use_detector": false,
+  "detector_weights": "best.pt",
+  "geom": {
+    "ox": 96,
+    "oy": 132,
+    "dx": 66,
+    "dy": 60,
+    "w": 720,
+    "h": 804
+  },
+  "auto_geom": false
+}

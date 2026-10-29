@@ -1,0 +1,11 @@
+{
+  "emulator_path": "D:\\software\\leidian\\LDPlayer9\\dnplayer.exe",
+  "jj_package": "cn.jj.chess",
+  "device_timeout_seconds": 120,
+  "allow_endgame": true,
+  "endgame_min_pieces": 4,
+  "ambiguous_turn_default": "r",
+  "match_mode": "15分钟",
+  "diagnostic_wait_seconds": 15,
+  "diagnostic_interval_seconds": 30
+}

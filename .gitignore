@@ -1,0 +1,28 @@
+__pycache__/
+*.py[cod]
+work/
+game.log
+*.log
+*.wav
+*.png
+_apk/
+_apk_lib/
+_ref/
+_*.py
+.env
+.env.*
+*.dpapi
+
+# Runtime screenshots are ignored, but recognition/test assets are required.
+!templates/*.png
+!fixture/*.png
+
+# Pikafish runtime files are downloaded separately; keep only its licenses/docs.
+engine_bin/*.7z
+engine_bin/*.zip
+engine_bin/*.exe
+engine_bin/*.nnue
+engine_bin/Pikafish-Android-*
+engine_bin/Pikafish-Linux-*
+engine_bin/Pikafish-MacOS-*
+
