@@ -39,6 +39,20 @@ class SessionStateTests(unittest.TestCase):
         self.assertEqual(resolve_legal_sequence_by_occupancy(
             board, occupancy, max_plies=2), moves)
 
+    def test_recovers_two_fast_moves_with_one_highlight_noise_square(self):
+        board = Board.from_fen(START_FEN)
+        after = board.copy()
+        moves = [Board.from_ucci("h2e2"), Board.from_ucci("b7e7")]
+        for move in moves:
+            after.apply(move)
+        occupancy = [None if piece is None else
+                     ("R" if piece.isupper() else "r") for piece in after.sq]
+        occupancy[9] = "r"  # Persistent hint circle on an empty square.
+        self.assertIsNone(resolve_legal_sequence_by_occupancy(
+            board, occupancy, max_plies=2))
+        self.assertEqual(resolve_legal_sequence_by_occupancy(
+            board, occupancy, max_plies=2, max_mismatches=1), moves)
+
     def test_repairs_wrong_turn_on_first_visible_move(self):
         with tempfile.TemporaryDirectory() as folder:
             path = os.path.join(folder, "session.json")

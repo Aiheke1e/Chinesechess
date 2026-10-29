@@ -57,6 +57,33 @@ class MoverTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(tap.call_count, 2)
 
+    def test_precondition_repairs_glowing_trusted_source_by_side(self):
+        strong_probe = {index: self.before[index]
+                        for index in mover._probe_indices(
+                            self.before, *self.move)}
+        strong_probe[self.move[0]] = None
+        presence_probe = {index: self.before[index]
+                          for index in strong_probe}
+        frames = iter((self.before, self.after))
+        with patch.object(mover, "screenshot",
+                          side_effect=lambda *_: next(frames)), \
+             patch.object(mover, "recognize_indices",
+                          side_effect=lambda frame, orientation, indices: (
+                              strong_probe if frame is self.before else
+                              {index: frame[index] for index in indices})), \
+             patch.object(mover, "recognize_presence_indices",
+                          return_value=presence_probe), \
+             patch.object(mover, "recognize_position",
+                          side_effect=lambda frame, orientation: (frame, orientation)), \
+             patch.object(mover, "recognize_occupancy",
+                          side_effect=lambda frame, orientation: frame), \
+             patch.object(mover, "tap") as tap, \
+             patch.object(mover.time, "sleep"):
+            ok, _ = mover.move_piece(
+                *self.move, "device", expected_before=self.before)
+        self.assertTrue(ok)
+        self.assertEqual(tap.call_count, 2)
+
     def test_failed_confirmation_never_retries_input(self):
         with patch.object(mover, "screenshot", return_value=self.before), \
              patch.object(mover, "recognize_position",

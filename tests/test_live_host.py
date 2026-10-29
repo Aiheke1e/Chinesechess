@@ -156,6 +156,89 @@ class LiveHostTests(unittest.TestCase):
         self.assertFalse(spoken.is_set())
         pipeline.close()
 
+    def test_prediction_is_occasional_and_uses_wait_channel(self):
+        prepared = []
+
+        class Pipeline:
+            def prepare_idle(self, payload, kind="等待期长讲解",
+                             direct_text=None):
+                prepared.append((kind, payload, direct_text))
+
+        controller = object.__new__(LiveController)
+        controller.pipeline = Pipeline()
+        controller.settings = LiveSettings(commentary_enabled=True)
+        controller.last_engine_score = None
+        controller.last_chess_spoken_at = time.monotonic()
+        controller.quiet_move_count = 0
+        controller.next_prediction_move = 4
+        controller.prediction_count = 0
+        controller.closing_announced = False
+        controller._notify = lambda *args, **kwargs: None
+        base = {
+            "event": "engine_analysis", "notation": "红方 马二进三",
+            "summary": "局面均势", "analysis": {
+                "score_type": "cp", "score": 20, "depth": 18},
+            "candidates": [], "speech_token": "predict",
+            "pv": [
+                {"ucci": "h0g2", "notation": "红方 马二进三"},
+                {"ucci": "h9g7", "notation": "黑方 马8进7"},
+                {"ucci": "b0c2", "notation": "红方 马八进七"},
+            ],
+        }
+        controller.submit_chess({**base, "number": 3})
+        self.assertEqual(prepared, [])
+        controller.submit_chess({**base, "number": 4})
+        self.assertEqual(prepared[0][0], "应手预判")
+        self.assertEqual(prepared[0][1]["引擎预测应手"], "黑方 马8进7")
+        self.assertIn("马8进7", prepared[0][2])
+        controller.submit_chess({**base, "number": 5})
+        self.assertEqual(len(prepared), 1)
+
+    def test_prediction_text_never_changes_engine_move(self):
+        text = LiveController._engine_prediction_text("黑方 炮8平5", 2)
+        self.assertIn("炮8平5", text)
+        self.assertNotIn("黑方", text)
+
+    def test_engine_prediction_never_calls_language_model(self):
+        spoken = threading.Event()
+        pipeline = SpeechPipeline(
+            LiveSettings(cooldown=0, speech_enabled=False),
+            lambda kind, *args: spoken.set() if kind == "reply" else None,
+            llm=lambda *args, **kwargs: self.fail("预判不应调用语言模型"),
+            tts=lambda *args: self.fail("文本模式不应调用语音"))
+        pipeline.prepare_idle(
+            {"引擎预测应手": "黑方 马8进7"}, kind="应手预判",
+            direct_text="我猜他可能走马8进7。")
+        self.assertTrue(pipeline.open_idle_window())
+        self.assertTrue(spoken.wait(1))
+        pipeline.close()
+
+    def test_opening_names_come_from_verified_move_patterns(self):
+        spoken = []
+
+        class Pipeline:
+            def submit(self, priority, kind, payload, direct_text=None):
+                spoken.append((kind, payload["布局名称"], direct_text))
+
+        controller = object.__new__(LiveController)
+        controller.pipeline = Pipeline()
+        controller._reset_opening()
+        for move in (
+                "红方 炮二平五", "黑方 马8进7",
+                "红方 马二进三", "黑方 马2进3"):
+            controller._record_opening_move(move)
+        self.assertEqual(spoken[0][1], "中炮")
+        self.assertEqual(spoken[-1][1], "中炮对屏风马")
+        self.assertIn("中炮对屏风马", spoken[-1][2])
+
+    def test_two_headed_snake_requires_both_flank_pawns(self):
+        moves = ["红方 兵七进一", "黑方 马8进7", "红方 兵三进一"]
+        names = [name for name, _ in LiveController._opening_matches(moves)]
+        self.assertIn("红方两头蛇", names)
+        incomplete = [name for name, _ in LiveController._opening_matches(
+            moves[:-1])]
+        self.assertNotIn("红方两头蛇", incomplete)
+
     def test_disabled_commentary_ignores_chess_events(self):
         submitted = []
 
@@ -388,10 +471,11 @@ class LiveHostTests(unittest.TestCase):
             ]})
         show = [item for item in notices
                 if item[0] == "sandtable" and item[2].get("action") == "show"]
-        self.assertEqual(len(show), 1)
-        self.assertEqual(len(show[0][2]["route"]), 4)
+        # Player owns JJ's real sandbox lifecycle.  The live host only prepares
+        # synchronized speech and must not draw a fake mini-board.
+        self.assertEqual(show, [])
+        self.assertEqual(len(prepared[0][1]["沙盘路线"]), 4)
         self.assertEqual(prepared[0][0], "沙盘推演解说")
-        controller.sandtable_timer.cancel()
 
     def test_sandtable_kill_confidence_requires_depth(self):
         base = {"analysis": {"score_type": "cp", "score": 900, "depth": 18}}
@@ -423,6 +507,31 @@ class LiveHostTests(unittest.TestCase):
             "speech_token": "next"})
         self.assertIn(("sandtable", "close"), notices)
         self.assertFalse(controller.sandtable_active)
+
+    def test_sandtable_speech_waits_until_real_sandbox_enters(self):
+        decisions = []
+
+        class Pipeline:
+            def commit_move(self, token):
+                decisions.append(("commit", token))
+
+            def discard_move(self, token):
+                decisions.append(("discard", token))
+
+        controller = object.__new__(LiveController)
+        controller.pipeline = Pipeline()
+        controller.settings = LiveSettings(commentary_enabled=True)
+        controller.sandbox_speech_tokens = {"sand-1"}
+        controller._notify = lambda *args, **kwargs: None
+        controller.submit_chess({
+            "event": "move_applied", "notation": "红方 车八进五",
+            "speech_token": "sand-1"})
+        self.assertEqual(decisions, [])
+        controller.submit_chess({
+            "event": "game_sandbox", "action": "entered",
+            "speech_token": "sand-1"})
+        self.assertEqual(decisions, [("commit", "sand-1")])
+        self.assertNotIn("sand-1", controller.sandbox_speech_tokens)
 
     def test_speech_worker_survives_idle_timeouts(self):
         pipeline = SpeechPipeline(

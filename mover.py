@@ -4,7 +4,9 @@ import sys, os, time, random
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from adb_bridge import adb, screenshot, list_devices
 from recognizer import (OX, OY, DX, DY, SHIFT_X, SHIFT_Y,
-                        recognize_occupancy, recognize_position)
+                        recognize_indices, recognize_occupancy,
+                        recognize_presence_indices,
+                        recognize_position)
 from state import (after_move, matches_after_move, same_position,
                    matches_move_with_limited_vision_loss,
                    trusted_position_matches)
@@ -20,16 +22,46 @@ def pt(i: int, orientation="red_bottom") -> tuple[float, float]:
     return (OX + c * DX + SHIFT_X, OY + r * DY + SHIFT_Y)
 
 
-def tap(x, y, device, jitter=5):
+def tap(x, y, device, jitter=2):
     """带随机抖动的点击 (拟人)"""
     jx = random.uniform(-jitter, jitter)
     jy = random.uniform(-jitter, jitter)
     adb(["shell", "input", "tap", str(int(x + jx)), str(int(y + jy))], device=device)
 
 
+def _same_occupancy_side(expected, observed):
+    if expected is None or observed is None:
+        return expected is observed
+    return expected.isupper() == observed.isupper()
+
+
+def _probe_matches(expected, observed, indices):
+    return bool(observed) and all(
+        index in observed and
+        _same_occupancy_side(expected[index], observed[index])
+        for index in indices)
+
+
+def _probe_indices(expected, frm, to, limit=8):
+    """Select move endpoints, both kings and spread-out occupied sentinels."""
+    result = [frm, to]
+    for king in ("K", "k"):
+        try:
+            result.append(expected.index(king))
+        except ValueError:
+            pass
+    occupied = [index for index, piece in enumerate(expected)
+                if piece is not None and index not in result]
+    if occupied:
+        slots = max(1, limit - len(result))
+        step = max(1, len(occupied) // slots)
+        result.extend(occupied[::step])
+    return list(dict.fromkeys(result))[:limit]
+
+
 def move_piece(frm: int, to: int, device, expected_before=None,
-               settle_first=0.7, verify=True, verify_timeout=6.0,
-               poll_interval=0.6, orientation="red_bottom",
+               settle_first=0.25, verify=True, verify_timeout=4.0,
+               poll_interval=0.25, orientation="red_bottom",
                tolerant_indices=(), precondition_timeout=2.0):
     """点选式走一步，一次输入，多次只读确认。
 
@@ -44,15 +76,40 @@ def move_piece(frm: int, to: int, device, expected_before=None,
     while True:
         image = screenshot(device)
         if image is not None:
-            before, detected = recognize_position(image, orientation)
-            trusted = before is not None and detected == orientation
-            if trusted and expected_before is not None:
-                trusted = trusted_position_matches(
-                    expected_before, before, tolerant_indices)
-                if not trusted:
-                    occupancy = recognize_occupancy(image, orientation)
+            trusted = False
+            if expected_before is not None:
+                probe = _probe_indices(expected_before, frm, to)
+                quick = recognize_indices(image, orientation, probe)
+                # JJ keeps the last moved piece glowing.  The glyph matcher
+                # may reject that piece even though its circle and side colour
+                # remain unmistakable.  Repair only missing squares that the
+                # trusted board says are occupied; never manufacture a piece
+                # on an expected-empty hint intersection.
+                if not _probe_matches(expected_before, quick, probe):
+                    presence = recognize_presence_indices(
+                        image, orientation, probe)
+                    repaired = dict(quick)
+                    for index in probe:
+                        wanted = expected_before[index]
+                        seen = presence.get(index)
+                        if (wanted is not None and quick.get(index) is None and
+                                seen is not None and
+                                wanted.isupper() == seen.isupper()):
+                            repaired[index] = wanted
+                    quick = repaired
+                trusted = _probe_matches(expected_before, quick, probe)
+                if trusted:
+                    before, detected = expected_before, orientation
+            if not trusted:
+                before, detected = recognize_position(image, orientation)
+                trusted = before is not None and detected == orientation
+                if trusted and expected_before is not None:
                     trusted = trusted_position_matches(
-                        expected_before, occupancy, range(90))
+                        expected_before, before, tolerant_indices)
+                    if not trusted:
+                        occupancy = recognize_occupancy(image, orientation)
+                        trusted = trusted_position_matches(
+                            expected_before, occupancy, range(90))
             if trusted:
                 break
         if time.monotonic() >= deadline:
@@ -88,12 +145,21 @@ def move_piece(frm: int, to: int, device, expected_before=None,
     last_image = image
     last_occupancy = None
     relaxed_hits = 0
+    next_full_check = time.monotonic() + 0.8
     while time.monotonic() < deadline:
         time.sleep(poll_interval)
         image = screenshot(device)
         if image is None:
             continue
         last_image = image
+        endpoints = recognize_indices(image, orientation, (frm, to))
+        if _probe_matches(expected_after, endpoints, (frm, to)):
+            return True, f"OK {piece} {frm}->{to} 落子成功（局部快速校验）"
+        # An empty result means the local classifier itself was unavailable;
+        # do not postpone the proven full-board fallback in that case.
+        if endpoints and time.monotonic() < next_full_check:
+            continue
+        next_full_check = time.monotonic() + 0.8
         last, detected = recognize_position(image, orientation)
         if last is None or detected != orientation:
             continue

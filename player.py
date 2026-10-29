@@ -7,7 +7,9 @@ import sys, os, time, random, json, argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from board import Board
 from adb_bridge import screenshot, list_devices
-from recognizer import recognize_occupancy, recognize_position
+from recognizer import (board_change_scores, recognize_occupancy,
+                        recognize_indices, recognize_position,
+                        recognize_presence_occupancy)
 from mover import move_piece_retry, pt
 from state import (position_errors, resolve_fast_reply, resolve_one_legal_move,
                    resolve_legal_sequence_by_occupancy, same_position,
@@ -37,6 +39,8 @@ DEFAULT_CFG = {
     "dry_run": False,
     "event_log": "work/events.jsonl",
     "auto_continue_after_game": True,
+    "opponent_poll_interval": 0.25,
+    "full_recognition_interval": 1.0,
 }
 
 CN = {"K":"帅","A":"仕","B":"相","N":"马","R":"车","C":"炮","P":"兵",
@@ -103,7 +107,61 @@ def assess_image_against_board(board, image, orientation, occupancy_history=None
         board, occupancy, max_differences=2, max_plies=1)
     move = (sequence[0] if status == "recovered" and
             sequence is not None and len(sequence) == 1 else None)
+    if move is None and status in ("retry", "illegal"):
+        # Last-move rings can hide several glyph templates at once.  Use the
+        # presence-only detector only as a secondary proposal: one legal move
+        # must explain it uniquely with at most one stray hint intersection.
+        # The caller still requires the same proposal in two consecutive
+        # frames before advancing the trusted board.
+        presence = recognize_presence_occupancy(image, orientation)
+        fallback = resolve_legal_sequence_by_occupancy(
+            board, presence, max_plies=1, max_mismatches=1)
+        if fallback is not None:
+            if len(fallback) == 1:
+                return fallback[0], "presence_fallback", differences
+            if not fallback:
+                return None, "unchanged", differences
     return move, status, differences
+
+
+def resolve_move_from_change(board, reference, current, orientation,
+                             minimum_score=8.0):
+    """Resolve one unique legal move from its two visually changed endpoints."""
+    scores = board_change_scores(reference, current, orientation)
+    if not scores:
+        return None, 90
+    baseline = float(sorted(scores)[len(scores) // 2])
+    threshold = max(float(minimum_score), baseline + 6.0)
+    changed = sum(score >= threshold for score in scores)
+    if changed < 2 or changed > 12:
+        return None, changed
+    ranked = []
+    for move in board.legal_moves():
+        frm, to = move
+        weaker = min(scores[frm], scores[to])
+        if weaker < threshold:
+            continue
+        ranked.append((scores[frm] + scores[to], weaker, move))
+    if not ranked:
+        return None, changed
+    ranked.sort(reverse=True)
+    best = ranked[0]
+    if len(ranked) > 1:
+        second = ranked[1]
+        if best[0] - second[0] < max(4.0, best[0] * 0.08):
+            return None, changed
+    move = best[2]
+    frm, to = move
+    endpoints = recognize_indices(current, orientation, (frm, to))
+    moving_piece = board.sq[frm]
+    # Visual change alone can be a selection highlight.  A real completed move
+    # must also leave the source empty and the destination occupied by the
+    # moving side before it enters the two-frame stability gate.
+    if (moving_piece is None or endpoints.get(frm) is not None or
+            endpoints.get(to) is None or
+            endpoints[to].isupper() != moving_piece.isupper()):
+        return None, changed
+    return move, changed
 
 
 def stable_move_candidate(pending, current):
@@ -352,30 +410,50 @@ def main():
                 events.emit("waiting_for_opponent", fen=b.to_fen(),
                             after_move_number=n)
                 got, waited, total_waited = False, 0.0, 0.0
+                wait_started = time.monotonic()
+                timeout_reported_at = 0.0
                 pending_opponent_move = None
                 anomaly_count = 0
                 last_anomaly_report = 0.0
                 last_anomaly_capture = 0.0
                 last_wait_capture = 0.0
                 occupancy_history = deque(maxlen=3)
+                reference_image = screenshot(device)
+                last_full_recognition = 0.0
                 while not stop_requested():
                     write_runtime_status(
                         "waiting_opponent", "等待对方落子",
                         details={"own_moves": n,
                                  "waited_seconds": round(total_waited, 1)})
-                    time.sleep(1.0)
-                    waited += 1.0
-                    total_waited += 1.0
+                    poll_interval = max(
+                        0.1, float(cfg.get("opponent_poll_interval", 0.25)))
+                    time.sleep(poll_interval)
                     image = screenshot(device)
+                    total_waited = time.monotonic() - wait_started
+                    waited = total_waited - timeout_reported_at
                     if postgame_screen_visible(device, image):
                         result = "finished"
                         print("[本局结束] 对方可能已投降，检测到 JJ 结算页面。")
                         events.emit("game_over", result=result,
                                     reason="jj_result_screen", fen=b.to_fen())
                         break
-                    current_candidate, check_status, difference_count = (
-                        assess_image_against_board(
-                            b, image, orientation, occupancy_history))
+                    current_candidate, difference_count = resolve_move_from_change(
+                        b, reference_image, image, orientation)
+                    if current_candidate is not None:
+                        check_status = "fast_change"
+                    else:
+                        now = time.monotonic()
+                        full_interval = max(
+                            0.5, float(cfg.get("full_recognition_interval", 1.0)))
+                        if now - last_full_recognition < full_interval:
+                            pending_opponent_move = None
+                            continue
+                        last_full_recognition = now
+                        current_candidate, check_status, difference_count = (
+                            assess_image_against_board(
+                                b, image, orientation, occupancy_history))
+                        if check_status == "unchanged":
+                            reference_image = image
                     if check_status in ("retry", "illegal", "screenshot_failed"):
                         pending_opponent_move = None
                         anomaly_count += 1
@@ -409,14 +487,15 @@ def main():
                         opponent_ucci = Board.ucci(mv_seen)
                         opponent_text = move_description(b, mv_seen)
                         print(f"对方回应：{opponent_text}"
-                              f"  （{waited:.0f} 秒，坐标 {opponent_ucci}）")
+                              f"  （{total_waited:.1f} 秒，坐标 {opponent_ucci}）")
                         b.apply(mv_seen)
                         tolerant_indices.discard(mv_seen[0])
                         tolerant_indices.add(mv_seen[1])
                         save_session(b, orientation, my, tolerant_indices)
                         events.emit("opponent_move", ucci=opponent_ucci,
                                     notation=opponent_text,
-                                    waited_seconds=round(total_waited, 1), fen=b.to_fen())
+                                    waited_seconds=round(total_waited, 1),
+                                    recognition=check_status, fen=b.to_fen())
                         if not b.legal_moves():
                             result = "lost"
                             print("[!] 我方无合法着法，本局失败")
@@ -439,7 +518,7 @@ def main():
                                 extra={"waited_seconds": round(total_waited, 1),
                                        "trusted_fen": b.to_fen()})
                             last_wait_capture = now
-                        waited = 0.0
+                        timeout_reported_at = total_waited
                 if stop_requested():
                     break
                 if result == "finished":
@@ -510,6 +589,13 @@ def main():
                     for item in candidate_plans))
             if pv_line:
                 print("[预测路线] " + " → ".join(text for _, text in pv_line))
+            try:
+                from game_sandbox import build_plan as build_sandbox_plan
+                sandbox_plan = build_sandbox_plan(
+                    d, analysis, pv_line, u)
+            except Exception:
+                sandbox_plan = None
+
             from_xy = tuple(round(value) for value in pt(mv[0], orientation))
             to_xy = tuple(round(value) for value in pt(mv[1], orientation))
             print(f"[执行指令] 点击起点 {mv[0]}@{from_xy}，再点击终点 "
@@ -542,12 +628,16 @@ def main():
                 write_runtime_status(
                     "move_confirming", "已发送落子，正在核对棋盘",
                     details={"own_moves": n + 1, "ucci": u})
+                confirmation_started = time.monotonic()
                 ok, msg = move_piece_retry(
                     mv[0], mv[1], device, expected_before=b.sq,
                     orientation=orientation,
                     tolerant_indices=tolerant_indices)
+                confirmation_seconds = time.monotonic() - confirmation_started
                 if ok:
-                    print("落子确认：成功，屏幕棋盘与预期一致。", flush=True)
+                    mode = "快速确认" if "局部快速校验" in msg else "完整确认"
+                    print(f"落子确认：成功（{mode} {confirmation_seconds:.1f} 秒）。",
+                          flush=True)
                 else:
                     print("落子确认：暂未看到预期局面，正在做快速回应检查。",
                           flush=True)
@@ -559,12 +649,21 @@ def main():
                     fast_reply = resolve_fast_reply(
                         b, mv, observed, tolerant_indices)
                 if fast_reply is None:
-                    occupancy = read_occupancy(device, orientation)
+                    recovery_image = screenshot(device)
+                    occupancy = (None if recovery_image is None else
+                                 recognize_occupancy(
+                                     recovery_image, orientation))
                     after_ours = b.copy()
                     after_ours.apply(mv)
                     sequence = (None if occupancy is None else
                                 resolve_legal_sequence_by_occupancy(
                                     after_ours, occupancy, max_plies=1))
+                    if sequence is None and recovery_image is not None:
+                        presence = recognize_presence_occupancy(
+                            recovery_image, orientation)
+                        sequence = resolve_legal_sequence_by_occupancy(
+                            after_ours, presence, max_plies=1,
+                            max_mismatches=1)
                     if sequence:
                         fast_reply = sequence[0]
                 if fast_reply is not None:
@@ -620,6 +719,69 @@ def main():
                 events.emit("game_over", result=result, reason="no_legal_moves",
                             fen=b.to_fen())
                 break
+            if (not cfg["dry_run"] and sandbox_plan and
+                    fast_reply is None and not stop_requested()):
+                try:
+                    from game_sandbox import enabled as sandbox_enabled
+                    from game_sandbox import play_plan as play_sandbox_plan
+                    if sandbox_enabled():
+                        route = sandbox_plan["route"]
+                        print(f"[游戏沙盘] 我方落子已确认；等待对方期间演示"
+                              f"{len(route)}步路线。", flush=True)
+                        events.emit(
+                            "game_sandbox", action="start",
+                            reason=sandbox_plan["reason"], route=route,
+                            deferred=False, fen=b.to_fen(),
+                            speech_token=speech_token)
+                        write_runtime_status(
+                            "sandbox_demo", "等待对方期间演示关键路线",
+                            details={"own_moves": n, "steps": len(route),
+                                     "opponent_interrupts": False})
+
+                        def report_sandbox_step(number, item):
+                            print(f"[游戏沙盘] {number}. {item['notation']}",
+                                  flush=True)
+                            events.emit(
+                                "game_sandbox", action="step", number=number,
+                                notation=item["notation"], ucci=item["ucci"])
+
+                        def report_sandbox_entered():
+                            events.emit(
+                                "game_sandbox", action="entered",
+                                reason=sandbox_plan["reason"], route=route,
+                                speech_token=speech_token, fen=b.to_fen())
+
+                        sandbox_result = play_sandbox_plan(
+                            device, b, orientation, sandbox_plan,
+                            stop_requested=stop_requested,
+                            on_step=report_sandbox_step,
+                            on_enter=report_sandbox_entered,
+                            max_seconds=8.0)
+                        events.emit(
+                            "game_sandbox", action="end",
+                            speech_token=speech_token, **sandbox_result)
+                        if sandbox_result.get("entered"):
+                            print(f"[游戏沙盘] {sandbox_result.get('reason')}；"
+                                  f"已演示{sandbox_result.get('completed', 0)}步。"
+                                  " 对方实战落子不会中断沙盘。", flush=True)
+                        else:
+                            print("[游戏沙盘] 本次未进入：" +
+                                  str(sandbox_result.get(
+                                      "reason", "界面未确认")), flush=True)
+                        if not sandbox_result.get("safe_exit", True):
+                            result = "recognition_pause"
+                            print("[游戏沙盘] 无法确认已返回实战，为防止误点已暂停。",
+                                  flush=True)
+                            capture_diagnostic(
+                                device, "sandbox_exit_unconfirmed",
+                                extra={"fen": b.to_fen(),
+                                       "sandbox_result": sandbox_result})
+                            break
+                except Exception as error:
+                    print(f"[游戏沙盘] 演示异常，已跳过：{error}", flush=True)
+                    capture_diagnostic(
+                        device, "sandbox_demo_error",
+                        extra={"error": str(error), "fen": b.to_fen()})
             if fast_reply is not None:
                 b.apply(fast_reply)
                 tolerant_indices.discard(fast_reply[0])

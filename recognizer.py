@@ -65,6 +65,68 @@ def match_shape(tile, sub):
             if v > best[1]: best = (letter, v)
     return best
 
+
+def _screen_index(index, orientation):
+    if orientation == "red_bottom":
+        return index
+    if orientation == "black_bottom":
+        return 89 - index
+    raise ValueError(f"unknown board orientation: {orientation}")
+
+
+def _recognize_tile(img, screen_index, stroke_thr=2000, red_thr=0.36,
+                    conf_thr=0.28):
+    """Classify one board intersection without scanning the other 89."""
+    row, column = divmod(screen_index, 9)
+    tile = crop(img, OX + column * DX + SHIFT_X,
+                OY + row * DY + SHIFT_Y)
+    if tile.size == 0:
+        return None
+    count, red_ratio = analyze(tile)
+    if count < stroke_thr:
+        return None
+    red_templates, black_templates = load_templates()
+    templates = red_templates if red_ratio > red_thr else black_templates
+    letter, confidence = match_shape(tile, templates)
+    if not letter or confidence <= conf_thr:
+        return None
+    return letter if red_ratio > red_thr else letter.lower()
+
+
+def recognize_indices(img, orientation, indices, stroke_thr=2000,
+                      red_thr=0.36, conf_thr=0.28):
+    """Recognize a small set of canonical squares."""
+    if img is None or getattr(img, "ndim", 0) != 3:
+        return {}
+    result = {}
+    for index in dict.fromkeys(int(value) for value in indices
+                               if 0 <= int(value) < 90):
+        result[index] = _recognize_tile(
+            img, _screen_index(index, orientation), stroke_thr, red_thr,
+            conf_thr)
+    return result
+
+
+def board_change_scores(reference, current, orientation, half=34):
+    """Return a visual-change score for every canonical board square."""
+    if (reference is None or current is None or
+            getattr(reference, "shape", None) != getattr(current, "shape", None)):
+        return None
+    scores = [0.0] * 90
+    for index in range(90):
+        screen_index = _screen_index(index, orientation)
+        row, column = divmod(screen_index, 9)
+        cx = int(round(OX + column * DX + SHIFT_X))
+        cy = int(round(OY + row * DY + SHIFT_Y))
+        first = crop(reference, cx, cy, half=half)
+        second = crop(current, cx, cy, half=half)
+        if first.size == 0 or second.size == 0 or first.shape != second.shape:
+            return None
+        first_lab = cv2.cvtColor(first, cv2.COLOR_BGR2LAB)
+        second_lab = cv2.cvtColor(second, cv2.COLOR_BGR2LAB)
+        scores[index] = float(cv2.absdiff(first_lab, second_lab).mean())
+    return scores
+
 def recognize(img, verbose=False, stroke_thr=2000, red_thr=0.36, conf_thr=0.28):
     """返回 list[90]: 每点为单字符 code (大写=红 小写=黑) 或 None"""
     red_T, blk_T = load_templates()
@@ -139,6 +201,55 @@ def recognize_occupancy(img, orientation, stroke_thr=2000, red_thr=0.36,
     raw = [None if piece is None else
            ("R" if piece.isupper() else "r") for piece in detected]
     return canonicalize(raw, orientation)
+
+
+def recognize_presence_occupancy(img, orientation, stroke_thr=3500,
+                                 red_thr=0.36):
+    """Return a highlight-tolerant empty/red/black observation.
+
+    This deliberately ignores the glyph-template score.  It is therefore not
+    suitable as the primary recognizer because JJ hint dots can look occupied.
+    Callers may only use it behind legal-sequence validation with a very small
+    mismatch allowance.  Its purpose is to retain a real piece whose glowing
+    last-move ring makes the normal glyph template temporarily fail.
+    """
+    if img is None or getattr(img, "ndim", 0) != 3:
+        return None
+    raw = []
+    for row in range(10):
+        for column in range(9):
+            tile = crop(img, OX + column * DX + SHIFT_X,
+                        OY + row * DY + SHIFT_Y)
+            if tile.size == 0:
+                raw.append(None)
+                continue
+            count, red_ratio = analyze(tile)
+            if count < stroke_thr:
+                raw.append(None)
+            else:
+                raw.append("R" if red_ratio > red_thr else "r")
+    return canonicalize(raw, orientation)
+
+
+def recognize_presence_indices(img, orientation, indices, stroke_thr=3500,
+                               red_thr=0.36):
+    """Read only side/occupancy for selected trusted-board intersections."""
+    if img is None or getattr(img, "ndim", 0) != 3:
+        return {}
+    result = {}
+    for index in dict.fromkeys(int(value) for value in indices
+                               if 0 <= int(value) < 90):
+        screen_index = _screen_index(index, orientation)
+        row, column = divmod(screen_index, 9)
+        tile = crop(img, OX + column * DX + SHIFT_X,
+                    OY + row * DY + SHIFT_Y)
+        if tile.size == 0:
+            result[index] = None
+            continue
+        count, red_ratio = analyze(tile)
+        result[index] = (None if count < stroke_thr else
+                         ("R" if red_ratio > red_thr else "r"))
+    return result
 
 if __name__ == "__main__":
     from board import Board

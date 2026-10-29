@@ -226,10 +226,17 @@ def resolve_fast_reply(previous: Board, our_move: tuple[int, int],
 
 def resolve_legal_sequence_by_occupancy(previous: Board,
                                         observed: list[str | None],
-                                        max_plies=2):
-    """Uniquely recover 0..max_plies moves using occupancy and side only."""
-    tolerant = range(90)
-    if trusted_position_matches(previous.sq, observed, tolerant):
+                                        max_plies=2,
+                                        max_mismatches=0):
+    """Uniquely recover 0..max_plies moves using occupancy and side only.
+
+    ``max_mismatches`` is reserved for the secondary presence-only detector.
+    When non-zero, the lowest-error legal sequence must still be unique.
+    """
+    if observed is None or len(observed) != 90:
+        return None
+    allowed = max(0, int(max_mismatches))
+    if occupancy_difference_count(previous.sq, observed) <= allowed:
         return []
     frontier = [(previous.copy(), [])]
     for _depth in range(1, max_plies + 1):
@@ -240,13 +247,15 @@ def resolve_legal_sequence_by_occupancy(previous: Board,
                 child = board.copy()
                 child.apply(move)
                 candidate = sequence + [move]
-                if trusted_position_matches(child.sq, observed, tolerant):
-                    matches.append(candidate)
-                    if len(matches) > 1:
-                        return None
+                difference = occupancy_difference_count(child.sq, observed)
+                if difference <= allowed:
+                    matches.append((difference, candidate))
                 next_frontier.append((child, candidate))
-        if len(matches) == 1:
-            return matches[0]
+        if matches:
+            best_difference = min(item[0] for item in matches)
+            best = [item[1] for item in matches
+                    if item[0] == best_difference]
+            return best[0] if len(best) == 1 else None
         frontier = next_frontier
     return None
 

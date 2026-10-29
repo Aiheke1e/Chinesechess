@@ -25,6 +25,7 @@ from live_host import LiveController, load_settings
 from health_check import collect_readiness, readiness_level
 from runtime_status import (heartbeat_age, read_runtime_status, rotate_log,
                             write_runtime_status)
+from console_format import styled_player_line
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STOP_FILE = os.path.join(HERE, "work", "stop.request")
@@ -39,7 +40,7 @@ DEFAULT_ASSISTANT_CFG = {
     "endgame_min_pieces": 4,
     "ambiguous_turn_default": "r",
     "diagnostic_wait_seconds": 15,
-    "diagnostic_interval_seconds": 30,
+    "diagnostic_interval_seconds": 300,
     "watchdog_warning_seconds": 25,
     "watchdog_recovery_seconds": 75,
     "match_mode": "15分钟",
@@ -52,7 +53,8 @@ RUNTIME_STAGE_LABELS = {
     "starting": "启动中", "board_recognition": "识别棋盘",
     "engine_starting": "启动引擎", "engine_thinking": "引擎思考",
     "waiting_opponent": "等待落子", "move_confirming": "确认落子",
-    "inter_move_delay": "回合间隔", "stopped": "已停止",
+    "inter_move_delay": "回合间隔", "sandbox_demo": "游戏沙盘演示",
+    "stopped": "已停止",
 }
 
 TURN_LABEL_TO_CODE = {"自动判断": "auto", "红方": "r", "黑方": "b"}
@@ -385,6 +387,7 @@ class ControlPanel:
                            wrap="word", state="disabled", relief="flat", padx=12, pady=11,
                            highlightthickness=1, highlightbackground="#172d43")
         self.log.pack(fill="both", expand=True)
+        self._configure_chess_log_tags()
 
         status_row = tk.Frame(live, bg=THEME["panel2"], padx=10, pady=7)
         status_row.pack(fill="x", pady=(0, 7))
@@ -427,7 +430,7 @@ class ControlPanel:
         ttk.Entry(options, textvariable=self.live_cooldown, width=4).grid(row=0, column=7, padx=(5, 8))
         ttk.Checkbutton(options, text="欢迎进场", variable=self.live_welcome).grid(row=0, column=8, padx=5)
         ttk.Checkbutton(options, text="礼物答谢", variable=self.live_gifts).grid(row=0, column=9, padx=5)
-        ttk.Checkbutton(options, text="战术沙盘", variable=self.live_sandtable,
+        ttk.Checkbutton(options, text="游戏内沙盘", variable=self.live_sandtable,
                         command=lambda: self.save_live_settings(quiet=True)).grid(
                             row=0, column=10, padx=5)
 
@@ -595,6 +598,8 @@ class ControlPanel:
                                ("系统", THEME["muted"]),
                                ("语音", THEME["purple"])):
                 self.live_log.tag_configure(tag, foreground=color)
+        if hasattr(self, "log"):
+            self._configure_chess_log_tags()
         if hasattr(self, "tools_menu"):
             self.tools_menu.configure(
                 bg=THEME["panel"], fg=THEME["text"],
@@ -948,7 +953,55 @@ class ControlPanel:
             self.speech_status.set("已跳到最新讲解")
             self.append_live("语音", "旧播报已清除，从最新棋局内容继续。")
 
-    def append(self, text):
+    def _configure_chess_log_tags(self):
+        """Apply a readable visual hierarchy to one complete chess turn."""
+        if not hasattr(self, "log"):
+            return
+        base = ("Microsoft YaHei UI", 10)
+        self.log.tag_configure(
+            "separator", foreground=THEME["border"],
+            font=("Cascadia Mono", 9), spacing1=5, spacing3=2)
+        self.log.tag_configure(
+            "move_number", foreground=THEME["muted"],
+            font=("Microsoft YaHei UI", 10, "bold"), spacing1=3, spacing3=5)
+        self.log.tag_configure(
+            "move_red", foreground=THEME["red"],
+            font=("Microsoft YaHei UI", 13, "bold"), spacing1=3, spacing3=5)
+        self.log.tag_configure(
+            "move_black", foreground=THEME["blue"],
+            font=("Microsoft YaHei UI", 13, "bold"), spacing1=3, spacing3=5)
+        self.log.tag_configure(
+            "reply_red", foreground=THEME["red"],
+            font=("Microsoft YaHei UI", 11, "bold"), lmargin1=16, lmargin2=16)
+        self.log.tag_configure(
+            "reply_black", foreground=THEME["blue"],
+            font=("Microsoft YaHei UI", 11, "bold"), lmargin1=16, lmargin2=16)
+        self.log.tag_configure(
+            "analysis", foreground=THEME["gold"],
+            font=("Microsoft YaHei UI", 10, "bold"), lmargin1=16, lmargin2=16)
+        self.log.tag_configure(
+            "action", foreground=THEME["jade"], font=base,
+            lmargin1=16, lmargin2=16)
+        self.log.tag_configure(
+            "success", foreground=THEME["jade"],
+            font=("Microsoft YaHei UI", 10, "bold"),
+            lmargin1=16, lmargin2=16)
+        self.log.tag_configure(
+            "waiting", foreground=THEME["muted"],
+            font=("Microsoft YaHei UI", 9, "italic"),
+            lmargin1=16, lmargin2=16)
+        self.log.tag_configure(
+            "warning", foreground=THEME["gold"],
+            font=("Microsoft YaHei UI", 10, "bold"),
+            lmargin1=16, lmargin2=16)
+        self.log.tag_configure(
+            "sandbox", foreground=THEME["purple"],
+            font=("Microsoft YaHei UI", 10, "bold"),
+            lmargin1=16, lmargin2=16)
+        self.log.tag_configure("normal", foreground=THEME["console_text"],
+                               font=base)
+
+    def append(self, text, display_text=Ellipsis):
         if "[识别告警]" in text:
             self.warning_count += 1
             self.board_state.set("自动复核中")
@@ -961,11 +1014,18 @@ class ControlPanel:
             self.game_count += 1
         self.runtime_stats.set(
             f"识别告警 {self.warning_count} · 成功落子 {self.move_success_count} · 完成对局 {self.game_count}")
-        self.log.configure(state="normal")
-        self.log.insert("end", text)
-        self._trim_text_widget(self.log, 2500)
-        self.log.see("end")
-        self.log.configure(state="disabled")
+        shown = text if display_text is Ellipsis else display_text
+        if shown:
+            self.log.configure(state="normal")
+            if isinstance(shown, (list, tuple)) and shown and isinstance(
+                    shown[0], (list, tuple)):
+                for chunk, tag in shown:
+                    self.log.insert("end", chunk, tag)
+            else:
+                self.log.insert("end", shown)
+            self._trim_text_widget(self.log, 2500)
+            self.log.see("end")
+            self.log.configure(state="disabled")
         try:
             os.makedirs(os.path.dirname(PANEL_LOG), exist_ok=True)
             rotate_log(PANEL_LOG)
@@ -1529,7 +1589,10 @@ class ControlPanel:
                         }.get(spoken_kind, "主播台词")
                     self.append_live(label, text)
                 else:
-                    self.append(item)
+                    if isinstance(item, str):
+                        self.append(item, display_text=styled_player_line(item))
+                    else:
+                        self.append(str(item))
         except queue.Empty:
             pass
         self.root.after(80, self._poll)

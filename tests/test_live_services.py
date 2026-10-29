@@ -25,6 +25,9 @@ class LiveServiceTests(unittest.TestCase):
         self.assertIn("候选", SYSTEM_PROMPT)
         self.assertIn("不要句句以", SYSTEM_PROMPT)
         self.assertIn("跳马、拱兵、出车、架炮", SYSTEM_PROMPT)
+        self.assertIn("全程中文", SYSTEM_PROMPT)
+        self.assertIn("思考过程", SYSTEM_PROMPT)
+        self.assertIn("一律用中文作答", SYSTEM_PROMPT)
 
     def test_repairs_streaming_wav_size_markers(self):
         with tempfile.TemporaryDirectory() as folder:

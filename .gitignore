@@ -12,6 +12,15 @@ _*.py
 .env
 .env.*
 *.dpapi
+.idea/
+
+# CCPD is downloaded and indexed locally.  Keep the repository and generated
+# multi-megabyte book out of Git; the importer and manifest are versioned.
+data/ccpd_source/
+data/ccpd*.zip
+data/ccpd*.partial
+data/opening_book*.json
+data/opening_book*.json.gz
 
 # Runtime screenshots are ignored, but recognition/test assets are required.
 !templates/*.png

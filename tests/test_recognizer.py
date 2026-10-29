@@ -4,7 +4,7 @@ import unittest
 import cv2
 
 from board import Board, START_FEN
-from recognizer import recognize, recognize_occupancy
+from recognizer import recognize, recognize_indices, recognize_occupancy
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -26,6 +26,15 @@ class RecognizerRegressionTests(unittest.TestCase):
             None if piece is None else ("R" if piece.isupper() else "r")
             for piece in expected]
         self.assertEqual(occupancy, expected_occupancy)
+
+    def test_local_recognition_reads_only_requested_squares(self):
+        image = cv2.imread(os.path.join(HERE, "jj_live.png"))
+        expected = Board.from_fen(START_FEN).sq
+        requested = (0, 4, 19, 44, 70, 89)
+        observed = recognize_indices(image, "red_bottom", requested)
+        self.assertEqual(set(observed), set(requested))
+        self.assertEqual(observed, {index: expected[index]
+                                    for index in requested})
 
 
 if __name__ == "__main__":

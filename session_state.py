@@ -7,7 +7,7 @@ import time
 
 from adb_bridge import screenshot
 from board import Board, START_FEN
-from recognizer import recognize_occupancy
+from recognizer import recognize_occupancy, recognize_presence_occupancy
 from state import resolve_legal_sequence_by_occupancy, validate_board
 
 
@@ -84,10 +84,12 @@ def match_live_session(device, path=SESSION_PATH, stable_delay=0.35):
     if data is None:
         return None
     frames = []
+    images = []
     for attempt in range(2):
         image = screenshot(device)
         if image is None:
             return None
+        images.append(image)
         frames.append(recognize_occupancy(image, data["orientation"]))
         if attempt == 0:
             time.sleep(stable_delay)
@@ -97,6 +99,19 @@ def match_live_session(device, path=SESSION_PATH, stable_delay=0.35):
     board = data["board"]
     inferred_moves = resolve_legal_sequence_by_occupancy(
         board, observed, max_plies=2)
+    if inferred_moves is None:
+        # A persistent last-move glow can hide a real glyph from the strong
+        # matcher.  Presence-only frames are accepted only when stable and a
+        # unique 0..2-ply legal sequence explains them with at most one stray
+        # hint/highlight intersection.
+        presence_frames = [
+            recognize_presence_occupancy(image, data["orientation"])
+            for image in images]
+        if (presence_frames[0] is not None and
+                presence_frames[0] == presence_frames[1]):
+            inferred_moves = resolve_legal_sequence_by_occupancy(
+                board, presence_frames[1], max_plies=2,
+                max_mismatches=1)
     if inferred_moves is None:
         return None
     for move in inferred_moves:
