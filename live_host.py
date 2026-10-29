@@ -750,7 +750,7 @@ class LiveController:
         timer = getattr(self, "sandtable_timer", None)
         if timer is not None:
             timer.cancel()
-        delay = (len(plan.get("route", [])) * 0.76 +
+        delay = (len(plan.get("route", [])) * 0.52 +
                  float(plan.get("review_seconds", 6.5)) + 0.15)
         timer = threading.Timer(
             delay, self._close_sandtable, args=("回看窗口结束",))

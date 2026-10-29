@@ -5,12 +5,18 @@ from pathlib import Path
 
 from bailian_tts import available_voices, repair_streaming_wav_header
 from glm_client import SYSTEM_PROMPT
+from live_host import load_settings
 
 
 class LiveServiceTests(unittest.TestCase):
     def test_configured_bailian_voice_is_available(self):
         self.assertIn("Maia", available_voices())
         self.assertIn("longanyang", available_voices())
+
+    def test_commentary_and_sandtable_are_enabled_by_default(self):
+        settings = load_settings()
+        self.assertTrue(settings.commentary_enabled)
+        self.assertTrue(settings.sandtable_enabled)
 
     def test_prompt_prevents_technical_or_invented_commentary(self):
         self.assertIn("绝不编造", SYSTEM_PROMPT)

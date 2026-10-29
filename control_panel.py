@@ -761,7 +761,7 @@ class ControlPanel:
         rank = int(square[1])
         return 15 + file_index * 25, 15 + (9 - rank) * 15
 
-    def _draw_sandtable_step(self, item, number):
+    def _animate_sandtable_step(self, item, number):
         ucci = str(item.get("ucci") or "")
         if len(ucci) != 4:
             return
@@ -770,15 +770,26 @@ class ControlPanel:
         colors = (THEME["jade"], THEME["gold"], THEME["blue"],
                   THEME["purple"], THEME["red"])
         color = colors[(number - 1) % len(colors)]
-        self.sandtable_canvas.create_line(
-            x1, y1, x2, y2, fill=color, width=3,
+        line = self.sandtable_canvas.create_line(
+            x1, y1, x1, y1, fill=color, width=3,
             arrow=tk.LAST, arrowshape=(8, 10, 4))
-        self.sandtable_canvas.create_oval(
-            x2 - 8, y2 - 8, x2 + 8, y2 + 8,
-            fill=color, outline=THEME["console"], width=1)
-        self.sandtable_canvas.create_text(
-            x2, y2, text=str(number), fill="#ffffff",
-            font=("Segoe UI", 7, "bold"))
+
+        def frame(step):
+            ratio = step / 8
+            current_x = x1 + (x2 - x1) * ratio
+            current_y = y1 + (y2 - y1) * ratio
+            self.sandtable_canvas.coords(line, x1, y1, current_x, current_y)
+            if step == 8:
+                self.sandtable_canvas.create_oval(
+                    x2 - 8, y2 - 8, x2 + 8, y2 + 8,
+                    fill=color, outline=THEME["console"], width=1)
+                self.sandtable_canvas.create_text(
+                    x2, y2, text=str(number), fill="#ffffff",
+                    font=("Segoe UI", 7, "bold"))
+
+        for step in range(1, 9):
+            self.sandtable_jobs.append(
+                self.root.after(step * 28, lambda value=step: frame(value)))
 
     def _close_sandtable_ui(self):
         self._cancel_sandtable_jobs()
@@ -823,12 +834,12 @@ class ControlPanel:
 
         for index, item in enumerate(route, 1):
             job = self.root.after(
-                (index - 1) * 760,
+                (index - 1) * 520,
                 lambda move=item, number=index:
-                    self._draw_sandtable_step(move, number))
+                    self._animate_sandtable_step(move, number))
             self.sandtable_jobs.append(job)
         self.sandtable_jobs.append(
-            self.root.after(len(route) * 760 + 150, finish))
+            self.root.after(len(route) * 520 + 120, finish))
 
     @staticmethod
     def _trim_text_widget(widget, max_lines):
@@ -1322,6 +1333,11 @@ class ControlPanel:
         self.watchdog_recovery_started = False
         self.watchdog_reported_at = 0.0
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        if os.name == "nt" and arguments and arguments[0] == "player.py":
+            # Keep recognition/engine/ADB ahead of UI animation, LLM and TTS
+            # when the machine is busy.  ABOVE_NORMAL is deliberate: it gives
+            # the clock-sensitive child preference without starving Windows.
+            flags |= getattr(subprocess, "ABOVE_NORMAL_PRIORITY_CLASS", 0)
         self.process = subprocess.Popen(
             [sys.executable, "-u", *arguments], cwd=HERE, env=environment,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
