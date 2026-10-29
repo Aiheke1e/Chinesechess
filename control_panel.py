@@ -21,7 +21,7 @@ from session_state import (blocked_position_matches, clear_blocked_position,
                            infer_turn_from_standard, match_live_session)
 from cache_cleanup import cleanup_generated_cache, scan_generated_cache
 from bailian_tts import available_voices
-from live_host import LiveController, load_settings
+from live_host import CHESS_SPEECH_KINDS, LiveController, load_settings
 from health_check import collect_readiness, readiness_level
 from runtime_status import (heartbeat_age, read_runtime_status, rotate_log,
                             write_runtime_status)
@@ -731,6 +731,20 @@ class ControlPanel:
         self._trim_text_widget(self.live_log, 1500)
         self.live_log.see("end")
         self.live_log.configure(state="disabled")
+
+    @staticmethod
+    def _commentary_log_label(label, data):
+        """Attach move provenance to UI logs only; never alter spoken text."""
+        data = data or {}
+        number = data.get("解说对应手数")
+        move = str(data.get("解说对应走法") or
+                   data.get("我方计划走法") or "").strip()
+        details = []
+        if number not in (None, ""):
+            details.append(f"第{number}手")
+        if move:
+            details.append(move)
+        return f"{label} · {' · '.join(details)}" if details else label
 
     def _cancel_sandtable_jobs(self, include_close=True):
         for job in self.sandtable_jobs:
@@ -1579,7 +1593,8 @@ class ControlPanel:
                         continue
                     label = labels.get(kind, "系统")
                     if kind == "reply":
-                        spoken_kind = record.get("data", {}).get("kind", "")
+                        reply_data = record.get("data", {})
+                        spoken_kind = reply_data.get("kind", "")
                         label = {
                             "我方走棋解说": "我方讲解",
                             "我方走棋播报": "我方走法",
@@ -1590,11 +1605,19 @@ class ControlPanel:
                             "关键应手解说": "关键应手",
                             "沙盘推演解说": "沙盘解说",
                             "等待期长讲解": "局面讲解",
+                            "QUEEN式等待期解说": "候选取舍",
+                            "应手预判": "应手预判",
+                            "收官解说": "收官解说",
+                            "获胜收官": "获胜收官",
+                            "结算收官": "结算收官",
                             "弹幕回复": "弹幕回复",
                             "礼物答谢": "礼物答谢",
                             "欢迎观众": "欢迎",
                             "自我介绍": "自我介绍",
                         }.get(spoken_kind, "主播台词")
+                        if spoken_kind in CHESS_SPEECH_KINDS:
+                            label = self._commentary_log_label(
+                                label, reply_data)
                     self.append_live(label, text)
                 else:
                     if isinstance(item, str):

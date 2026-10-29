@@ -1246,6 +1246,11 @@ class LiveController:
             self._record_opening_move(notation)
             return
         payload = {"我方计划走法": notation,
+                   # Diagnostic-only metadata.  The control panel displays it
+                   # beside the transcript label; neither field is appended to
+                   # the spoken text or sent to TTS as a separate sentence.
+                   "解说对应手数": event.get("number"),
+                   "解说对应走法": notation,
                    "主播执棋": ("红方" if str(event.get("side")) == "r"
                                 else "黑方" if str(event.get("side")) == "b"
                                 else ""),

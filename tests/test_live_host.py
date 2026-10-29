@@ -492,6 +492,8 @@ class LiveHostTests(unittest.TestCase):
             "speech_token": "key-4", "candidates": [], "pv": []})
         self.assertEqual(prepared[0][0], "关键走棋解说")
         self.assertEqual(prepared[0][1]["speech_token"], "key-4")
+        self.assertEqual(prepared[0][1]["解说对应手数"], 4)
+        self.assertEqual(prepared[0][1]["解说对应走法"], "红方 炮五进四，吃车")
 
     def test_sandtable_triggers_on_big_capture_and_reuses_pv(self):
         prepared = []
