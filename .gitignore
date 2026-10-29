@@ -19,6 +19,7 @@ _*.py
 data/ccpd_source/
 data/ccpd*.zip
 data/ccpd*.partial
+data/*Chinese-Chess-Practical-Dataset*.zip
 data/opening_book*.json
 data/opening_book*.json.gz
 

@@ -4,7 +4,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from opening_library import OpeningLibrary, normalize_notation
+from opening_library import (OpeningLibrary, normalize_notation,
+                             normalize_opening_name)
 from import_ccpd import parse_pgn
 
 
@@ -12,6 +13,8 @@ class OpeningLibraryTests(unittest.TestCase):
     def test_normalizes_traditional_full_width_notation(self):
         self.assertEqual(normalize_notation("黑方 馬８進７"), "马8进7")
         self.assertEqual(normalize_notation("紅方 車一平二"), "车一平二")
+        self.assertEqual(normalize_opening_name("過宮炮"), "过宫炮")
+        self.assertEqual(normalize_opening_name("起傌局"), "起马局")
 
     def test_longest_prefix_lookup(self):
         entries = {

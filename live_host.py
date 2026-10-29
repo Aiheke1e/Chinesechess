@@ -781,17 +781,24 @@ class LiveController:
         moves.append(str(notation))
         announced = getattr(self, "opening_announced", set())
         self.opening_announced = announced
+        library = getattr(self, "opening_library", None)
+        found = library.lookup(moves) if library is not None else None
         for name, text in self._opening_matches(moves):
             if name in announced:
                 continue
             announced.add(name)
+            evidence = {"布局名称": name, "判定依据": list(moves)}
+            if found:
+                evidence.update({
+                    "参考棋谱数": found.get("games"),
+                    "棋谱分类": found.get("name"),
+                    "开局编号": found.get("ecco"),
+                    "资料来源": "CCPD大师棋谱",
+                })
             self.pipeline.submit(
-                2, "开局定式解说",
-                {"布局名称": name, "判定依据": list(moves)},
+                2, "开局定式解说", evidence,
                 direct_text=text)
             return name
-        library = getattr(self, "opening_library", None)
-        found = library.lookup(moves) if library is not None else None
         if found:
             name = str(found.get("name") or "").strip()
             canonical = name.removesuffix("局").removesuffix("系列")

@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 import re
 
-from opening_library import normalize_notation
+from opening_library import normalize_notation, normalize_opening_name
 
 
 HERE = Path(__file__).resolve().parent
@@ -91,8 +91,13 @@ def build_index(source, output, max_plies=24, min_games=2):
             continue
         if len(moves) < 4:
             continue
+        name = normalize_opening_name(opening_name(path, dataset))
+        # CCPD's standalone opening-variation folder is useful for training,
+        # but many files have no specific category beyond the word "开局".
+        # Do not let that generic label reach live commentary.
+        if name in ("开局", "未分类开局"):
+            continue
         accepted += 1
-        name = opening_name(path, dataset)
         ecco = headers.get("ECCO", "").strip()
         example = headers.get("Event", "").strip()
         for depth in range(4, min(int(max_plies), len(moves)) + 1):

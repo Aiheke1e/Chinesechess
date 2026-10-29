@@ -18,6 +18,11 @@ _TRANSLATION = str.maketrans({
     "３": "3", "４": "4", "５": "5", "６": "6", "７": "7",
     "８": "8", "９": "9", "０": "0",
 })
+_NAME_TRANSLATION = str.maketrans({
+    "開": "开", "傌": "马", "馬": "马", "過": "过", "宮": "宫",
+    "飛": "飞", "鉤": "钩", "門": "门", "佈": "布", "風": "风",
+    "順": "顺", "邊": "边", "進": "进", "車": "车", "後": "后",
+})
 
 
 def normalize_notation(value):
@@ -25,6 +30,10 @@ def normalize_notation(value):
     text = str(value or "").translate(_TRANSLATION)
     text = re.sub(r"^(红方|黑方)\s*", "", text.strip())
     return re.sub(r"\s+", "", text)
+
+
+def normalize_opening_name(value):
+    return str(value or "").translate(_NAME_TRANSLATION).strip()
 
 
 class OpeningLibrary:
