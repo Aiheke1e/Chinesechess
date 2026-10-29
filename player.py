@@ -25,6 +25,8 @@ from runtime_status import write_runtime_status
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(HERE, "player_config.json")
 LIVE_CFG_PATH = os.path.join(HERE, "live_config.json")
+SPEECH_PREPARING_PATH = os.path.join(HERE, "work", "speech_preparing.json")
+SPEECH_STARTED_PATH = os.path.join(HERE, "work", "speech_started.json")
 DEFAULT_CFG = {
     "my_color": "r",
     "orientation": "auto",
@@ -76,16 +78,40 @@ def load_cfg():
     return c
 
 
-def speech_lead_seconds():
-    """Give preheated TTS a small head start without slowing silent runs."""
+def _read_speech_marker(path):
+    try:
+        with open(path, encoding="utf-8") as stream:
+            return json.load(stream)
+    except (OSError, ValueError):
+        return {}
+
+
+def wait_for_speech_start(token, plan_timeout=0.25, audio_timeout=2.8):
+    """Wait only for a planned normal line, and stop as soon as audio starts."""
     try:
         with open(LIVE_CFG_PATH, encoding="utf-8") as stream:
             live = json.load(stream)
-        if live.get("commentary_enabled") and live.get("speech_enabled"):
-            return 0.9
     except (OSError, ValueError):
-        pass
-    return 0.0
+        return False
+    if not (live.get("commentary_enabled") and live.get("speech_enabled")):
+        return False
+    deadline = time.monotonic() + max(0.0, plan_timeout)
+    plan = {}
+    while time.monotonic() < deadline:
+        plan = _read_speech_marker(SPEECH_PREPARING_PATH)
+        if plan.get("token") == token:
+            break
+        time.sleep(0.02)
+    if (plan.get("token") != token or not plan.get("enabled") or
+            plan.get("deferred")):
+        return False
+    deadline = time.monotonic() + max(0.0, audio_timeout)
+    while time.monotonic() < deadline:
+        started = _read_speech_marker(SPEECH_STARTED_PATH)
+        if started.get("token") == token:
+            return True
+        time.sleep(0.03)
+    return False
 
 
 def read_squares(device, orientation="auto"):
@@ -653,9 +679,8 @@ def main():
                         from_index=mv[0], to_index=mv[1],
                         from_screen=from_xy, to_screen=to_xy,
                         orientation=orientation)
-            lead = speech_lead_seconds()
-            if lead:
-                time.sleep(lead)
+            if wait_for_speech_start(speech_token):
+                print("[语音同步] 解说已起声，现在执行棋盘点击。", flush=True)
 
             confirmation_seconds = 0.0
             if cfg["dry_run"]:

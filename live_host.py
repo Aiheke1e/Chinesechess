@@ -27,6 +27,7 @@ CONFIG_PATH = HERE / "live_config.json"
 CHESS_EVENTS = HERE / "work" / "events.jsonl"
 LIVE_LOG = HERE / "work" / "live_events.jsonl"
 SPEECH_STARTED = HERE / "work" / "speech_started.json"
+SPEECH_PREPARING = HERE / "work" / "speech_preparing.json"
 CHESS_SPEECH_KINDS = {
     "我方走棋播报", "我方走棋解说", "对手走棋播报", "对手走棋解说",
     "关键走棋解说", "关键应手解说", "等待期长讲解", "应手预判",
@@ -202,6 +203,24 @@ class SpeechPipeline:
             pass
 
     @staticmethod
+    def _mark_speech_preparing(payload, enabled):
+        token = str(payload.get("speech_token") or "").strip()
+        if not token:
+            return
+        try:
+            SPEECH_PREPARING.parent.mkdir(parents=True, exist_ok=True)
+            temporary = SPEECH_PREPARING.with_suffix(".tmp")
+            temporary.write_text(json.dumps({
+                "token": token,
+                "enabled": bool(enabled),
+                "deferred": bool(payload.get("沙盘路线")),
+                "created": time.time(),
+            }, ensure_ascii=False), encoding="utf-8")
+            os.replace(temporary, SPEECH_PREPARING)
+        except OSError:
+            pass
+
+    @staticmethod
     def _clean_text(text):
         return re.sub(r"[\r\n*_#`]+", "", str(text)).strip()
 
@@ -260,6 +279,7 @@ class SpeechPipeline:
             older = list(self.prepared.values())
             self.prepared.clear()
             self.prepared[token] = state
+        self._mark_speech_preparing(payload, self.settings.speech_enabled)
         for old in older:
             old["approved"] = False
             old["decision"].set()
