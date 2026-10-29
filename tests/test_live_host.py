@@ -294,8 +294,9 @@ class LiveHostTests(unittest.TestCase):
         spoken = [item for item in calls if item[0] not in ("cancel",)]
         self.assertEqual(spoken, [])
 
-    def test_only_important_opponent_capture_gets_commentary(self):
+    def test_important_opponent_capture_does_not_block_own_move_audio(self):
         submitted = []
+        notes = []
 
         class Pipeline:
             def cancel_idle(self):
@@ -308,14 +309,17 @@ class LiveHostTests(unittest.TestCase):
         controller.last_engine_score = None
         controller.opponent_move_count = 0
         controller.pipeline = Pipeline()
-        controller._notify = lambda *args: None
+        controller._notify = lambda kind, text, data=None: notes.append(
+            (kind, text, data or {}))
         controller.submit_chess({
             "event": "opponent_move", "notation": "黑方 马8进7"})
         controller.submit_chess({
             "event": "opponent_move", "notation": "黑方 炮5进4，吃马"})
-        self.assertEqual(len(submitted), 1)
-        self.assertEqual(submitted[0][0], "关键应手解说")
-        self.assertIn("马", submitted[0][1])
+        self.assertEqual(submitted, [])
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0][0], "chess_note")
+        self.assertIn("马", notes[0][1])
+        self.assertFalse(notes[0][2]["spoken"])
 
     def test_plain_move_uses_piece_specific_streamer_wording(self):
         text = LiveController._casual_move_text("红方 马二进三", 2)

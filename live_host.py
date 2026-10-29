@@ -1183,11 +1183,11 @@ class LiveController:
             self.quiet_move_count = getattr(self, "quiet_move_count", 0) + 1
             important_text = self._important_reply_text(notation)
             if important_text:
-                self.pipeline.submit(
-                    1, "关键应手解说",
-                    {"识别走法": notation, "重要原因": "吃子",
-                     "要求": "只讲这手对局面的影响，不必复述完整走法"},
-                    direct_text=important_text)
+                # Keep the tactical note visible, but do not let a slow TTS
+                # request for the opponent's previous move spill over our
+                # next active move.  Own-move speech has the audio channel.
+                self._notify("chess_note", important_text, {
+                    "notation": notation, "spoken": False})
             self._record_opening_move(notation)
             return
         payload = {"我方计划走法": notation,
