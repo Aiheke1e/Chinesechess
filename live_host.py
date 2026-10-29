@@ -28,9 +28,20 @@ LIVE_LOG = HERE / "work" / "live_events.jsonl"
 SPEECH_STARTED = HERE / "work" / "speech_started.json"
 CHESS_SPEECH_KINDS = {
     "我方走棋播报", "我方走棋解说", "对手走棋播报", "对手走棋解说",
-    "等待期长讲解", "收官解说", "获胜收官", "结算收官",
+    "关键走棋解说", "关键应手解说", "等待期长讲解",
+    "收官解说", "获胜收官", "结算收官",
 }
-OWN_SPEECH_KINDS = {"我方走棋播报", "获胜收官", "结算收官"}
+OWN_SPEECH_KINDS = {
+    "我方走棋播报", "关键走棋解说",
+    "获胜收官", "结算收官",
+}
+
+COMMENTARY_DENSITY = {
+    # importance threshold, silence filler seconds, quiet moves before filler
+    "安静": (8, 26.0, 5),
+    "自然": (5, 16.0, 3),
+    "热闹": (3, 9.0, 2),
+}
 
 
 def normalize_room(value):
@@ -62,6 +73,7 @@ class LiveSettings:
     gift_enabled: bool = True
     speech_enabled: bool = False
     commentary_enabled: bool = True
+    commentary_density: str = "自然"
 
 
 def load_settings():
@@ -515,6 +527,10 @@ class LiveController:
         self.last_engine_score = None
         self.opponent_move_count = 0
         self.victory_count = 0
+        self.quiet_move_count = 0
+        self.last_chess_spoken_at = time.monotonic()
+        self.pending_move_events = {}
+        self.closing_announced = False
         self.log_lock = threading.Lock()
         self.gift_lock = threading.Lock()
         self.pending_gifts = {}
@@ -539,6 +555,10 @@ class LiveController:
             self.notify(record)
         except Exception:
             pass
+        spoken_kind = str((data or {}).get("kind") or "")
+        if kind == "reply" and spoken_kind in CHESS_SPEECH_KINDS:
+            self.last_chess_spoken_at = time.monotonic()
+            self.quiet_move_count = 0
 
     def configure(self, **values):
         was_speech_enabled = self.settings.speech_enabled
@@ -546,6 +566,8 @@ class LiveController:
             if hasattr(self.settings, key):
                 setattr(self.settings, key, value)
         self.settings.cooldown = max(0.0, min(30.0, float(self.settings.cooldown)))
+        if self.settings.commentary_density not in COMMENTARY_DENSITY:
+            self.settings.commentary_density = "自然"
         if self.settings.voice not in available_voices():
             self.settings.voice = available_voices()[0]
         save_settings(self.settings)
@@ -585,6 +607,77 @@ class LiveController:
         self.last_engine_score = score
         return (abs(score) >= 600 or
                 (previous is not None and abs(score - previous) >= 180))
+
+    def _density_rule(self):
+        density = getattr(getattr(self, "settings", None),
+                          "commentary_density", "自然")
+        return COMMENTARY_DENSITY.get(density, COMMENTARY_DENSITY["自然"])
+
+    def _commentary_importance(self, event):
+        """Score whether a move deserves airtime; update score trend once."""
+        notation = str(event.get("notation") or "")
+        importance = 0
+        reasons = []
+        if "吃" in notation:
+            captured = notation.rsplit("吃", 1)[-1][:1]
+            value = {"车": 9, "马": 7, "炮": 7, "相": 5, "象": 5,
+                     "仕": 5, "士": 5, "兵": 4, "卒": 4}.get(captured, 6)
+            importance = max(importance, value)
+            reasons.append("吃子")
+        analysis = event.get("analysis") or {}
+        score_type = analysis.get("score_type")
+        try:
+            score = int(analysis.get("score", 0))
+        except (TypeError, ValueError):
+            score = 0
+        if event.get("number") == 1:
+            self.last_engine_score = None
+            self.closing_announced = False
+        previous = getattr(self, "last_engine_score", None)
+        if score_type in ("cp", "mate"):
+            self.last_engine_score = score
+        if score_type == "mate":
+            importance = 10
+            reasons.append("杀棋")
+        elif score_type == "cp":
+            if abs(score) >= 600:
+                importance = max(importance, 8)
+                reasons.append("胜负趋势")
+            elif abs(score) >= 300:
+                importance = max(importance, 5)
+                reasons.append("优劣明显")
+            if previous is not None:
+                swing = abs(score - previous)
+                if swing >= 180:
+                    importance = max(importance, 7)
+                    reasons.append("局势翻转")
+                elif swing >= 90:
+                    importance = max(importance, 4)
+                    reasons.append("局势波动")
+        summary = str(event.get("summary") or "")
+        if any(word in summary for word in ("将死", "杀棋", "将军", "危险")):
+            importance = max(importance, 8)
+            reasons.append("战术危险")
+        return importance, list(dict.fromkeys(reasons))
+
+    def _needs_silence_filler(self):
+        _, silence_seconds, quiet_limit = self._density_rule()
+        quiet_moves = getattr(self, "quiet_move_count", 0)
+        last_spoken = getattr(self, "last_chess_spoken_at", time.monotonic())
+        return (quiet_moves >= quiet_limit or
+                time.monotonic() - last_spoken >= silence_seconds)
+
+    @classmethod
+    def _important_reply_text(cls, notation):
+        move = cls._spoken_notation(notation)
+        captured = move.rsplit("吃", 1)[-1][:1] if "吃" in move else ""
+        if captured == "车":
+            return "大车丢了，局面得重新算。"
+        if captured in ("马", "炮"):
+            return f"这手拿下{captured}，局面有变化了。"
+        if "吃" in move:
+            return "这手先吃到东西，得重新盘一下。"
+        return ""
 
     @staticmethod
     def _spoken_notation(notation):
@@ -707,6 +800,8 @@ class LiveController:
             return
         if event.get("event") == "game_over":
             self.pipeline.cancel_idle()
+            self.pending_move_events = {}
+            self.closing_announced = False
             if event.get("result") == "won":
                 self.pipeline.submit(
                     0, "获胜收官", event,
@@ -726,31 +821,38 @@ class LiveController:
             return
         if event.get("event") == "move_selected":
             self.pipeline.cancel_idle()
-            payload = {
-                "当前局面": event.get("fen_before"),
-                "当前走子": notation,
-                "speech_token": event.get("speech_token"),
-                "要求": "只说这步直接意图；每句20字内；必须自然带出走法",
-            }
-            self.pipeline.prepare_move(
-                "我方走棋播报", payload,
-                direct_text=self._high_move_text(notation))
+            token = str(event.get("speech_token") or "")
+            if token:
+                pending = getattr(self, "pending_move_events", None)
+                if pending is None:
+                    pending = self.pending_move_events = {}
+                pending[token] = dict(event)
+                if len(pending) > 4:
+                    oldest = next(iter(pending))
+                    pending.pop(oldest, None)
             return
         if event.get("event") == "move_applied":
             self.pipeline.commit_move(event.get("speech_token"))
+            getattr(self, "pending_move_events", {}).pop(
+                str(event.get("speech_token") or ""), None)
             return
         if event.get("event") in ("move_rejected", "move_preview"):
             self.pipeline.discard_move(event.get("speech_token"))
+            getattr(self, "pending_move_events", {}).pop(
+                str(event.get("speech_token") or ""), None)
             return
         if event.get("event") == "opponent_move":
             self.pipeline.cancel_idle()
             self.opponent_move_count = getattr(
                 self, "opponent_move_count", 0) + 1
-            payload = {"识别走法": notation,
-                       "要求": "三秒内只播棋形动作，不使用阵营称谓"}
-            self.pipeline.play_high(
-                "对面落子短播报", payload,
-                direct_text=self._high_move_text(notation))
+            self.quiet_move_count = getattr(self, "quiet_move_count", 0) + 1
+            important_text = self._important_reply_text(notation)
+            if important_text:
+                self.pipeline.submit(
+                    1, "关键应手解说",
+                    {"识别走法": notation, "重要原因": "吃子",
+                     "要求": "只讲这手对局面的影响，不必复述完整走法"},
+                    direct_text=important_text)
             return
         payload = {"我方计划走法": notation,
                    "speech_token": event.get("speech_token"),
@@ -762,30 +864,47 @@ class LiveController:
                         "短变化": item.get("line", [])}
                        for item in event.get("candidates", [])[:3]],
                    "预测路线": [item.get("notation") for item in event.get("pv", [])[:4]]}
-        if event.get("speech_token"):
-            # The short call is already preheated. A separate explanation is
-            # allowed to play only in the explicit opponent-wait window.
+        near_win, forced_win = self._is_near_win(event)
+        importance, reasons = self._commentary_importance(event)
+        threshold, _, _ = self._density_rule()
+        token = str(event.get("speech_token") or "")
+        if near_win and not getattr(self, "closing_announced", False):
+            importance = max(importance, 8)
+            reasons.append("收官")
+            self.closing_announced = True
+        elif (near_win and getattr(self, "closing_announced", False) and
+              importance <= 8 and set(reasons).issubset({"胜负趋势"})):
+            # Avoid repeating the same "almost won" line every move.  A later
+            # capture, tactical swing or mate signal can still break through.
+            importance = 0
+        if importance >= threshold:
+            self.quiet_move_count = 0
+            important_payload = {
+                **payload,
+                "讲解重点": reasons or ["局势变化"],
+                "要求": ("像主播临场点评，只讲这手为什么值得注意；"
+                         "不必报完整棋谱，不用我方或对方开头；最多两句")
+            }
+            direct = None
+            kind = "关键走棋解说"
+            if near_win:
+                kind = "收官解说"
+                direct = self._closing_move_text(
+                    notation, event.get("number", 0), forced_win)
+            if token:
+                self.pipeline.prepare_move(kind, important_payload,
+                                           direct_text=direct)
+            else:
+                self.pipeline.submit(1, kind, important_payload,
+                                     direct_text=direct)
+            return
+        self.quiet_move_count = getattr(self, "quiet_move_count", 0) + 1
+        if self._needs_silence_filler():
             self.pipeline.prepare_idle({
                 **payload,
-                "要求": ("作为等待落子时的自然补充，讲清刚才落子的意图和一条后续思路；"
-                         "不用阵营称谓，不复述评分、深度或技术字段；控制在三句内"),
+                "要求": ("现在是等棋空档，不要念走法；用两句口语讲当前的主要思路"
+                         "和接下来值得看的一个点，不念评分或技术字段"),
             })
-            return
-        near_win, forced_win = self._is_near_win(event)
-        if near_win:
-            self.pipeline.submit(
-                1, "收官解说", payload,
-                direct_text=self._closing_move_text(
-                    notation, event.get("number", 0), forced_win))
-        elif self._complex_chess_event(event):
-            self.pipeline.submit(1, "我方走棋解说", payload)
-        elif not event.get("speech_token"):
-            # Compatibility with event logs produced before move_selected
-            # gained the speech-sync token.
-            self.pipeline.submit(
-                1, "我方走棋播报", payload,
-                direct_text=self._casual_move_text(
-                    notation, event.get("number", 0)))
 
     def receive(self, event, force=False):
         kind = event.get("type", "chat")

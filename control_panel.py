@@ -148,6 +148,7 @@ class ControlPanel:
         self.live_room = tk.StringVar(value=live.room)
         self.live_model = tk.StringVar(value=live.model)
         self.live_voice = tk.StringVar(value=live.voice)
+        self.live_density = tk.StringVar(value=live.commentary_density)
         self.live_prefix = tk.StringVar(value=live.prefix)
         self.live_cooldown = tk.StringVar(value=str(live.cooldown))
         self.live_user = tk.StringVar(value="测试观众")
@@ -411,12 +412,16 @@ class ControlPanel:
         ttk.Label(options, text="音色", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Combobox(options, textvariable=self.live_voice, state="readonly",
                      values=available_voices(), width=10).grid(row=0, column=1, padx=(5, 10))
-        ttk.Label(options, text="弹幕前缀", style="Muted.TLabel").grid(row=0, column=2, sticky="w")
-        ttk.Entry(options, textvariable=self.live_prefix, width=12).grid(row=0, column=3, padx=(5, 10))
-        ttk.Label(options, text="间隔", style="Muted.TLabel").grid(row=0, column=4, sticky="w")
-        ttk.Entry(options, textvariable=self.live_cooldown, width=5).grid(row=0, column=5, padx=(5, 8))
-        ttk.Checkbutton(options, text="欢迎进场", variable=self.live_welcome).grid(row=0, column=6, padx=5)
-        ttk.Checkbutton(options, text="礼物答谢", variable=self.live_gifts).grid(row=0, column=7, padx=5)
+        ttk.Label(options, text="解说密度", style="Muted.TLabel").grid(row=0, column=2, sticky="w")
+        ttk.Combobox(options, textvariable=self.live_density, state="readonly",
+                     values=("安静", "自然", "热闹"), width=6).grid(
+                         row=0, column=3, padx=(5, 10))
+        ttk.Label(options, text="弹幕前缀", style="Muted.TLabel").grid(row=0, column=4, sticky="w")
+        ttk.Entry(options, textvariable=self.live_prefix, width=10).grid(row=0, column=5, padx=(5, 10))
+        ttk.Label(options, text="间隔", style="Muted.TLabel").grid(row=0, column=6, sticky="w")
+        ttk.Entry(options, textvariable=self.live_cooldown, width=4).grid(row=0, column=7, padx=(5, 8))
+        ttk.Checkbutton(options, text="欢迎进场", variable=self.live_welcome).grid(row=0, column=8, padx=5)
+        ttk.Checkbutton(options, text="礼物答谢", variable=self.live_gifts).grid(row=0, column=9, padx=5)
 
         text_style = dict(bg=THEME["editor"], fg=THEME["text"],
                           insertbackground=THEME["text"],
@@ -705,6 +710,7 @@ class ControlPanel:
             "room": self.live_room.get().strip(),
             "model": self.live_model.get().strip() or "glm-4-flash",
             "voice": self.live_voice.get(),
+            "commentary_density": self.live_density.get(),
             "prefix": self.live_prefix.get().strip(),
             "cooldown": cooldown,
             "persona": self.persona_text.get("1.0", "end").strip(),
@@ -753,7 +759,7 @@ class ControlPanel:
         if not self.save_live_settings(quiet=True):
             return
         if self.live_commentary.get():
-            self.append_live("系统", "直播解说已开启，棋局会生成主播台词。")
+            self.append_live("系统", "直播解说已开启，只讲关键棋和等棋空档。")
         else:
             self.live_controller.pipeline.clear(stop_audio=False)
             self.append_live("系统", "直播解说已关闭，只自动下棋，不调用棋局语言模型和 TTS。")
@@ -1352,6 +1358,8 @@ class ControlPanel:
                             "对手走棋解说": "对手讲解",
                             "对手走棋播报": "对手走法",
                             "对面落子短播报": "落子播报",
+                            "关键走棋解说": "关键棋解说",
+                            "关键应手解说": "关键应手",
                             "等待期长讲解": "局面讲解",
                             "弹幕回复": "弹幕回复",
                             "礼物答谢": "礼物答谢",

@@ -9,5 +9,6 @@
   "welcome_enabled": true,
   "gift_enabled": true,
   "speech_enabled": false,
-  "commentary_enabled": false
+  "commentary_enabled": false,
+  "commentary_density": "自然"
 }

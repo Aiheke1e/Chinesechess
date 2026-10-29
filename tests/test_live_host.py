@@ -38,7 +38,7 @@ class LiveHostTests(unittest.TestCase):
         self.assertEqual(pipeline.jobs[0][4], "对手走棋播报")
         play_mock.assert_not_called()
 
-    def test_move_selected_starts_two_phase_prewarm(self):
+    def test_move_selected_waits_for_importance_analysis(self):
         prepared = []
 
         class Pipeline:
@@ -54,10 +54,8 @@ class LiveHostTests(unittest.TestCase):
         controller.submit_chess({
             "event": "move_selected", "number": 2,
             "notation": "红方 马二进三", "speech_token": "move-2"})
-        self.assertEqual(prepared[0][0], "我方走棋播报")
-        self.assertEqual(prepared[0][1]["speech_token"], "move-2")
-        self.assertIn("马二进三", prepared[0][1]["当前走子"])
-        self.assertIn("马二进三", prepared[0][2])
+        self.assertEqual(prepared, [])
+        self.assertIn("move-2", controller.pending_move_events)
 
     def test_confirmed_move_plays_preheated_audio(self):
         tts_ready = threading.Event()
@@ -173,7 +171,7 @@ class LiveHostTests(unittest.TestCase):
             "notation": "红方 马二进三", "speech_token": "off"})
         self.assertEqual(submitted, [])
 
-    def test_narrates_both_own_and_opponent_moves(self):
+    def test_ordinary_own_and_opponent_moves_stay_silent(self):
         calls = []
 
         class Pipeline:
@@ -202,20 +200,17 @@ class LiveHostTests(unittest.TestCase):
                             "line": ["红方 兵五进一"]}], "pv": []})
         controller.submit_chess({
             "event": "opponent_move", "notation": "黑方 卒5进1"})
-        self.assertTrue(any(item[0] == "idle" for item in calls))
-        high = [item for item in calls if item[0] == "对面落子短播报"]
-        self.assertEqual(len(high), 1)
-        self.assertIn("卒5进1", high[0][1])
-        self.assertNotIn("对手", high[0][1])
+        spoken = [item for item in calls if item[0] not in ("cancel",)]
+        self.assertEqual(spoken, [])
 
-    def test_every_opponent_move_gets_high_priority_call(self):
+    def test_only_important_opponent_capture_gets_commentary(self):
         submitted = []
 
         class Pipeline:
             def cancel_idle(self):
                 pass
 
-            def play_high(self, kind, payload, direct_text=None):
+            def submit(self, priority, kind, payload, direct_text=None):
                 submitted.append((kind, direct_text))
 
         controller = object.__new__(LiveController)
@@ -226,10 +221,10 @@ class LiveHostTests(unittest.TestCase):
         controller.submit_chess({
             "event": "opponent_move", "notation": "黑方 马8进7"})
         controller.submit_chess({
-            "event": "opponent_move", "notation": "黑方 卒7进1"})
-        self.assertEqual(len(submitted), 2)
-        self.assertIn("马8进7", submitted[0][1])
-        self.assertIn("卒7进1", submitted[1][1])
+            "event": "opponent_move", "notation": "黑方 炮5进4，吃马"})
+        self.assertEqual(len(submitted), 1)
+        self.assertEqual(submitted[0][0], "关键应手解说")
+        self.assertIn("马", submitted[0][1])
 
     def test_plain_move_uses_piece_specific_streamer_wording(self):
         text = LiveController._casual_move_text("红方 马二进三", 2)
@@ -261,6 +256,32 @@ class LiveHostTests(unittest.TestCase):
         self.assertIn("车八进七", submitted[0][1])
         self.assertTrue(any(phrase in submitted[0][1] for phrase in (
             "棋没结束", "还差个句号", "别在终点线", "香槟")))
+
+    def test_near_win_line_is_not_repeated_every_move(self):
+        submitted = []
+
+        class Pipeline:
+            def submit(self, priority, kind, payload, direct_text=None):
+                submitted.append((kind, direct_text))
+
+            def prepare_idle(self, payload):
+                pass
+
+        controller = object.__new__(LiveController)
+        controller.settings = LiveSettings(commentary_density="自然")
+        controller.last_engine_score = None
+        controller.last_chess_spoken_at = time.monotonic()
+        controller.quiet_move_count = 0
+        controller.closing_announced = False
+        controller.pipeline = Pipeline()
+        controller._notify = lambda *args: None
+        for number, score in ((8, 720), (9, 740)):
+            controller.submit_chess({
+                "event": "engine_analysis", "number": number,
+                "notation": "红方 车八进一", "summary": "我方明显优势",
+                "analysis": {"score_type": "cp", "score": score},
+                "candidates": [], "pv": []})
+        self.assertEqual(len(submitted), 1)
 
     def test_confirmed_win_uses_rotating_victory_line(self):
         submitted = []
@@ -318,7 +339,26 @@ class LiveHostTests(unittest.TestCase):
             "notation": "红方 炮五进四，吃马", "summary": "我方稍优",
             "analysis": {"score_type": "cp", "score": 120},
             "candidates": [], "pv": []})
-        self.assertEqual(submitted, [("我方走棋解说", None)])
+        self.assertEqual(submitted, [("关键走棋解说", None)])
+
+    def test_key_own_move_is_preheated_before_click_confirmation(self):
+        prepared = []
+
+        class Pipeline:
+            def prepare_move(self, kind, payload, direct_text=None):
+                prepared.append((kind, payload, direct_text))
+
+        controller = object.__new__(LiveController)
+        controller.last_engine_score = None
+        controller.pipeline = Pipeline()
+        controller._notify = lambda *args: None
+        controller.submit_chess({
+            "event": "engine_analysis", "number": 4,
+            "notation": "红方 炮五进四，吃车", "summary": "红方占优",
+            "analysis": {"score_type": "cp", "score": 420},
+            "speech_token": "key-4", "candidates": [], "pv": []})
+        self.assertEqual(prepared[0][0], "关键走棋解说")
+        self.assertEqual(prepared[0][1]["speech_token"], "key-4")
 
     def test_speech_worker_survives_idle_timeouts(self):
         pipeline = SpeechPipeline(
