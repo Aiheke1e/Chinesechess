@@ -29,10 +29,10 @@ SPEECH_STARTED = HERE / "work" / "speech_started.json"
 CHESS_SPEECH_KINDS = {
     "我方走棋播报", "我方走棋解说", "对手走棋播报", "对手走棋解说",
     "关键走棋解说", "关键应手解说", "等待期长讲解",
-    "收官解说", "获胜收官", "结算收官",
+    "沙盘推演解说", "收官解说", "获胜收官", "结算收官",
 }
 OWN_SPEECH_KINDS = {
-    "我方走棋播报", "关键走棋解说",
+    "我方走棋播报", "关键走棋解说", "沙盘推演解说",
     "获胜收官", "结算收官",
 }
 
@@ -74,6 +74,7 @@ class LiveSettings:
     speech_enabled: bool = False
     commentary_enabled: bool = True
     commentary_density: str = "自然"
+    sandtable_enabled: bool = True
 
 
 def load_settings():
@@ -531,6 +532,8 @@ class LiveController:
         self.last_chess_spoken_at = time.monotonic()
         self.pending_move_events = {}
         self.closing_announced = False
+        self.sandtable_active = False
+        self.sandtable_timer = None
         self.log_lock = threading.Lock()
         self.gift_lock = threading.Lock()
         self.pending_gifts = {}
@@ -562,6 +565,8 @@ class LiveController:
 
     def configure(self, **values):
         was_speech_enabled = self.settings.speech_enabled
+        was_sandtable_enabled = self.settings.sandtable_enabled
+        was_commentary_enabled = self.settings.commentary_enabled
         for key, value in values.items():
             if hasattr(self.settings, key):
                 setattr(self.settings, key, value)
@@ -573,6 +578,10 @@ class LiveController:
         save_settings(self.settings)
         if was_speech_enabled and not self.settings.speech_enabled:
             self.pipeline.stop_audio()
+        if ((was_sandtable_enabled and not self.settings.sandtable_enabled) or
+                (was_commentary_enabled and
+                 not self.settings.commentary_enabled)):
+            self._close_sandtable("功能已关闭")
         self._notify("status", "互动设置已保存")
 
     def enable(self):
@@ -678,6 +687,76 @@ class LiveController:
         if "吃" in move:
             return "这手先吃到东西，得重新盘一下。"
         return ""
+
+    @staticmethod
+    def _kill_confidence(event):
+        """Return a conservative attack confidence, not a fake engine probability."""
+        analysis = event.get("analysis") or {}
+        try:
+            score = int(analysis.get("score", 0))
+            depth = int(analysis.get("depth", 0))
+        except (TypeError, ValueError):
+            return 0
+        if analysis.get("score_type") == "mate":
+            return 100 if score > 0 else 0
+        if analysis.get("score_type") != "cp" or score <= 0:
+            return 0
+        # A cp score alone is not a probability.  Require useful depth and a
+        # very large stable advantage, then expose it as "kill confidence".
+        confidence = round(50 + max(0, score - 200) / 20)
+        if depth < 12:
+            confidence -= 12
+        return max(0, min(95, confidence))
+
+    @classmethod
+    def _sandtable_plan(cls, event):
+        notation = str(event.get("notation") or "")
+        big_capture = any(f"吃{piece}" in notation for piece in "车马炮")
+        confidence = cls._kill_confidence(event)
+        route = []
+        for item in event.get("pv", [])[:5]:
+            ucci = str(item.get("ucci") or "")
+            text = str(item.get("notation") or "")
+            if re.fullmatch(r"[a-i][0-9][a-i][0-9]", ucci) and text:
+                route.append({"ucci": ucci, "notation": text})
+        if len(route) < 3 or not (big_capture or confidence >= 80):
+            return None
+        reasons = []
+        if big_capture:
+            reasons.append("吃掉车马炮大子")
+        if confidence >= 80:
+            reasons.append(f"杀势置信度 {confidence}%")
+        return {
+            "action": "show",
+            "title": "关键战术沙盘",
+            "reason": " · ".join(reasons),
+            "confidence": confidence,
+            "route": route,
+            "review_seconds": 6.5,
+            "speech_token": event.get("speech_token"),
+        }
+
+    def _close_sandtable(self, reason):
+        timer = getattr(self, "sandtable_timer", None)
+        if timer is not None:
+            timer.cancel()
+            self.sandtable_timer = None
+        if getattr(self, "sandtable_active", False):
+            self.sandtable_active = False
+            self._notify("sandtable", "沙盘已收起", {
+                "action": "close", "reason": reason})
+
+    def _schedule_sandtable_close(self, plan):
+        timer = getattr(self, "sandtable_timer", None)
+        if timer is not None:
+            timer.cancel()
+        delay = (len(plan.get("route", [])) * 0.76 +
+                 float(plan.get("review_seconds", 6.5)) + 0.15)
+        timer = threading.Timer(
+            delay, self._close_sandtable, args=("回看窗口结束",))
+        timer.daemon = True
+        self.sandtable_timer = timer
+        timer.start()
 
     @staticmethod
     def _spoken_notation(notation):
@@ -800,6 +879,7 @@ class LiveController:
             return
         if event.get("event") == "game_over":
             self.pipeline.cancel_idle()
+            self._close_sandtable("对局结束")
             self.pending_move_events = {}
             self.closing_announced = False
             if event.get("result") == "won":
@@ -820,6 +900,9 @@ class LiveController:
         if not notation:
             return
         if event.get("event") == "move_selected":
+            # This event is emitted before move_command/ADB, so it is the hard
+            # lifecycle boundary requested for the previous sandbox.
+            self._close_sandtable("下一次主动落子前")
             self.pipeline.cancel_idle()
             token = str(event.get("speech_token") or "")
             if token:
@@ -843,6 +926,13 @@ class LiveController:
             return
         if event.get("event") == "opponent_move":
             self.pipeline.cancel_idle()
+            if getattr(self, "sandtable_active", False):
+                timer = getattr(self, "sandtable_timer", None)
+                if timer is not None:
+                    timer.cancel()
+                    self.sandtable_timer = None
+                self._notify("sandtable", "实战落子已出现，沙盘暂停刷新", {
+                    "action": "pause", "notation": notation})
             self.opponent_move_count = getattr(
                 self, "opponent_move_count", 0) + 1
             self.quiet_move_count = getattr(self, "quiet_move_count", 0) + 1
@@ -864,8 +954,21 @@ class LiveController:
                         "短变化": item.get("line", [])}
                        for item in event.get("candidates", [])[:3]],
                    "预测路线": [item.get("notation") for item in event.get("pv", [])[:4]]}
+        sandtable = (self._sandtable_plan(event)
+                     if getattr(getattr(self, "settings", None),
+                                "sandtable_enabled", True) else None)
+        if sandtable:
+            self.sandtable_active = True
+            self._notify("sandtable", sandtable["reason"], sandtable)
+            self._schedule_sandtable_close(sandtable)
+            payload["沙盘路线"] = [
+                item["notation"] for item in sandtable["route"]]
+            payload["沙盘触发"] = sandtable["reason"]
         near_win, forced_win = self._is_near_win(event)
         importance, reasons = self._commentary_importance(event)
+        if sandtable:
+            importance = max(importance, 10)
+            reasons.append("沙盘推演")
         threshold, _, _ = self._density_rule()
         token = str(event.get("speech_token") or "")
         if near_win and not getattr(self, "closing_announced", False):
@@ -886,11 +989,14 @@ class LiveController:
                          "不必报完整棋谱，不用我方或对方开头；最多两句")
             }
             direct = None
-            kind = "关键走棋解说"
+            kind = "沙盘推演解说" if sandtable else "关键走棋解说"
             if near_win:
-                kind = "收官解说"
-                direct = self._closing_move_text(
-                    notation, event.get("number", 0), forced_win)
+                if sandtable:
+                    kind = "沙盘推演解说"
+                else:
+                    kind = "收官解说"
+                    direct = self._closing_move_text(
+                        notation, event.get("number", 0), forced_win)
             if token:
                 self.pipeline.prepare_move(kind, important_payload,
                                            direct_text=direct)
@@ -1036,6 +1142,7 @@ class LiveController:
             self._notify("connection", "已断开抖音直播间")
 
     def close(self):
+        self._close_sandtable("程序关闭")
         self.disconnect(silent=True)
         with self.gift_lock:
             for timer in self.gift_timers.values():

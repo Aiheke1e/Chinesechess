@@ -10,5 +10,6 @@
   "gift_enabled": true,
   "speech_enabled": false,
   "commentary_enabled": false,
-  "commentary_density": "自然"
+  "commentary_density": "自然",
+  "sandtable_enabled": true
 }

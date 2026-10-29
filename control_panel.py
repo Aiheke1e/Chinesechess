@@ -157,6 +157,7 @@ class ControlPanel:
         self.live_gifts = tk.BooleanVar(value=live.gift_enabled)
         self.live_speech = tk.BooleanVar(value=live.speech_enabled)
         self.live_commentary = tk.BooleanVar(value=live.commentary_enabled)
+        self.live_sandtable = tk.BooleanVar(value=live.sandtable_enabled)
         self.live_status = tk.StringVar(value="互动未开启")
         self.broadcaster_open = False
         self.speech_status = tk.StringVar(
@@ -167,6 +168,10 @@ class ControlPanel:
             value="已开启" if live.speech_enabled else "仅文本")
         self.stream_state = tk.StringVar(value="未连接")
         self.runtime_stats = tk.StringVar(value="识别告警 0 · 成功落子 0 · 完成对局 0")
+        self.sandtable_title = tk.StringVar(value="战术沙盘")
+        self.sandtable_status = tk.StringVar(value="")
+        self.sandtable_jobs = []
+        self.sandtable_close_job = None
         self.warning_count = 0
         self.move_success_count = 0
         self.game_count = 0
@@ -422,6 +427,9 @@ class ControlPanel:
         ttk.Entry(options, textvariable=self.live_cooldown, width=4).grid(row=0, column=7, padx=(5, 8))
         ttk.Checkbutton(options, text="欢迎进场", variable=self.live_welcome).grid(row=0, column=8, padx=5)
         ttk.Checkbutton(options, text="礼物答谢", variable=self.live_gifts).grid(row=0, column=9, padx=5)
+        ttk.Checkbutton(options, text="战术沙盘", variable=self.live_sandtable,
+                        command=lambda: self.save_live_settings(quiet=True)).grid(
+                            row=0, column=10, padx=5)
 
         text_style = dict(bg=THEME["editor"], fg=THEME["text"],
                           insertbackground=THEME["text"],
@@ -454,6 +462,29 @@ class ControlPanel:
         ttk.Entry(test_row, textvariable=self.live_test_text).pack(side="left", fill="x", expand=True, padx=5)
         ttk.Button(test_row, text="测试弹幕", command=self.test_live_chat).pack(side="left", padx=2)
         ttk.Button(test_row, text="测试礼物", command=self.test_live_gift).pack(side="left", padx=2)
+
+        self.sandtable_frame = tk.Frame(
+            live, bg=THEME["panel2"], highlightthickness=1,
+            highlightbackground=THEME["gold"], padx=9, pady=7)
+        sand_header = tk.Frame(self.sandtable_frame, bg=THEME["panel2"])
+        sand_header.pack(fill="x", pady=(0, 5))
+        tk.Label(sand_header, textvariable=self.sandtable_title,
+                 bg=THEME["panel2"], fg=THEME["gold"],
+                 font=("Microsoft YaHei UI", 10, "bold")).pack(side="left")
+        tk.Label(sand_header, textvariable=self.sandtable_status,
+                 bg=THEME["panel2"], fg=THEME["muted"],
+                 font=("Microsoft YaHei UI", 8)).pack(side="right")
+        sand_body = tk.Frame(self.sandtable_frame, bg=THEME["panel2"])
+        sand_body.pack(fill="x")
+        self.sandtable_canvas = tk.Canvas(
+            sand_body, width=230, height=166, bg=THEME["console"],
+            highlightthickness=0)
+        self.sandtable_canvas.pack(side="left")
+        self.sandtable_route = tk.Label(
+            sand_body, text="", bg=THEME["panel2"], fg=THEME["console_text"],
+            justify="left", anchor="nw", wraplength=340,
+            font=("Microsoft YaHei UI", 9), padx=10)
+        self.sandtable_route.pack(side="left", fill="both", expand=True)
 
         self.live_log = tk.Text(live, bg=THEME["console"], fg=THEME["console_text"],
                                 insertbackground=THEME["text"],
@@ -690,6 +721,115 @@ class ControlPanel:
         self.live_log.see("end")
         self.live_log.configure(state="disabled")
 
+    def _cancel_sandtable_jobs(self, include_close=True):
+        for job in self.sandtable_jobs:
+            try:
+                self.root.after_cancel(job)
+            except tk.TclError:
+                pass
+        self.sandtable_jobs = []
+        if include_close and self.sandtable_close_job:
+            try:
+                self.root.after_cancel(self.sandtable_close_job)
+            except tk.TclError:
+                pass
+            self.sandtable_close_job = None
+
+    def _draw_sandtable_base(self):
+        canvas = self.sandtable_canvas
+        canvas.delete("all")
+        margin_x, margin_y, step_x, step_y = 15, 15, 25, 15
+        for file_index in range(9):
+            x = margin_x + file_index * step_x
+            canvas.create_line(x, margin_y, x, margin_y + 9 * step_y,
+                               fill=THEME["border"])
+        for rank_index in range(10):
+            y = margin_y + rank_index * step_y
+            canvas.create_line(margin_x, y, margin_x + 8 * step_x, y,
+                               fill=THEME["border"])
+        canvas.create_rectangle(
+            margin_x, margin_y + 4 * step_y,
+            margin_x + 8 * step_x, margin_y + 5 * step_y,
+            fill=THEME["panel2"], outline=THEME["border"])
+        canvas.create_text(115, 82, text="楚河     汉界",
+                           fill=THEME["muted"],
+                           font=("Microsoft YaHei UI", 8))
+
+    @staticmethod
+    def _sandtable_point(square):
+        file_index = ord(square[0]) - ord("a")
+        rank = int(square[1])
+        return 15 + file_index * 25, 15 + (9 - rank) * 15
+
+    def _draw_sandtable_step(self, item, number):
+        ucci = str(item.get("ucci") or "")
+        if len(ucci) != 4:
+            return
+        x1, y1 = self._sandtable_point(ucci[:2])
+        x2, y2 = self._sandtable_point(ucci[2:])
+        colors = (THEME["jade"], THEME["gold"], THEME["blue"],
+                  THEME["purple"], THEME["red"])
+        color = colors[(number - 1) % len(colors)]
+        self.sandtable_canvas.create_line(
+            x1, y1, x2, y2, fill=color, width=3,
+            arrow=tk.LAST, arrowshape=(8, 10, 4))
+        self.sandtable_canvas.create_oval(
+            x2 - 8, y2 - 8, x2 + 8, y2 + 8,
+            fill=color, outline=THEME["console"], width=1)
+        self.sandtable_canvas.create_text(
+            x2, y2, text=str(number), fill="#ffffff",
+            font=("Segoe UI", 7, "bold"))
+
+    def _close_sandtable_ui(self):
+        self._cancel_sandtable_jobs()
+        if self.sandtable_frame.winfo_manager():
+            self.sandtable_frame.pack_forget()
+
+    def _handle_sandtable(self, data):
+        action = str(data.get("action") or "")
+        if action == "close":
+            self._close_sandtable_ui()
+            return
+        if action == "pause":
+            # Do not clear the viewer on an opponent move.  Freeze the route
+            # and leave it available until the next own move boundary.
+            self._cancel_sandtable_jobs(include_close=True)
+            notation = str(data.get("notation") or "")
+            self.sandtable_status.set("实战已落子 · 暂停刷新")
+            if notation:
+                self.sandtable_route.configure(
+                    text=self.sandtable_route.cget("text") +
+                    "\n\n实战进度：" + notation)
+            return
+        if action != "show":
+            return
+        route = list(data.get("route") or [])[:5]
+        if len(route) < 3:
+            return
+        self._cancel_sandtable_jobs()
+        self._draw_sandtable_base()
+        self.sandtable_title.set(data.get("title") or "关键战术沙盘")
+        reason = str(data.get("reason") or "")
+        self.sandtable_status.set(reason + " · 推演中")
+        self.sandtable_route.configure(text="\n".join(
+            f"{index}. {item.get('notation', '')}"
+            for index, item in enumerate(route, 1)))
+        if not self.sandtable_frame.winfo_manager():
+            self.sandtable_frame.pack(
+                fill="x", pady=(0, 6), before=self.live_log)
+
+        def finish():
+            self.sandtable_status.set(reason + " · 回看 6 秒")
+
+        for index, item in enumerate(route, 1):
+            job = self.root.after(
+                (index - 1) * 760,
+                lambda move=item, number=index:
+                    self._draw_sandtable_step(move, number))
+            self.sandtable_jobs.append(job)
+        self.sandtable_jobs.append(
+            self.root.after(len(route) * 760 + 150, finish))
+
     @staticmethod
     def _trim_text_widget(widget, max_lines):
         """Bound Tk text memory while keeping the newest operational context."""
@@ -719,6 +859,7 @@ class ControlPanel:
             "gift_enabled": bool(self.live_gifts.get()),
             "speech_enabled": bool(self.live_speech.get()),
             "commentary_enabled": bool(self.live_commentary.get()),
+            "sandtable_enabled": bool(self.live_sandtable.get()),
         }
 
     def save_live_settings(self, quiet=False):
@@ -1334,6 +1475,9 @@ class ControlPanel:
                     record = item[1]
                     kind = record.get("kind", "status")
                     text = record.get("text", "")
+                    if kind == "sandtable":
+                        self._handle_sandtable(record.get("data", {}))
+                        continue
                     labels = {
                         "chat": "弹幕", "gift": "礼物", "member": "进场",
                         "social": "互动", "chess": "讲解", "reply": "回复",
@@ -1360,6 +1504,7 @@ class ControlPanel:
                             "对面落子短播报": "落子播报",
                             "关键走棋解说": "关键棋解说",
                             "关键应手解说": "关键应手",
+                            "沙盘推演解说": "沙盘解说",
                             "等待期长讲解": "局面讲解",
                             "弹幕回复": "弹幕回复",
                             "礼物答谢": "礼物答谢",
@@ -1376,6 +1521,7 @@ class ControlPanel:
     def close(self):
         self.closing = True
         self._save_ui_settings()
+        self._cancel_sandtable_jobs()
         self.waiting_for_board = False
         if self.live_controller:
             self.live_controller.close()

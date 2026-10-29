@@ -360,6 +360,70 @@ class LiveHostTests(unittest.TestCase):
         self.assertEqual(prepared[0][0], "关键走棋解说")
         self.assertEqual(prepared[0][1]["speech_token"], "key-4")
 
+    def test_sandtable_triggers_on_big_capture_and_reuses_pv(self):
+        prepared = []
+        notices = []
+
+        class Pipeline:
+            def prepare_move(self, kind, payload, direct_text=None):
+                prepared.append((kind, payload, direct_text))
+
+        controller = object.__new__(LiveController)
+        controller.settings = LiveSettings(sandtable_enabled=True)
+        controller.last_engine_score = None
+        controller.closing_announced = False
+        controller.pipeline = Pipeline()
+        controller._notify = lambda kind, text, data=None: notices.append(
+            (kind, text, data or {}))
+        controller.submit_chess({
+            "event": "engine_analysis", "number": 6,
+            "notation": "红方 车八进五，吃车", "summary": "红方占优",
+            "analysis": {"score_type": "cp", "score": 520, "depth": 18},
+            "speech_token": "sand-6", "candidates": [],
+            "pv": [
+                {"ucci": "b4b9", "notation": "红方 车八进五，吃车"},
+                {"ucci": "c7b9", "notation": "黑方 马3退2，吃车"},
+                {"ucci": "h2e2", "notation": "红方 炮二平五"},
+                {"ucci": "h9g7", "notation": "黑方 马8进7"},
+            ]})
+        show = [item for item in notices
+                if item[0] == "sandtable" and item[2].get("action") == "show"]
+        self.assertEqual(len(show), 1)
+        self.assertEqual(len(show[0][2]["route"]), 4)
+        self.assertEqual(prepared[0][0], "沙盘推演解说")
+        controller.sandtable_timer.cancel()
+
+    def test_sandtable_kill_confidence_requires_depth(self):
+        base = {"analysis": {"score_type": "cp", "score": 900, "depth": 18}}
+        self.assertGreaterEqual(LiveController._kill_confidence(base), 80)
+        shallow = {"analysis": {"score_type": "cp", "score": 900, "depth": 6}}
+        self.assertLess(LiveController._kill_confidence(shallow), 80)
+        mate = {"analysis": {"score_type": "mate", "score": 5, "depth": 10}}
+        self.assertEqual(LiveController._kill_confidence(mate), 100)
+
+    def test_sandtable_pauses_on_reply_and_closes_before_next_own_move(self):
+        notices = []
+
+        class Pipeline:
+            def cancel_idle(self):
+                pass
+
+        controller = object.__new__(LiveController)
+        controller.pipeline = Pipeline()
+        controller.sandtable_active = True
+        controller.opponent_move_count = 0
+        controller._notify = lambda kind, text, data=None: notices.append(
+            (kind, (data or {}).get("action")))
+        controller.submit_chess({
+            "event": "opponent_move", "notation": "黑方 卒7进1"})
+        self.assertIn(("sandtable", "pause"), notices)
+        self.assertTrue(controller.sandtable_active)
+        controller.submit_chess({
+            "event": "move_selected", "notation": "红方 马二进三",
+            "speech_token": "next"})
+        self.assertIn(("sandtable", "close"), notices)
+        self.assertFalse(controller.sandtable_active)
+
     def test_speech_worker_survives_idle_timeouts(self):
         pipeline = SpeechPipeline(
             LiveSettings(cooldown=0), lambda *args: None,
