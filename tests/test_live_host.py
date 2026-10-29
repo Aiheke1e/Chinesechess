@@ -665,6 +665,17 @@ class LiveHostTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             normalize_room("https://example.com/123456789")
 
+    def test_normalizes_douyin_share_text_to_web_rid(self):
+        from unittest.mock import MagicMock, patch
+        response = MagicMock()
+        response.url = "https://webcast.amemv.com/douyin/webcast/reflow/7702045080483400482"
+        response.read.return_value = b'owner:{"webRid\\":\\"856344539553\\"}'
+        response.__enter__.return_value = response
+        with patch("live_host.urlopen", return_value=response):
+            room = normalize_room(
+                "正在直播，来支持Ta！ https://v.douyin.com/zOaht4OpSbs/ 0@3.com")
+        self.assertEqual(room, "856344539553")
+
     def test_speech_generation_is_background_and_does_not_block_move(self):
         completed = threading.Event()
         records = []

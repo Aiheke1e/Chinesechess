@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
 import winsound
 
 from bailian_tts import available_voices, synthesize
@@ -51,9 +52,40 @@ def normalize_room(value):
     value = str(value or "").strip()
     if re.fullmatch(r"\d{6,25}", value):
         return value
-    parsed = urlsplit(value)
-    if parsed.scheme not in ("http", "https") or parsed.hostname != "live.douyin.com":
+    urls = re.findall(r"https?://[^\s<>\[\]，。]+", value)
+    if len(urls) != 1:
         raise ValueError("请输入抖音直播间链接或数字房间号")
+    parsed = urlsplit(urls[0])
+    if parsed.scheme != "https" or parsed.hostname not in (
+            "live.douyin.com", "v.douyin.com", "webcast.amemv.com"):
+        raise ValueError("请输入抖音直播间链接或数字房间号")
+    if parsed.hostname == "v.douyin.com":
+        try:
+            request = Request(urls[0], headers={"User-Agent": "Mozilla/5.0"})
+            with urlopen(request, timeout=10) as response:
+                parsed = urlsplit(response.url)
+                page = response.read(1024 * 1024).decode("utf-8", "ignore")
+        except Exception as error:
+            raise ValueError("抖音短链接解析失败，请确认链接仍有效") from error
+    if parsed.hostname == "webcast.amemv.com":
+        match = re.fullmatch(r"/douyin/webcast/reflow/(\d{6,25})/?", parsed.path)
+        if not match:
+            raise ValueError("分享链接没有有效直播间编号")
+        if "page" not in locals():
+            try:
+                request = Request(urls[0], headers={"User-Agent": "Mozilla/5.0"})
+                with urlopen(request, timeout=10) as response:
+                    page = response.read(1024 * 1024).decode("utf-8", "ignore")
+            except Exception as error:
+                raise ValueError("直播分享页无法读取") from error
+        # Reflow's path is the internal room ID; this connector needs the
+        # anchor's webRid, which the share page embeds in its room data.
+        web_rid = re.search(r'webRid\\?":\\?"(\d{6,25})', page)
+        if not web_rid:
+            raise ValueError("分享页未提供网页版直播间编号，请复制直播间网页地址")
+        return web_rid.group(1)
+    if parsed.hostname != "live.douyin.com":
+        raise ValueError("短链接没有跳转到可识别的抖音直播间")
     room = parsed.path.strip("/").split("/")[0]
     if not re.fullmatch(r"\d{6,25}", room):
         raise ValueError("直播间链接中没有有效房间号")
