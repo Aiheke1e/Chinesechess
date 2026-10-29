@@ -729,8 +729,9 @@ class LiveController:
             reasons.append("杀棋")
         elif score_type == "cp":
             if abs(score) >= 600:
-                importance = max(importance, 8)
-                reasons.append("胜负趋势")
+                if previous is None or abs(previous) < 600:
+                    importance = max(importance, 5)
+                    reasons.append("胜负趋势")
             elif abs(score) >= 300:
                 importance = max(importance, 5)
                 reasons.append("优劣明显")
@@ -893,11 +894,9 @@ class LiveController:
         move = cls._spoken_notation(notation)
         captured = move.rsplit("吃", 1)[-1][:1] if "吃" in move else ""
         if captured == "车":
-            return "大车丢了，局面得重新算。"
-        if captured in ("马", "炮"):
-            return f"这手拿下{captured}，局面有变化了。"
-        if "吃" in move:
-            return "这手先吃到东西，得重新盘一下。"
+            return "咱们丢了一辆大车，局面得重新算。"
+        if captured:
+            return f"咱们一枚{captured}被吃，得重新盘一下。"
         return ""
 
     @staticmethod
@@ -1072,22 +1071,70 @@ class LiveController:
     @classmethod
     def _synced_move_text(cls, notation, reasons=(), number=0,
                           sandtable=False):
-        """Fast first-person line: no LLM wait on the move-critical path."""
+        """Fast factual line: exact capture or a piece-specific quiet action."""
         move = cls._spoken_notation(notation)
         captured = move.rsplit("吃", 1)[-1][:1] if "吃" in move else ""
-        # ``"" in "车马炮"`` is true in Python.  Keep quiet moves from being
-        # falsely announced as captures when no captured-piece name exists.
-        if captured and captured in "车马炮":
-            follow = ("来，沙盘摆三手，看看怎么把优势接住。"
-                      if sandtable else "这波交换挺划算。")
-            return f"好家伙，咱们走{move}，直接收下这枚{captured}。{follow}"
-        action = {
-            "马": "跳马", "车": "开车", "炮": "架炮", "兵": "拱兵",
-            "卒": "拱卒", "相": "飞相", "象": "飞象", "仕": "补仕",
-            "士": "补士", "帅": "挪帅", "将": "挪将",
-        }.get(move[:1], "走一手")
-        reason = next((str(item) for item in reasons if item), "先把位置站住")
-        return f"咱们先{action}，{move}。{reason}，接着看。"
+        base_move = move.split("，吃", 1)[0]
+        if captured:
+            action = {
+                "马": "跳马", "车": "出车", "炮": "架炮", "兵": "拱兵",
+                "卒": "拱卒", "相": "飞相", "象": "飞象", "仕": "补仕",
+                "士": "补士", "帅": "动帅", "将": "动将",
+            }.get(base_move[:1], "走子")
+            return f"{action}，{base_move}，吃掉一枚{captured}。"
+        return cls._quiet_move_text(base_move, number)
+
+    @classmethod
+    def _quiet_move_text(cls, move, number=0):
+        """Give quiet moves distinct wording without inventing a tactic."""
+        piece = move[:1]
+        if piece == "车":
+            variants = (("平车换线", "大车横过来换条路") if "平" in move
+                        else ("提车压上", "大车往前占线") if "进" in move
+                        else ("退车重整", "大车回身留个照应"))
+        elif piece == "马":
+            variants = ("跳马抢位", "马腿一抬，先抢个支点")
+        elif piece == "炮":
+            variants = (("平炮转线", "炮架横过来换个角度") if "平" in move
+                        else ("抬炮施压", "炮往前架，先占住线路") if "进" in move
+                        else ("退炮留根", "炮先回撤，给后排留照应"))
+        elif piece in ("兵", "卒"):
+            variants = ("拱兵开路", "小兵往前顶，先争一格")
+        elif piece in ("相", "象"):
+            variants = ("飞象补住阵脚", "补一手象，家里先站稳")
+        elif piece in ("仕", "士"):
+            variants = ("补士稳住宫门", "士先归位，把宫门护住")
+        elif piece in ("帅", "将"):
+            variants = ("挪将避开锋线", "老将换个位置，先躲开火力")
+        else:
+            variants = ("先把位置站稳",)
+        try:
+            index = max(1, int(number or 1)) - 1
+        except (TypeError, ValueError):
+            index = 0
+        intent = variants[index % len(variants)]
+        return f"{intent}，走{move}。"
+
+    @classmethod
+    def _idle_move_text(cls, notation, evidence=None, number=0):
+        """Short waiting-window thought with no canned opponent-response tail."""
+        move = cls._spoken_notation(notation).split("，吃", 1)[0]
+        reasons = list((evidence or {}).get("选择理由") or [])
+        reason = str(reasons[0]) if reasons else ""
+        if reason == "争夺中路":
+            return f"{move}，把力量往中路靠，先把要道占住。"
+        if reason == "调动后排大子":
+            detail = {
+                "车": "把大车接出底线，后面转线更快",
+                "马": "让这匹马离开底线，先找个落脚点",
+                "炮": "把炮架调出来，线路马上就宽了",
+            }.get(move[:1], "先把后排棋子调出来")
+            return f"{move}，{detail}。"
+        if reason == "让过河兵参与进攻":
+            return f"{move}，把过河兵顶上去，多添一个进攻点。"
+        if reason.startswith("吃掉"):
+            return cls._synced_move_text(notation, number=number)
+        return cls._quiet_move_text(move, number)
 
     @staticmethod
     def _is_near_win(event):
@@ -1098,7 +1145,9 @@ class LiveController:
             return False, False
         if analysis.get("score_type") == "mate":
             return score > 0, score > 0
-        return analysis.get("score_type") == "cp" and score >= 600, False
+        # A large positional score is still not a forced win.  Premature
+        # celebration is worse than silence, so closing talk needs a mate line.
+        return False, False
 
     def _victory_text(self):
         self.victory_count = getattr(self, "victory_count", 0) + 1
@@ -1361,7 +1410,9 @@ class LiveController:
                 **payload,
                 "要求": ("现在是等棋空档，不要念走法；用两句口语讲当前的主要思路"
                          "和接下来值得看的一个点，不念评分或技术字段"),
-            })
+            }, direct_text=self._idle_move_text(
+                notation, event.get("queen_evidence") or {},
+                event.get("number", 0)))
 
     def receive(self, event, force=False):
         kind = event.get("type", "chat")

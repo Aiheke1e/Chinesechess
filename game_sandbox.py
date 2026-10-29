@@ -370,12 +370,28 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
                     "probe": probe}
     x, y = _sandbox_button(before)
     tap(x, y, device=device)
-    time.sleep(0.8)
-    entered_frame = screenshot(device)
-    controls_changed = _region_difference(
-        before, entered_frame, 0.0, 0.79, 0.28, 0.90) >= 3.0
-    exit_visible = _detect_sandbox_exit(entered_frame) is not None
-    copied_position = _position_matches(live_board, entered_frame, orientation)
+    # JJ's transition speed varies with emulator load.  A single snapshot at
+    # 0.8s caused valid sandbox entries to be rejected while the animation was
+    # still running.  Poll briefly and require all three visual proofs on the
+    # same frame; route clicks remain impossible until then.
+    entered_frame = None
+    controls_changed = exit_visible = copied_position = False
+    entry_deadline = time.monotonic() + 1.8
+    for _ in range(6):
+        if time.monotonic() >= entry_deadline or stop_requested():
+            break
+        time.sleep(0.25)
+        candidate = screenshot(device)
+        if candidate is None:
+            continue
+        entered_frame = candidate
+        controls_changed = _region_difference(
+            before, candidate, 0.0, 0.79, 0.28, 0.90) >= 3.0
+        exit_visible = _detect_sandbox_exit(candidate) is not None
+        copied_position = _position_matches(
+            live_board, candidate, orientation)
+        if controls_changed and exit_visible and copied_position:
+            break
     if not controls_changed or not exit_visible or not copied_position:
         # If a modal or partial transition did appear, BACK is safer than any
         # board tap.  A completely unchanged screen needs no cleanup.

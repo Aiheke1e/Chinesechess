@@ -237,7 +237,7 @@ class GameSandboxTests(unittest.TestCase):
             probe.apply(move)
         fake_frame = object()
         with patch.object(game_sandbox, "screenshot",
-                          side_effect=[fake_frame, fake_frame, fake_frame]), \
+                          return_value=fake_frame), \
              patch.object(game_sandbox, "_position_matches",
                           return_value=True), \
              patch.object(game_sandbox, "_sandbox_button",

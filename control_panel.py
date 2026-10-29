@@ -1586,6 +1586,11 @@ class ControlPanel:
                         self.live_status.set(text)
                     elif kind == "speech_status":
                         self.speech_status.set(text)
+                    if (kind == "status" and
+                            text.startswith("JJ游戏沙盘已跳过")):
+                        # Keep the structured event in live_events.jsonl for
+                        # diagnostics, but do not pollute the broadcaster feed.
+                        continue
                     # The right pane is a broadcast transcript, not a TTS
                     # debug console. Keep technical queue/playback states in
                     # the small status label only.

@@ -327,7 +327,7 @@ class LiveHostTests(unittest.TestCase):
         self.assertNotIn("我方", text)
         self.assertTrue("跳马" in text or "马儿" in text or "这匹马" in text)
 
-    def test_near_win_gets_closing_but_not_premature_victory(self):
+    def test_large_cp_advantage_does_not_claim_a_forced_win(self):
         submitted = []
 
         class Pipeline:
@@ -347,10 +347,10 @@ class LiveHostTests(unittest.TestCase):
             "summary": "我方明显优势",
             "analysis": {"score_type": "cp", "score": 720},
             "candidates": [], "pv": []})
-        self.assertEqual(submitted[0][0], "收官解说")
+        self.assertEqual(submitted[0][0], "关键走棋解说")
         self.assertIn("车八进七", submitted[0][1])
-        self.assertTrue(any(phrase in submitted[0][1] for phrase in (
-            "棋没结束", "还差个句号", "别在终点线", "香槟")))
+        self.assertFalse(any(phrase in submitted[0][1] for phrase in (
+            "胜利", "收官", "下一位", "香槟")))
 
     def test_near_win_line_is_not_repeated_every_move(self):
         submitted = []
@@ -435,8 +435,9 @@ class LiveHostTests(unittest.TestCase):
             "analysis": {"score_type": "cp", "score": 120},
             "candidates": [], "pv": []})
         self.assertEqual(submitted[0][0], "关键走棋解说")
-        self.assertIn("咱们", submitted[0][1])
-        self.assertIn("收下这枚马", submitted[0][1])
+        self.assertIn("炮五进四", submitted[0][1])
+        self.assertIn("吃掉一枚马", submitted[0][1])
+        self.assertNotIn("收下这枚", submitted[0][1])
 
     def test_queen_style_explanation_is_prepared_for_wait_window(self):
         prepared_moves = []
@@ -596,8 +597,22 @@ class LiveHostTests(unittest.TestCase):
         text = LiveController._synced_move_text(
             "红方 车九平二", ["改善棋子位置"], number=5)
         self.assertIn("车九平二", text)
-        self.assertIn("改善棋子位置", text)
+        self.assertIn("平车换线", text)
         self.assertNotIn("直接收下这枚", text)
+
+    def test_capture_names_the_exact_captured_piece_once(self):
+        text = LiveController._synced_move_text(
+            "红方 兵三进一，吃卒", ["吃子"], number=7)
+        self.assertEqual(text.count("卒"), 1)
+        self.assertIn("吃掉一枚卒", text)
+        self.assertNotIn("吃到东西", text)
+
+    def test_idle_move_text_has_no_canned_opponent_tail(self):
+        text = LiveController._idle_move_text(
+            "红方 炮八平五", {"选择理由": ["争夺中路"]}, 6)
+        self.assertIn("中路", text)
+        self.assertNotIn("怎么应对", text)
+        self.assertNotIn("有好戏", text)
 
     def test_normal_speech_commits_before_adb_move(self):
         decisions = []
