@@ -283,7 +283,8 @@ class SpeechPipeline:
             result += part
         return result or cleaned
 
-    def prepare_move(self, kind, payload, direct_text=None):
+    def prepare_move(self, kind, payload, direct_text=None,
+                     replace_older=True):
         """Pre-generate one move's text/audio; play only after commit_move."""
         token = str(payload.get("speech_token") or "").strip()
         if not token or not self._ensure_worker():
@@ -291,8 +292,9 @@ class SpeechPipeline:
         state = {"decision": threading.Event(), "approved": None,
                  "epoch": self.cancel_epoch}
         with self.prepared_lock:
-            older = list(self.prepared.values())
-            self.prepared.clear()
+            older = list(self.prepared.values()) if replace_older else []
+            if replace_older:
+                self.prepared.clear()
             self.prepared[token] = state
         self._mark_speech_preparing(payload, self.settings.speech_enabled)
         for old in older:
@@ -606,6 +608,8 @@ class LiveController:
         self.opening_library = load_opening_library()
         self.last_chess_spoken_at = time.monotonic()
         self.pending_move_events = {}
+        self.sandbox_speech_tokens = set()
+        self.sandbox_speech_by_move = {}
         self.closing_announced = False
         self.sandtable_active = False
         self.sandtable_timer = None
@@ -1071,7 +1075,9 @@ class LiveController:
         """Fast first-person line: no LLM wait on the move-critical path."""
         move = cls._spoken_notation(notation)
         captured = move.rsplit("吃", 1)[-1][:1] if "吃" in move else ""
-        if captured in "车马炮":
+        # ``"" in "车马炮"`` is true in Python.  Keep quiet moves from being
+        # falsely announced as captures when no captured-piece name exists.
+        if captured and captured in "车马炮":
             follow = ("来，沙盘摆三手，看看怎么把优势接住。"
                       if sandtable else "这波交换挺划算。")
             return f"好家伙，咱们走{move}，直接收下这枚{captured}。{follow}"
@@ -1122,13 +1128,21 @@ class LiveController:
                 # The explanation was generated while the engine was thinking,
                 # but is released only after JJ visibly entered its real
                 # sandbox.  This keeps speech aligned with the demonstration.
-                self.pipeline.commit_move(token)
-                getattr(self, "sandbox_speech_tokens", set()).discard(token)
+                sandbox_token = getattr(
+                    self, "sandbox_speech_by_move", {}).pop(token, "")
+                if sandbox_token:
+                    self.pipeline.commit_move(sandbox_token)
+                    getattr(self, "sandbox_speech_tokens", set()).discard(
+                        sandbox_token)
                 self._notify("status", "沙盘已打开，开始同步推演解说")
             elif action == "end":
                 if not event.get("entered"):
-                    self.pipeline.discard_move(token)
-                getattr(self, "sandbox_speech_tokens", set()).discard(token)
+                    sandbox_token = getattr(
+                        self, "sandbox_speech_by_move", {}).pop(token, "")
+                    if sandbox_token:
+                        self.pipeline.discard_move(sandbox_token)
+                        getattr(self, "sandbox_speech_tokens", set()).discard(
+                            sandbox_token)
                 if event.get("entered"):
                     self._notify(
                         "status",
@@ -1143,6 +1157,7 @@ class LiveController:
             for token in list(getattr(self, "sandbox_speech_tokens", set())):
                 self.pipeline.discard_move(token)
             getattr(self, "sandbox_speech_tokens", set()).clear()
+            getattr(self, "sandbox_speech_by_move", {}).clear()
             self._close_sandtable("对局结束")
             self.pending_move_events = {}
             self.closing_announced = False
@@ -1180,10 +1195,9 @@ class LiveController:
             return
         if event.get("event") == "move_command":
             token = str(event.get("speech_token") or "")
-            # Normal move speech starts before ADB taps.  Sandtable speech is
-            # held until JJ's sandbox is visibly open.
-            if token and token not in getattr(
-                    self, "sandbox_speech_tokens", set()):
+            # Every real move gets its short call before ADB taps.  A longer
+            # sandbox explanation has a separate token and stays deferred.
+            if token:
                 self.pipeline.commit_move(token)
             return
         if event.get("event") == "move_applied":
@@ -1195,7 +1209,12 @@ class LiveController:
         if event.get("event") in ("move_rejected", "move_preview"):
             token = str(event.get("speech_token") or "")
             self.pipeline.discard_move(token)
-            getattr(self, "sandbox_speech_tokens", set()).discard(token)
+            sandbox_token = getattr(
+                self, "sandbox_speech_by_move", {}).pop(token, "")
+            if sandbox_token:
+                self.pipeline.discard_move(sandbox_token)
+                getattr(self, "sandbox_speech_tokens", set()).discard(
+                    sandbox_token)
             getattr(self, "pending_move_events", {}).pop(
                 str(event.get("speech_token") or ""), None)
             return
@@ -1206,6 +1225,7 @@ class LiveController:
             for token in list(getattr(self, "sandbox_speech_tokens", set())):
                 self.pipeline.discard_move(token)
             getattr(self, "sandbox_speech_tokens", set()).clear()
+            getattr(self, "sandbox_speech_by_move", {}).clear()
             if getattr(self, "sandtable_active", False):
                 timer = getattr(self, "sandtable_timer", None)
                 if timer is not None:
@@ -1247,11 +1267,6 @@ class LiveController:
                 item["notation"] for item in sandtable["route"]]
             payload["沙盘触发"] = sandtable["reason"]
             payload["沙盘起因走法"] = notation
-            if token := str(event.get("speech_token") or ""):
-                tokens = getattr(self, "sandbox_speech_tokens", None)
-                if tokens is None:
-                    tokens = self.sandbox_speech_tokens = set()
-                tokens.add(token)
         near_win, forced_win = self._is_near_win(event)
         importance, reasons = self._commentary_importance(event)
         if sandtable:
@@ -1277,21 +1292,36 @@ class LiveController:
                          "不必报完整棋谱，不用我方或对方开头；最多两句")
             }
             direct = None
-            kind = "沙盘推演解说" if sandtable else "关键走棋解说"
+            kind = "关键走棋解说"
             if near_win:
-                if sandtable:
-                    kind = "沙盘推演解说"
-                else:
+                if not sandtable:
                     kind = "收官解说"
                     direct = self._closing_move_text(
                         notation, event.get("number", 0), forced_win)
-            elif importance >= threshold:
+            if direct is None and importance >= threshold:
                 direct = self._synced_move_text(
                     notation, reasons, event.get("number", 0),
-                    sandtable=bool(sandtable))
+                    sandtable=False)
             if token:
-                self.pipeline.prepare_move(kind, important_payload,
-                                           direct_text=direct)
+                if sandtable:
+                    # The move call and sandbox explanation are independent:
+                    # failed sandbox entry must never silence the real move.
+                    sandbox_token = f"{token}:sandbox"
+                    sandbox_payload = {
+                        **important_payload,
+                        "speech_token": sandbox_token,
+                    }
+                    self.sandbox_speech_tokens.add(sandbox_token)
+                    self.sandbox_speech_by_move[token] = sandbox_token
+                    self.pipeline.prepare_move(
+                        "沙盘推演解说", sandbox_payload,
+                        replace_older=True)
+                    self.pipeline.prepare_move(
+                        kind, important_payload, direct_text=direct,
+                        replace_older=False)
+                else:
+                    self.pipeline.prepare_move(
+                        kind, important_payload, direct_text=direct)
             else:
                 self.pipeline.submit(1, kind, important_payload,
                                      direct_text=direct)

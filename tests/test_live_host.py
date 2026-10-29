@@ -45,8 +45,8 @@ class LiveHostTests(unittest.TestCase):
             def cancel_idle(self):
                 pass
 
-            def prepare_move(self, kind, payload, direct_text=None):
-                prepared.append((kind, payload, direct_text))
+            def prepare_move(self, kind, payload, direct_text=None, **kwargs):
+                prepared.append((kind, payload, direct_text, kwargs))
 
         controller = object.__new__(LiveController)
         controller.pipeline = Pipeline()
@@ -478,8 +478,8 @@ class LiveHostTests(unittest.TestCase):
         prepared = []
 
         class Pipeline:
-            def prepare_move(self, kind, payload, direct_text=None):
-                prepared.append((kind, payload, direct_text))
+            def prepare_move(self, kind, payload, direct_text=None, **kwargs):
+                prepared.append((kind, payload, direct_text, kwargs))
 
         controller = object.__new__(LiveController)
         controller.last_engine_score = None
@@ -498,13 +498,15 @@ class LiveHostTests(unittest.TestCase):
         notices = []
 
         class Pipeline:
-            def prepare_move(self, kind, payload, direct_text=None):
-                prepared.append((kind, payload, direct_text))
+            def prepare_move(self, kind, payload, direct_text=None, **kwargs):
+                prepared.append((kind, payload, direct_text, kwargs))
 
         controller = object.__new__(LiveController)
         controller.settings = LiveSettings(sandtable_enabled=True)
         controller.last_engine_score = None
         controller.closing_announced = False
+        controller.sandbox_speech_tokens = set()
+        controller.sandbox_speech_by_move = {}
         controller.pipeline = Pipeline()
         controller._notify = lambda kind, text, data=None: notices.append(
             (kind, text, data or {}))
@@ -526,6 +528,10 @@ class LiveHostTests(unittest.TestCase):
         self.assertEqual(show, [])
         self.assertEqual(len(prepared[0][1]["沙盘路线"]), 3)
         self.assertEqual(prepared[0][0], "沙盘推演解说")
+        self.assertEqual(prepared[0][1]["speech_token"], "sand-6:sandbox")
+        self.assertEqual(prepared[1][0], "关键走棋解说")
+        self.assertEqual(prepared[1][1]["speech_token"], "sand-6")
+        self.assertNotIn("收下这枚。", prepared[1][2])
 
     def test_sandtable_kill_confidence_requires_depth(self):
         base = {"analysis": {"score_type": "cp", "score": 900, "depth": 18}}
@@ -571,7 +577,8 @@ class LiveHostTests(unittest.TestCase):
         controller = object.__new__(LiveController)
         controller.pipeline = Pipeline()
         controller.settings = LiveSettings(commentary_enabled=True)
-        controller.sandbox_speech_tokens = {"sand-1"}
+        controller.sandbox_speech_tokens = {"sand-1:sandbox"}
+        controller.sandbox_speech_by_move = {"sand-1": "sand-1:sandbox"}
         controller._notify = lambda *args, **kwargs: None
         controller.submit_chess({
             "event": "move_applied", "notation": "红方 车八进五",
@@ -580,8 +587,15 @@ class LiveHostTests(unittest.TestCase):
         controller.submit_chess({
             "event": "game_sandbox", "action": "entered",
             "speech_token": "sand-1"})
-        self.assertEqual(decisions, [("commit", "sand-1")])
-        self.assertNotIn("sand-1", controller.sandbox_speech_tokens)
+        self.assertEqual(decisions, [("commit", "sand-1:sandbox")])
+        self.assertNotIn("sand-1:sandbox", controller.sandbox_speech_tokens)
+
+    def test_quiet_move_is_never_described_as_empty_capture(self):
+        text = LiveController._synced_move_text(
+            "红方 车九平二", ["改善棋子位置"], number=5)
+        self.assertIn("车九平二", text)
+        self.assertIn("改善棋子位置", text)
+        self.assertNotIn("直接收下这枚", text)
 
     def test_normal_speech_commits_before_adb_move(self):
         decisions = []
