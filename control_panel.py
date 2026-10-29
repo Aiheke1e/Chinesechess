@@ -23,6 +23,8 @@ from cache_cleanup import cleanup_generated_cache, scan_generated_cache
 from bailian_tts import available_voices
 from live_host import LiveController, load_settings
 from health_check import collect_readiness, readiness_level
+from runtime_status import (heartbeat_age, read_runtime_status, rotate_log,
+                            write_runtime_status)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STOP_FILE = os.path.join(HERE, "work", "stop.request")
@@ -37,7 +39,19 @@ DEFAULT_ASSISTANT_CFG = {
     "ambiguous_turn_default": "r",
     "diagnostic_wait_seconds": 15,
     "diagnostic_interval_seconds": 30,
+    "watchdog_warning_seconds": 25,
+    "watchdog_recovery_seconds": 75,
     "match_mode": "15分钟",
+}
+
+WATCHDOG_SAFE_STAGES = {
+    "starting", "board_recognition", "waiting_opponent", "inter_move_delay",
+}
+RUNTIME_STAGE_LABELS = {
+    "starting": "启动中", "board_recognition": "识别棋盘",
+    "engine_starting": "启动引擎", "engine_thinking": "引擎思考",
+    "waiting_opponent": "等待落子", "move_confirming": "确认落子",
+    "inter_move_delay": "回合间隔", "stopped": "已停止",
 }
 
 TURN_LABEL_TO_CODE = {"自动判断": "auto", "红方": "r", "黑方": "b"}
@@ -102,6 +116,8 @@ class ControlPanel:
         self.warning_count = 0
         self.move_success_count = 0
         self.game_count = 0
+        self.watchdog_reported_at = 0.0
+        self.watchdog_recovery_started = False
         self.indicators = {}
         root.title("JJ 象棋直播助手")
         root.geometry("1180x820")
@@ -122,6 +138,7 @@ class ControlPanel:
             self.append_live("错误", "直播互动模块初始化失败：" + str(error))
         self.refresh_device()
         root.after(80, self._poll)
+        root.after(1500, self._watchdog_tick)
         root.protocol("WM_DELETE_WINDOW", self.close)
         if autostart:
             root.after(400, self.prepare_and_wait)
@@ -452,8 +469,20 @@ class ControlPanel:
         self.live_log.configure(state="normal")
         self.live_log.insert("end", f"[{datetime.now():%H:%M:%S}] {label}｜", label)
         self.live_log.insert("end", str(text) + "\n")
+        self._trim_text_widget(self.live_log, 1500)
         self.live_log.see("end")
         self.live_log.configure(state="disabled")
+
+    @staticmethod
+    def _trim_text_widget(widget, max_lines):
+        """Bound Tk text memory while keeping the newest operational context."""
+        try:
+            lines = int(widget.index("end-1c").split(".", 1)[0])
+            excess = lines - int(max_lines)
+            if excess > 0:
+                widget.delete("1.0", f"{excess + 1}.0")
+        except (tk.TclError, ValueError):
+            pass
 
     def _live_values(self):
         try:
@@ -564,16 +593,75 @@ class ControlPanel:
             f"识别告警 {self.warning_count} · 成功落子 {self.move_success_count} · 完成对局 {self.game_count}")
         self.log.configure(state="normal")
         self.log.insert("end", text)
+        self._trim_text_widget(self.log, 2500)
         self.log.see("end")
         self.log.configure(state="disabled")
         try:
             os.makedirs(os.path.dirname(PANEL_LOG), exist_ok=True)
+            rotate_log(PANEL_LOG)
             with open(PANEL_LOG, "a", encoding="utf-8") as stream:
                 stamp = datetime.now().astimezone().isoformat(timespec="seconds")
                 stream.write(f"[{stamp}] {text}")
                 if text and not text.endswith("\n"):
                     stream.write("\n")
         except OSError:
+            pass
+
+    def _watchdog_tick(self):
+        """Show a real player heartbeat and recover only from click-safe stalls."""
+        import time
+
+        try:
+            running = bool(self.process and self.process.poll() is None)
+            status = read_runtime_status() if running else None
+            if running and status and status.get("pid") == self.process.pid:
+                age = heartbeat_age(status)
+                stage = status.get("stage", "")
+                label = RUNTIME_STAGE_LABELS.get(stage, stage or "运行中")
+                if age is not None and age < 5 and stage != "stopped":
+                    self.board_state.set(label)
+                cfg = self._assistant_cfg()
+                warning_after = float(cfg.get("watchdog_warning_seconds", 25))
+                recovery_after = float(cfg.get("watchdog_recovery_seconds", 75))
+                now = time.monotonic()
+                if age is not None and age >= warning_after:
+                    self._set_indicator("board", THEME["gold"])
+                    self.status.set(f"运行心跳停滞 {age:.0f} 秒，正在保护性处理")
+                    if now - self.watchdog_reported_at >= 60:
+                        self.append(
+                            f"[运行看门狗] {label}阶段 {age:.0f} 秒无心跳；"
+                            "已记录现场，不会盲目重复点击。\n")
+                        self.watchdog_reported_at = now
+                        threading.Thread(
+                            target=self._watchdog_capture,
+                            args=(stage, age), daemon=True).start()
+                    if (age >= recovery_after and
+                            stage in WATCHDOG_SAFE_STAGES and
+                            self.auto_retry and bool(self.continuous.get()) and
+                            not self.watchdog_recovery_started):
+                        self.watchdog_recovery_started = True
+                        self.append(
+                            f"[自动恢复] {label}阶段确认卡死，"
+                            "该阶段没有未确认点击；正在重建对弈进程。\n")
+                        self.process.terminate()
+            elif not running:
+                self.watchdog_recovery_started = False
+        except Exception as error:
+            # The watchdog must never take down the UI it protects.
+            if not self.closing:
+                self.status.set("看门狗检查失败：" + str(error))
+        finally:
+            if not self.closing:
+                self.root.after(1500, self._watchdog_tick)
+
+    def _watchdog_capture(self, stage, age):
+        try:
+            devices = list_devices()
+            if devices:
+                self._save_diagnostic(
+                    devices[0], "runtime_heartbeat_stalled",
+                    extra={"stage": stage, "heartbeat_age": round(age, 1)})
+        except Exception:
             pass
 
     def refresh_device(self):
@@ -871,6 +959,9 @@ class ControlPanel:
             pass
         environment = os.environ.copy()
         environment["PYTHONIOENCODING"] = "utf-8"
+        write_runtime_status("starting", label)
+        self.watchdog_recovery_started = False
+        self.watchdog_reported_at = 0.0
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         self.process = subprocess.Popen(
             [sys.executable, "-u", *arguments], cwd=HERE, env=environment,

@@ -18,6 +18,7 @@ from diagnostics import capture_diagnostic
 from notation import move_description
 from session_state import (block_position, infer_turn_from_standard,
                            match_live_session, save_session)
+from runtime_status import write_runtime_status
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(HERE, "player_config.json")
@@ -263,6 +264,7 @@ def main():
     def stop_requested():
         return bool(args.stop_file and os.path.exists(args.stop_file))
 
+    write_runtime_status("starting", "正在连接模拟器")
     devs = list_devices()
     if not devs:
         print("[!] 无设备")
@@ -281,6 +283,7 @@ def main():
     print(f"执棋方：{color_label}")
     events.emit("start", device=device, engine=cfg["engine"], dry_run=cfg["dry_run"])
 
+    write_runtime_status("board_recognition", "正在识别可信棋盘")
     tolerant_indices = set()
     resumed = match_live_session(device)
     if resumed is not None:
@@ -323,6 +326,7 @@ def main():
     events.emit("position", fen=b.to_fen(), orientation=orientation, my_color=my,
                 pieces=b.attacker_count())
 
+    write_runtime_status("engine_starting", "棋盘已确认，正在启动引擎")
     pf = None
     try:
         from pikafish import get_engine
@@ -341,6 +345,9 @@ def main():
     try:
         while n < cfg["max_moves"] and not stop_requested():
             if b.turn != my:
+                write_runtime_status(
+                    "waiting_opponent", "等待对方落子",
+                    details={"own_moves": n, "fen": b.to_fen()})
                 print("等待对方走棋……", flush=True)
                 events.emit("waiting_for_opponent", fen=b.to_fen(),
                             after_move_number=n)
@@ -352,6 +359,10 @@ def main():
                 last_wait_capture = 0.0
                 occupancy_history = deque(maxlen=3)
                 while not stop_requested():
+                    write_runtime_status(
+                        "waiting_opponent", "等待对方落子",
+                        details={"own_moves": n,
+                                 "waited_seconds": round(total_waited, 1)})
                     time.sleep(1.0)
                     waited += 1.0
                     total_waited += 1.0
@@ -444,6 +455,9 @@ def main():
                     break
                 if b.turn != my: continue
 
+            write_runtime_status(
+                "engine_thinking", "Pikafish 正在计算走法",
+                details={"own_moves": n, "fen": b.to_fen()})
             try:
                 mv, desc = pick_move(b, cfg, pf)
             except EngineMoveError as error:
@@ -525,6 +539,9 @@ def main():
                 print(f"点击位置：{pt(mv[0], orientation)} → {pt(mv[1], orientation)}")
                 ok = True
             else:
+                write_runtime_status(
+                    "move_confirming", "已发送落子，正在核对棋盘",
+                    details={"own_moves": n + 1, "ucci": u})
                 ok, msg = move_piece_retry(
                     mv[0], mv[1], device, expected_before=b.sq,
                     orientation=orientation,
@@ -621,12 +638,18 @@ def main():
             # 只读模式从不伪造连续对局；预览一手后立即返回。
             if args.once or cfg["dry_run"]: break
             delay = random.uniform(cfg["move_interval_min"], cfg["move_interval_max"])
+            write_runtime_status(
+                "inter_move_delay", "本回合已确认",
+                details={"own_moves": n, "delay_seconds": round(delay, 2)})
             deadline = time.monotonic() + delay
             while time.monotonic() < deadline and not stop_requested():
                 time.sleep(min(0.2, deadline - time.monotonic()))
     except KeyboardInterrupt:
         print("[*] 收到停止信号")
     finally:
+        write_runtime_status(
+            "stopped", "对弈子进程已结束",
+            details={"result": result, "own_moves": n})
         result_text = {
             "won": "获胜", "lost": "失败", "timeout": "等待超时",
             "stopped": "已停止", "finished": "JJ 已结算",

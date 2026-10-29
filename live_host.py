@@ -7,6 +7,8 @@ import heapq
 import json
 import os
 from pathlib import Path
+
+from runtime_status import rotate_log
 import re
 import subprocess
 import sys
@@ -527,6 +529,8 @@ class LiveController:
         try:
             LIVE_LOG.parent.mkdir(parents=True, exist_ok=True)
             with self.log_lock:
+                rotate_log(str(LIVE_LOG), max_bytes=8 * 1024 * 1024,
+                           backups=2)
                 with open(LIVE_LOG, "a", encoding="utf-8") as stream:
                     stream.write(json.dumps(record, ensure_ascii=False) + "\n")
         except OSError:
@@ -932,22 +936,36 @@ class ChessEventTailer(threading.Thread):
     def run(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.touch(exist_ok=True)
-        with open(self.path, encoding="utf-8", errors="replace") as stream:
-            stream.seek(0, os.SEEK_END)
-            while not self.closed.is_set():
-                line = stream.readline()
-                if not line:
+        position = self.path.stat().st_size
+        while not self.closed.is_set():
+            try:
+                size = self.path.stat().st_size
+                # EventLog may rotate the file between games.  Starting at
+                # zero on a smaller replacement preserves the live feed.
+                if size < position:
+                    position = 0
+                found = False
+                with open(self.path, encoding="utf-8", errors="replace") as stream:
+                    stream.seek(position)
+                    for line in stream:
+                        found = True
+                        try:
+                            event = json.loads(line)
+                        except ValueError:
+                            continue
+                        if event.get("event") in (
+                                "move_selected", "move_applied", "move_rejected",
+                                "move_preview", "engine_analysis", "opponent_move",
+                                "waiting_for_opponent", "game_over"):
+                            self.callback(event)
+                    position = stream.tell()
+                if not found:
                     time.sleep(0.08)
-                    continue
-                try:
-                    event = json.loads(line)
-                except ValueError:
-                    continue
-                if event.get("event") in (
-                        "move_selected", "move_applied", "move_rejected",
-                        "move_preview", "engine_analysis", "opponent_move",
-                        "waiting_for_opponent", "game_over"):
-                    self.callback(event)
+            except OSError:
+                # A rotation can briefly leave no active file between rename
+                # and append.  Re-open on the next short polling cycle.
+                position = 0
+                time.sleep(0.08)
 
     def close(self):
         self.closed.set()
