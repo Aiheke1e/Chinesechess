@@ -107,6 +107,14 @@ def assess_image_against_board(board, image, orientation, occupancy_history=None
         board, occupancy, max_differences=2, max_plies=1)
     move = (sequence[0] if status == "recovered" and
             sequence is not None and len(sequence) == 1 else None)
+    if move is not None:
+        frm, to = move
+        moving = board.sq[frm]
+        endpoints = recognize_indices(image, orientation, (frm, to))
+        if (moving is not None and endpoints.get(frm) is None and
+                endpoints.get(to) is not None and
+                endpoints[to].isupper() == moving.isupper()):
+            return move, "verified_recovered", differences
     if move is None and status in ("retry", "illegal"):
         # Last-move rings can hide several glyph templates at once.  Use the
         # presence-only detector only as a secondary proposal: one legal move
@@ -176,6 +184,18 @@ def stable_move_candidate(pending, current):
     if pending == current:
         return current, None
     return None, current
+
+
+def confirmed_move_candidate(pending, current, status):
+    """Accept endpoint-proved frame changes immediately; stabilize fallbacks."""
+    if current is not None and status in (
+            "fast_change", "verified_recovered"):
+        # resolve_move_from_change already proves a unique legal move plus an
+        # empty source and a destination occupied by the moving side.  Waiting
+        # for an identical second 1080p ADB screenshot adds ~1.5–2 seconds but
+        # no new chess invariant.
+        return current, None
+    return stable_move_candidate(pending, current)
 
 
 def postgame_image_visible(image):
@@ -481,8 +501,8 @@ def main():
                             last_anomaly_report = now
                         continue
                     anomaly_count = 0
-                    mv_seen, pending_opponent_move = stable_move_candidate(
-                        pending_opponent_move, current_candidate)
+                    mv_seen, pending_opponent_move = confirmed_move_candidate(
+                        pending_opponent_move, current_candidate, check_status)
                     if mv_seen is not None:
                         opponent_ucci = Board.ucci(mv_seen)
                         opponent_text = move_description(b, mv_seen)
@@ -620,6 +640,7 @@ def main():
                         from_screen=from_xy, to_screen=to_xy,
                         orientation=orientation)
 
+            confirmation_seconds = 0.0
             if cfg["dry_run"]:
                 print("预览完成：只读模式未点击棋盘")
                 print(f"点击位置：{pt(mv[0], orientation)} → {pt(mv[1], orientation)}")
@@ -712,7 +733,8 @@ def main():
             n += 1
             events.emit("move_applied" if not cfg["dry_run"] else "move_preview",
                         number=n, ucci=u, notation=d, fen=b.to_fen(),
-                        speech_token=speech_token)
+                        speech_token=speech_token,
+                        confirmation_seconds=round(confirmation_seconds, 3))
             if not cfg["dry_run"] and not b.legal_moves():
                 result = "won"
                 print("\n【本局获胜】对方已经没有任何合法走法。")

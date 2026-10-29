@@ -57,7 +57,7 @@ def build_plan(notation, analysis, pv_line, executed_ucci):
             route.append({"ucci": str(ucci), "notation": str(text)})
     if route and route[0]["ucci"] == executed_ucci:
         route.pop(0)
-    route = route[:4]
+    route = route[:3]
     if len(route) < 3 or not (big_capture or confidence >= 80):
         return None
     reasons = []
@@ -155,15 +155,17 @@ def _advance_after_observed_reply(live_board, legal_route, probe):
     return advanced, legal_route[1:], observed[0]
 
 
-def _wait_for_position(device, board, orientation, timeout=2.5):
+def _wait_for_position(device, board, orientation, timeout=2.5,
+                       required_hits=2):
     """Require two consecutive live-board frames before opening sandbox."""
     deadline = time.monotonic() + max(0.0, float(timeout))
+    required_hits = max(1, int(required_hits))
     stable_hits = 0
     while True:
         image = screenshot(device)
         if _position_matches(board, image, orientation):
             stable_hits += 1
-            if stable_hits >= 2:
+            if stable_hits >= required_hits:
                 return image
         else:
             stable_hits = 0
@@ -263,9 +265,10 @@ def _live_sequence(board, image, orientation, max_plies=1):
         board, presence, max_plies=max_plies, max_mismatches=1)
 
 
-def _return_to_live(device, live_board, orientation, attempts=2):
+def _return_to_live(device, live_board, orientation, attempts=2,
+                    initial_image=None):
     """Use JJ's red exit control, then prove the live position returned."""
-    image = screenshot(device)
+    image = initial_image if initial_image is not None else screenshot(device)
     for attempt in range(attempts):
         dismissed = _dismiss_interruption(device, image)
         if dismissed is not None:
@@ -308,7 +311,9 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
     copied board still matches the trusted live position.
     """
     stop_requested = stop_requested or (lambda: False)
-    route = list((plan or {}).get("route") or [])[:4]
+    # Three plies are enough to show the tactical point and keep the whole
+    # overlay comfortably inside the opponent's thinking window.
+    route = list((plan or {}).get("route") or [])[:3]
     sandbox_board = live_board.copy()
     legal_route = []
     for item in route:
@@ -329,7 +334,8 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
     # deliberately a short gate: the opponent is free to answer in the real
     # game and must not control the lifetime of our local demonstration.
     before = _wait_for_position(
-        device, live_board, orientation, timeout=gate_timeout)
+        device, live_board, orientation, timeout=gate_timeout,
+        required_hits=1)
     if before is None:
         failure_image = screenshot(device)
         probe = _position_probe(live_board, failure_image, orientation)
@@ -341,7 +347,8 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
             # plies while it is safely our turn.
             live_board, legal_route, observed_reply = advanced
             before = _wait_for_position(
-                device, live_board, orientation, timeout=1.2)
+                device, live_board, orientation, timeout=1.2,
+                required_hits=1)
         if before is not None:
             probe = None
         else:
@@ -385,6 +392,7 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
     hard_deadline = started + max(1.0, float(max_seconds))
     completed = 0
     timed_out = False
+    last_sandbox_frame = entered_frame
     for number, (item, move) in enumerate(legal_route, 1):
         if stop_requested():
             break
@@ -398,6 +406,7 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
         tap(tx, ty, device=device)
         time.sleep(0.42)
         frame = screenshot(device)
+        last_sandbox_frame = frame
         if not _endpoint_confirmed(sandbox_board, move, frame, orientation):
             resumed = _dismiss_interruption(device, frame)
             if resumed is not None:
@@ -412,9 +421,11 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
                     tap(tx, ty, device=device)
                     time.sleep(0.42)
                     frame = screenshot(device)
+                    last_sandbox_frame = frame
             else:
                 time.sleep(0.3)
                 frame = screenshot(device)
+                last_sandbox_frame = frame
             if not _endpoint_confirmed(sandbox_board, move, frame, orientation):
                 break
         sandbox_board.apply(move)
@@ -433,7 +444,9 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
     deadline = time.monotonic() + remaining_review
     while time.monotonic() < deadline and not stop_requested():
         time.sleep(min(0.2, deadline - time.monotonic()))
-    safe_exit = _return_to_live(device, live_board, orientation)
+    safe_exit = _return_to_live(
+        device, live_board, orientation,
+        initial_image=last_sandbox_frame)
     return {"entered": True, "safe_exit": safe_exit,
             "completed": completed,
             "observed_reply": observed_reply,

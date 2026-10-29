@@ -46,6 +46,16 @@ class GameSandboxTests(unittest.TestCase):
             self.assertIs(frames[-1], game_sandbox._wait_for_position(
                 "device", board, "red_bottom", timeout=1))
 
+    def test_post_move_gate_can_use_one_already_confirmed_frame(self):
+        board = Board.from_fen(START_FEN)
+        frame = object()
+        with patch.object(game_sandbox, "screenshot", return_value=frame), \
+             patch.object(game_sandbox, "_position_matches",
+                          return_value=True):
+            self.assertIs(frame, game_sandbox._wait_for_position(
+                "device", board, "red_bottom", timeout=0,
+                required_hits=1))
+
     def test_position_probe_reports_unique_opponent_move(self):
         board = Board.from_fen(START_FEN)
         move = Board.from_ucci("h2e2")

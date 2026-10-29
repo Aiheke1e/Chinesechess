@@ -84,6 +84,34 @@ class MoverTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(tap.call_count, 2)
 
+    def test_confirmation_repairs_glowing_destination_on_first_frame(self):
+        before_frame, after_frame = object(), object()
+        probe = mover._probe_indices(self.before, *self.move)
+
+        def strong(frame, orientation, indices):
+            if frame is before_frame:
+                return {index: self.before[index] for index in indices}
+            return {self.move[0]: None, self.move[1]: None}
+
+        def presence(frame, orientation, indices):
+            if frame is before_frame:
+                return {index: self.before[index] for index in indices}
+            return {self.move[0]: None,
+                    self.move[1]: self.after[self.move[1]]}
+
+        with patch.object(mover, "screenshot",
+                          side_effect=[before_frame, after_frame]), \
+             patch.object(mover, "recognize_indices", side_effect=strong), \
+             patch.object(mover, "recognize_presence_indices",
+                          side_effect=presence), \
+             patch.object(mover, "tap") as tap, \
+             patch.object(mover.time, "sleep"):
+            ok, message = mover.move_piece(
+                *self.move, "device", expected_before=self.before)
+        self.assertTrue(ok)
+        self.assertIn("高亮容错局部校验", message)
+        self.assertEqual(tap.call_count, 2)
+
     def test_failed_confirmation_never_retries_input(self):
         with patch.object(mover, "screenshot", return_value=self.before), \
              patch.object(mover, "recognize_position",

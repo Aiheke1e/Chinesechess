@@ -862,6 +862,10 @@ class LiveController:
             text = str(item.get("notation") or "")
             if re.fullmatch(r"[a-i][0-9][a-i][0-9]", ucci) and text:
                 route.append({"ucci": ucci, "notation": text})
+        executed = str(event.get("ucci") or "")
+        if route and route[0]["ucci"] == executed:
+            route.pop(0)
+        route = route[:3]
         if len(route) < 3 or not (big_capture or confidence >= 80):
             return None
         reasons = []

@@ -137,6 +137,15 @@ class Pikafish:
         if not ready:
             self.quit()
             raise RuntimeError("Pikafish did not become ready")
+        # Spend the same wall-clock budget more effectively.  Two threads are
+        # conservative enough to leave CPU for ADB recognition and TTS, while
+        # a 128 MB hash prevents the three-PV search from constantly replacing
+        # its tiny default table.
+        threads = max(1, min(4, int(os.environ.get("PIKAFISH_THREADS", "2"))))
+        hash_mb = max(16, min(512, int(os.environ.get(
+            "PIKAFISH_HASH_MB", "128"))))
+        self.send(f"setoption name Threads value {threads}")
+        self.send(f"setoption name Hash value {hash_mb}")
         # 加载 NNUE
         self.send("setoption name EvalFile value pikafish.nnue")
         # Keep three human-readable candidate plans from the same timed search.

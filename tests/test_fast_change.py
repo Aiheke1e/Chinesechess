@@ -64,6 +64,42 @@ class FastChangeTests(unittest.TestCase):
         self.assertEqual(resolved, move)
         self.assertEqual(status, "presence_fallback")
 
+    def test_full_recovery_with_proved_endpoints_is_one_frame_strong(self):
+        after = self.board.copy()
+        after.apply(self.move)
+        occupancy = [None if piece is None else
+                     ("R" if piece.isupper() else "r")
+                     for piece in after.sq]
+        moving = self.board.sq[self.move[0]]
+        with patch.object(player, "recognize_occupancy",
+                          return_value=occupancy), \
+             patch.object(player, "recognize_indices", return_value={
+                 self.move[0]: None, self.move[1]: moving}):
+            resolved, status, _ = player.assess_image_against_board(
+                self.board, object(), "red_bottom")
+        self.assertEqual(resolved, self.move)
+        self.assertEqual(status, "verified_recovered")
+        accepted, pending = player.confirmed_move_candidate(
+            None, resolved, status)
+        self.assertEqual(accepted, self.move)
+        self.assertIsNone(pending)
+
+    def test_endpoint_proved_change_is_accepted_in_one_frame(self):
+        accepted, pending = player.confirmed_move_candidate(
+            None, self.move, "fast_change")
+        self.assertEqual(accepted, self.move)
+        self.assertIsNone(pending)
+
+    def test_presence_fallback_still_requires_two_frames(self):
+        accepted, pending = player.confirmed_move_candidate(
+            None, self.move, "presence_fallback")
+        self.assertIsNone(accepted)
+        self.assertEqual(pending, self.move)
+        accepted, pending = player.confirmed_move_candidate(
+            pending, self.move, "presence_fallback")
+        self.assertEqual(accepted, self.move)
+        self.assertIsNone(pending)
+
 
 if __name__ == "__main__":
     unittest.main()

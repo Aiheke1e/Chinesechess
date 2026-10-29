@@ -155,6 +155,23 @@ def move_piece(frm: int, to: int, device, expected_before=None,
         endpoints = recognize_indices(image, orientation, (frm, to))
         if _probe_matches(expected_after, endpoints, (frm, to)):
             return True, f"OK {piece} {frm}->{to} 落子成功（局部快速校验）"
+        # The destination glyph can disappear under JJ's bright last-move
+        # ring.  Presence recognition only repairs the expected occupied
+        # destination; it never invents an empty source, so this preserves the
+        # same source-empty/destination-owned safety proof on the first frame.
+        presence = recognize_presence_indices(
+            image, orientation, (frm, to))
+        repaired = dict(endpoints)
+        for index in (frm, to):
+            wanted = expected_after[index]
+            seen = presence.get(index)
+            if (wanted is not None and endpoints.get(index) is None and
+                    seen is not None and
+                    wanted.isupper() == seen.isupper()):
+                repaired[index] = wanted
+        if _probe_matches(expected_after, repaired, (frm, to)):
+            return True, (f"OK {piece} {frm}->{to} 落子成功"
+                          "（高亮容错局部校验）")
         # An empty result means the local classifier itself was unavailable;
         # do not postpone the proven full-board fallback in that case.
         if endpoints and time.monotonic() < next_full_check:
