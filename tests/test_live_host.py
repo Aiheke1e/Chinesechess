@@ -438,6 +438,42 @@ class LiveHostTests(unittest.TestCase):
         self.assertIn("咱们", submitted[0][1])
         self.assertIn("收下这枚马", submitted[0][1])
 
+    def test_queen_style_explanation_is_prepared_for_wait_window(self):
+        prepared_moves = []
+        prepared_idle = []
+
+        class Pipeline:
+            def prepare_move(self, kind, payload, direct_text=None):
+                prepared_moves.append((kind, payload, direct_text))
+
+            def prepare_idle(self, payload, kind="等待期长讲解",
+                             direct_text=None):
+                prepared_idle.append((kind, payload, direct_text))
+
+        controller = object.__new__(LiveController)
+        controller.settings = LiveSettings(
+            commentary_enabled=True, queen_commentary_enabled=True)
+        controller.last_engine_score = None
+        controller.pipeline = Pipeline()
+        controller._notify = lambda *args: None
+        controller.submit_chess({
+            "event": "engine_analysis", "number": 3,
+            "notation": "红方 炮五进四，吃马", "side": "r",
+            "summary": "我方稍优", "speech_token": "queen-3",
+            "analysis": {"score_type": "cp", "score": 120},
+            "candidates": [], "pv": [],
+            "queen_evidence": {
+                "最终选择": "红方 炮五进四，吃马",
+                "选择理由": ["吃掉马"],
+                "候选取舍": [{"走法": "马三进五", "取舍": "较慢"}],
+                "值得展开": True,
+            },
+        })
+        self.assertEqual(len(prepared_moves), 1)
+        self.assertEqual(len(prepared_idle), 1)
+        self.assertEqual(prepared_idle[0][0], "QUEEN式等待期解说")
+        self.assertIn("QUEEN式证据", prepared_idle[0][1])
+
     def test_key_own_move_is_preheated_before_click_confirmation(self):
         prepared = []
 

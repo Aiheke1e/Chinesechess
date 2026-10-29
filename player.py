@@ -21,6 +21,7 @@ from notation import move_description
 from session_state import (block_position, infer_turn_from_standard,
                            match_live_session, save_session)
 from runtime_status import write_runtime_status
+from queen_commentary import build_queen_evidence
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(HERE, "player_config.json")
@@ -625,9 +626,10 @@ def main():
             d = move_description(b, mv)
             analysis = dict(getattr(pf, "last_analysis", {}) or {})
             analysis_summary, pv_line = engine_commentary(b, analysis)
+            candidate_analyses = list(
+                getattr(pf, "last_candidates", [])[:3])
             candidate_plans = []
-            for rank, candidate in enumerate(
-                    getattr(pf, "last_candidates", [])[:3], start=1):
+            for rank, candidate in enumerate(candidate_analyses, start=1):
                 candidate_summary, candidate_line = engine_commentary(
                     b, dict(candidate))
                 if not candidate_line:
@@ -638,6 +640,8 @@ def main():
                     "assessment": candidate_summary,
                     "line": [text for _, text in candidate_line[:3]],
                 })
+            queen_evidence = build_queen_evidence(
+                b, mv, candidate_analyses)
             print("-" * 54)
             print(f"第 {n + 1} 回合｜我方走棋：{d}", flush=True)
             print(f"技术信息：{desc}，坐标 {u}")
@@ -669,6 +673,7 @@ def main():
                         material=material_summary(b),
                         summary=analysis_summary, analysis=analysis,
                         candidates=candidate_plans,
+                        queen_evidence=queen_evidence,
                         speech_token=speech_token,
                         pv=[{"ucci": move_ucci, "notation": text}
                             for move_ucci, text in pv_line])

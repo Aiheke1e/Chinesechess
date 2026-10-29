@@ -160,6 +160,8 @@ class ControlPanel:
         self.live_speech = tk.BooleanVar(value=live.speech_enabled)
         self.live_commentary = tk.BooleanVar(value=live.commentary_enabled)
         self.live_sandtable = tk.BooleanVar(value=live.sandtable_enabled)
+        self.live_queen_commentary = tk.BooleanVar(
+            value=live.queen_commentary_enabled)
         self.live_status = tk.StringVar(value="互动未开启")
         self.broadcaster_open = False
         self.speech_status = tk.StringVar(
@@ -433,6 +435,10 @@ class ControlPanel:
         ttk.Checkbutton(options, text="游戏内沙盘", variable=self.live_sandtable,
                         command=lambda: self.save_live_settings(quiet=True)).grid(
                             row=0, column=10, padx=5)
+        ttk.Checkbutton(options, text="QUEEN式讲解",
+                        variable=self.live_queen_commentary,
+                        command=lambda: self.save_live_settings(quiet=True)).grid(
+                            row=0, column=11, padx=5)
 
         text_style = dict(bg=THEME["editor"], fg=THEME["text"],
                           insertbackground=THEME["text"],
@@ -876,6 +882,8 @@ class ControlPanel:
             "speech_enabled": bool(self.live_speech.get()),
             "commentary_enabled": bool(self.live_commentary.get()),
             "sandtable_enabled": bool(self.live_sandtable.get()),
+            "queen_commentary_enabled": bool(
+                self.live_queen_commentary.get()),
         }
 
     def save_live_settings(self, quiet=False):

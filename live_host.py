@@ -32,7 +32,7 @@ CHESS_SPEECH_KINDS = {
     "我方走棋播报", "我方走棋解说", "对手走棋播报", "对手走棋解说",
     "关键走棋解说", "关键应手解说", "等待期长讲解", "应手预判",
     "开局定式解说",
-    "沙盘推演解说", "收官解说", "获胜收官", "结算收官",
+    "沙盘推演解说", "QUEEN式等待期解说", "收官解说", "获胜收官", "结算收官",
 }
 OWN_SPEECH_KINDS = {
     "我方走棋播报", "关键走棋解说", "沙盘推演解说",
@@ -78,6 +78,7 @@ class LiveSettings:
     commentary_enabled: bool = True
     commentary_density: str = "自然"
     sandtable_enabled: bool = True
+    queen_commentary_enabled: bool = True
 
 
 def load_settings():
@@ -268,6 +269,20 @@ class SpeechPipeline:
             result.append(body + punctuation)
         return "".join(result)
 
+    @classmethod
+    def _complete_chess_text(cls, text, max_chars=180):
+        """Bound long commentary at a sentence boundary, never mid-sentence."""
+        cleaned = cls._clean_text(text)
+        if len(cleaned) <= max_chars:
+            return cleaned
+        parts = re.findall(r"[^。！？!?；;]+[。！？!?；;]?", cleaned)
+        result = ""
+        for part in parts:
+            if result and len(result + part) > max_chars:
+                break
+            result += part
+        return result or cleaned
+
     def prepare_move(self, kind, payload, direct_text=None):
         """Pre-generate one move's text/audio; play only after commit_move."""
         token = str(payload.get("speech_token") or "").strip()
@@ -426,7 +441,7 @@ class SpeechPipeline:
                 list(self.history), model=self.settings.model)
             text = self._first_person_text(text, payload)
             text = (self._short_chess_text(text) if kind == "应手预判"
-                    else text[:120])
+                    else self._complete_chess_text(text))
             if not text or state["cancel"].is_set():
                 return
             if self.settings.speech_enabled:
@@ -1217,6 +1232,7 @@ class LiveController:
                    "speech_token": event.get("speech_token"),
                    "子力盘点": event.get("material"),
                    "局势分析": event.get("summary"),
+                   "QUEEN式证据": event.get("queen_evidence") or {},
                    "候选方案": [
                        {"走法": item.get("move"),
                         "局面判断": item.get("assessment"),
@@ -1279,6 +1295,17 @@ class LiveController:
             else:
                 self.pipeline.submit(1, kind, important_payload,
                                      direct_text=direct)
+            evidence = event.get("queen_evidence") or {}
+            settings = getattr(self, "settings", None)
+            if (settings is not None and
+                    getattr(settings, "queen_commentary_enabled", True) and
+                    not sandtable and evidence.get("值得展开")):
+                self.pipeline.prepare_idle({
+                    **payload,
+                    "要求": ("使用QUEEN式候选比较：先说咱们为什么选这手，"
+                             "再用一句说明另一个候选差在哪里，最后点出最可能应手；"
+                             "只依据QUEEN式证据，不念评分，不说红方黑方，最多三句"),
+                }, kind="QUEEN式等待期解说")
             return
         prediction_route = event.get("pv", [])
         predicted_reply = (prediction_route[1]
