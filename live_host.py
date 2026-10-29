@@ -99,6 +99,28 @@ def save_settings(settings):
 
 
 class SpeechPipeline:
+    def _recently_spoken(self, text):
+        normalized = re.sub(r"[\s，。！？、；：,.!?]", "", text)
+        if not normalized:
+            return True
+        recent = [item.get("content", "") for item in list(self.history)[-12:]
+                  if item.get("role") == "assistant"]
+        return any(re.sub(r"[\s，。！？、；：,.!?]", "", old) == normalized
+                   for old in recent)
+    @staticmethod
+    def _chess_line_valid(text, kind, payload):
+        if kind not in CHESS_SPEECH_KINDS:
+            return True
+        generic = ("改善棋子位置", "棋子更活跃", "子力更活跃",
+                   "看对面怎么应对", "看看对面怎么应对", "看人家怎么应对",
+                   "肯定有好戏", "挺有意思", "这步很关键")
+        if any(term in text for term in generic):
+            return False
+        notation = str(payload.get("我方计划走法") or "")
+        if notation and "，吃" not in notation and any(
+                term in text for term in ("收下这枚", "吃掉一枚", "直接拿下")):
+            return False
+        return True
     """Generate text/TTS in background; never blocks chess input."""
     def __init__(self, settings, notify, llm=respond, tts=synthesize):
         self.settings, self.notify = settings, notify
@@ -316,6 +338,8 @@ class SpeechPipeline:
                 list(self.history), model=self.settings.model)
             text = self._first_person_text(text, payload)
             text = self._short_chess_text(text)
+            if not self._chess_line_valid(text, kind, payload):
+                text = direct_text or ""
             if not text:
                 return
             tts_error = None
@@ -444,6 +468,10 @@ class SpeechPipeline:
             text = self._first_person_text(text, payload)
             text = (self._short_chess_text(text) if kind == "应手预判"
                     else self._complete_chess_text(text))
+            if not self._chess_line_valid(text, kind, payload):
+                return
+            if kind in CHESS_SPEECH_KINDS and self._recently_spoken(text):
+                return
             if not text or state["cancel"].is_set():
                 return
             if self.settings.speech_enabled:
@@ -608,6 +636,9 @@ class LiveController:
         self.opening_library = load_opening_library()
         self.last_chess_spoken_at = time.monotonic()
         self.pending_move_events = {}
+        self.pending_prediction = None
+        self.reply_context = None
+        self.recent_chess_topics = deque(maxlen=6)
         self.sandbox_speech_tokens = set()
         self.sandbox_speech_by_move = {}
         self.closing_announced = False
@@ -1162,6 +1193,9 @@ class LiveController:
             return
         if event.get("event") == "start":
             self._reset_opening()
+            self.pending_prediction = None
+            self.reply_context = None
+            self.recent_chess_topics.clear()
             return
         if event.get("event") == "game_sandbox":
             action = event.get("action")
@@ -1207,6 +1241,8 @@ class LiveController:
             getattr(self, "sandbox_speech_by_move", {}).clear()
             self._close_sandtable("对局结束")
             self.pending_move_events = {}
+            self.pending_prediction = None
+            self.reply_context = None
             self.closing_announced = False
             if event.get("result") == "won":
                 self.pipeline.submit(
@@ -1283,6 +1319,16 @@ class LiveController:
             self.opponent_move_count = getattr(
                 self, "opponent_move_count", 0) + 1
             self.quiet_move_count = getattr(self, "quiet_move_count", 0) + 1
+            prediction = getattr(self, "pending_prediction", None)
+            self.pending_prediction = None
+            if prediction:
+                matched = str(event.get("ucci") or "") == prediction["ucci"]
+                self.reply_context = {
+                    "预判走法": prediction["notation"],
+                    "实际应手": notation, "预判兑现": matched,
+                }
+            else:
+                self.reply_context = None
             important_text = self._important_reply_text(notation)
             if important_text:
                 # Keep the tactical note visible, but do not let a slow TTS
@@ -1311,6 +1357,11 @@ class LiveController:
                         "短变化": item.get("line", [])}
                        for item in event.get("candidates", [])[:3]],
                    "预测路线": [item.get("notation") for item in event.get("pv", [])[:4]]}
+        reply_context = getattr(self, "reply_context", None)
+        if reply_context:
+            payload["上一手预判复盘"] = reply_context
+            self.reply_context = None
+        payload["最近已讲话题"] = list(getattr(self, "recent_chess_topics", ()))
         sandtable = (self._sandtable_plan(event)
                      if getattr(getattr(self, "settings", None),
                                 "sandtable_enabled", True) else None)
@@ -1384,7 +1435,13 @@ class LiveController:
                                      direct_text=direct)
             evidence = event.get("queen_evidence") or {}
             settings = getattr(self, "settings", None)
-            if (settings is not None and
+            if reply_context:
+                self.pipeline.prepare_idle({
+                    **payload,
+                    "要求": "只用上一手预判复盘的事实，轻轻回应一次；不编棋局影响",
+                }, kind="QUEEN式等待期解说",
+                    direct_text=self._prediction_followup(reply_context))
+            elif (settings is not None and
                     getattr(settings, "queen_commentary_enabled", True) and
                     not sandtable and evidence.get("值得展开")):
                 self.pipeline.prepare_idle({
@@ -1393,12 +1450,23 @@ class LiveController:
                              "再用一句说明另一个候选差在哪里，最后点出最可能应手；"
                              "只依据QUEEN式证据，不念评分，不说红方黑方，最多三句"),
                 }, kind="QUEEN式等待期解说")
+            self._remember_chess_topic(notation)
+            return
+        if reply_context:
+            self.pipeline.prepare_idle({**payload},
+                kind="QUEEN式等待期解说",
+                direct_text=self._prediction_followup(reply_context))
+            self._remember_chess_topic(notation)
             return
         prediction_route = event.get("pv", [])
         predicted_reply = (prediction_route[1]
                            if len(prediction_route) >= 2 else None)
         if (not sandtable and not near_win and predicted_reply and
                 self._prediction_due(event.get("number"))):
+            self.pending_prediction = {
+                "ucci": str(predicted_reply.get("ucci") or ""),
+                "notation": str(predicted_reply.get("notation") or ""),
+            }
             self.quiet_move_count = 0
             self.pipeline.prepare_idle({
                 **payload,
@@ -1406,6 +1474,7 @@ class LiveController:
                 "预测依据": "Pikafish主变化中的第一应手",
             }, kind="应手预判", direct_text=self._engine_prediction_text(
                 predicted_reply.get("notation"), self.prediction_count))
+            self._remember_chess_topic(notation)
             return
         self.quiet_move_count = getattr(self, "quiet_move_count", 0) + 1
         if self._needs_silence_filler():
@@ -1418,6 +1487,21 @@ class LiveController:
                 "要求": ("现在是等棋空档，不要念走法；用两句口语讲当前的主要思路"
                          "和接下来值得看的一个点，不念评分或技术字段"),
                 }, direct_text=idle_text)
+        self._remember_chess_topic(notation)
+
+    @classmethod
+    def _prediction_followup(cls, context):
+        actual = cls._spoken_notation(context.get("实际应手"))
+        predicted = cls._spoken_notation(context.get("预判走法"))
+        if context.get("预判兑现"):
+            return f"还真走了{actual}，刚才这手猜中了。"
+        return f"咦，没走预想的{predicted}，他改走{actual}。"
+
+    def _remember_chess_topic(self, notation):
+        topics = getattr(self, "recent_chess_topics", None)
+        if topics is None:
+            topics = self.recent_chess_topics = deque(maxlen=6)
+        topics.append(notation)
 
     def receive(self, event, force=False):
         kind = event.get("type", "chat")

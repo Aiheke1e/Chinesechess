@@ -617,6 +617,22 @@ class LiveHostTests(unittest.TestCase):
         self.assertNotIn("怎么应对", text)
         self.assertNotIn("有好戏", text)
 
+    def test_chess_speech_rejects_empty_capture_and_generic_tail(self):
+        payload = {"我方计划走法": "红方 车二进八"}
+        self.assertFalse(SpeechPipeline._chess_line_valid(
+            "直接收下这枚。", "关键走棋解说", payload))
+        self.assertFalse(SpeechPipeline._chess_line_valid(
+            "接下来看对面怎么应对，挺有意思。", "等待期长讲解", payload))
+        self.assertTrue(SpeechPipeline._chess_line_valid(
+            "车二进八，把车送到前沿。", "关键走棋解说", payload))
+
+    def test_prediction_followup_uses_actual_reply(self):
+        text = LiveController._prediction_followup({
+            "预判走法": "黑方 马8进7", "实际应手": "黑方 车9平8",
+            "预判兑现": False})
+        self.assertIn("车9平8", text)
+        self.assertIn("马8进7", text)
+
     def test_normal_speech_commits_before_adb_move(self):
         decisions = []
 
