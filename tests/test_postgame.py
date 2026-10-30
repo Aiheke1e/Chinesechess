@@ -7,7 +7,7 @@ import numpy as np
 
 from postgame import (detect_confirmation_button, detect_large_action_button,
                       detect_match_mode_button, detect_modal_close,
-                      dismiss_rank_promotion,
+                      dismiss_nonboard_interruption, dismiss_rank_promotion,
                       detect_rules_overlay_dismiss,
                       handle_postgame, has_actionable_postgame,
                       parse_action_nodes)
@@ -28,6 +28,27 @@ class PostgameTests(unittest.TestCase):
                    return_value='<node text="活动中心"/>'), \
              patch("postgame.adb") as adb_mock:
             self.assertFalse(dismiss_rank_promotion("device"))
+        adb_mock.assert_not_called()
+
+    def test_nonboard_unity_interruption_uses_one_safe_back(self):
+        with patch("recognizer.recognize_position",
+                   return_value=(None, None)), \
+             patch("postgame.adb") as adb_mock, \
+             patch("postgame.time.sleep"):
+            self.assertTrue(dismiss_nonboard_interruption(
+                "device", np.zeros((1920, 1080, 3), dtype=np.uint8)))
+        adb_mock.assert_called_once_with(
+            ["shell", "input", "keyevent", "4"], device="device")
+
+    def test_nonboard_fallback_never_backs_out_of_recognized_board(self):
+        squares = [None] * 90
+        for index, piece in zip((0, 4, 85, 89), "rkRK"):
+            squares[index] = piece
+        with patch("recognizer.recognize_position",
+                   return_value=(squares, "red_bottom")), \
+             patch("postgame.adb") as adb_mock:
+            self.assertFalse(dismiss_nonboard_interruption(
+                "device", np.zeros((1920, 1080, 3), dtype=np.uint8)))
         adb_mock.assert_not_called()
 
     @staticmethod

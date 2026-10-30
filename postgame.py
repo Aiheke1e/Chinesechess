@@ -95,6 +95,30 @@ def dismiss_rank_promotion(device):
     return True
 
 
+def dismiss_nonboard_interruption(device, image, orientation="auto"):
+    """Close one full-screen Unity interruption without backing out of a board.
+
+    JJ renders rank/reward animations inside Unity, so UI XML can be empty.
+    BACK is allowed only when the normal recognizer cannot find even a minimal
+    chess position.  A damaged or highlighted live board with both camps still
+    present is therefore never dismissed here.
+    """
+    if image is None:
+        return False
+    try:
+        from recognizer import recognize_position
+        squares, detected = recognize_position(image, orientation)
+    except Exception:
+        return False
+    pieces = (0 if squares is None else
+              sum(piece is not None for piece in squares))
+    if detected in ("red_bottom", "black_bottom") and pieces >= 4:
+        return False
+    adb(["shell", "input", "keyevent", "4"], device=device)
+    time.sleep(0.6)
+    return True
+
+
 def detect_large_action_button(image):
     """Detect JJ's large green result-page button in the lower screen area."""
     if image is None:

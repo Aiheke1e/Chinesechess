@@ -522,7 +522,8 @@ def main():
                                 now - last_anomaly_report >= 15.0):
                             if anomaly_count == 3:
                                 try:
-                                    from postgame import dismiss_rank_promotion
+                                    from postgame import (dismiss_nonboard_interruption,
+                                                          dismiss_rank_promotion)
                                     promotion_closed = dismiss_rank_promotion(device)
                                 except Exception:
                                     promotion_closed = False
@@ -535,6 +536,21 @@ def main():
                                         reason="rank_promotion_screen",
                                         fen=b.to_fen())
                                     break
+                                try:
+                                    interruption_closed = dismiss_nonboard_interruption(
+                                        device, image, orientation)
+                                except Exception:
+                                    interruption_closed = False
+                                if interruption_closed:
+                                    print("[界面恢复] 检测到非棋盘全屏插页，已返回并重新识别。",
+                                          flush=True)
+                                    events.emit(
+                                        "ui_interruption_dismissed",
+                                        reason="nonboard_fullscreen",
+                                        fen=b.to_fen())
+                                    anomaly_count = 0
+                                    reference_image = screenshot(device)
+                                    continue
                             reason = {
                                 "retry": "棋盘偏差超过2格，正在重新截图",
                                 "illegal": "画面变化无法由合法走法反推",
