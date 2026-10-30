@@ -5,7 +5,7 @@ from pathlib import Path
 
 from bailian_tts import available_voices, repair_streaming_wav_header
 from glm_client import SYSTEM_PROMPT
-from live_host import load_settings
+from live_host import LiveSettings
 
 
 class LiveServiceTests(unittest.TestCase):
@@ -14,7 +14,8 @@ class LiveServiceTests(unittest.TestCase):
         self.assertIn("longanyang", available_voices())
 
     def test_commentary_and_sandtable_are_enabled_by_default(self):
-        settings = load_settings()
+        # Verify code defaults, not the user's current runtime switches.
+        settings = LiveSettings()
         self.assertTrue(settings.commentary_enabled)
         self.assertTrue(settings.sandtable_enabled)
 

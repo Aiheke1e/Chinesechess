@@ -603,6 +603,20 @@ class LiveHostTests(unittest.TestCase):
         self.assertIn("平车换线", text)
         self.assertNotIn("直接收下这枚", text)
 
+    def test_quiet_move_uses_engine_grounded_geometry(self):
+        self.assertEqual(
+            LiveController._synced_move_text(
+                "红方 马七退五", ["争夺中路", "马向中路靠拢"], 6),
+            "回马靠中，走马七退五。")
+        self.assertEqual(
+            LiveController._synced_move_text(
+                "红方 马二进三", ["马向中路靠拢"], 2),
+            "跳马靠中，走马二进三。")
+        self.assertEqual(
+            LiveController._synced_move_text(
+                "红方 炮二退一", ["炮回撤调整"], 7),
+            "炮先回一格，走炮二退一。")
+
     def test_capture_names_the_exact_captured_piece_once(self):
         text = LiveController._synced_move_text(
             "红方 兵三进一，吃卒", ["吃子"], number=7)
@@ -625,6 +639,13 @@ class LiveHostTests(unittest.TestCase):
             "接下来看对面怎么应对，挺有意思。", "等待期长讲解", payload))
         self.assertTrue(SpeechPipeline._chess_line_valid(
             "车二进八，把车送到前沿。", "关键走棋解说", payload))
+
+    def test_chess_speech_rejects_wrong_piece_action(self):
+        payload = {"我方计划走法": "红方 相五进三，吃卒"}
+        self.assertFalse(SpeechPipeline._chess_line_valid(
+            "相五进三，吃卒，跳马抢位。", "关键走棋解说", payload))
+        self.assertTrue(SpeechPipeline._chess_line_valid(
+            "飞相吃卒，相五进三。", "关键走棋解说", payload))
 
     def test_prediction_followup_uses_actual_reply(self):
         text = LiveController._prediction_followup({

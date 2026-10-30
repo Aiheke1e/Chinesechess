@@ -145,13 +145,36 @@ class SpeechPipeline:
             return True
         generic = ("改善棋子位置", "棋子更活跃", "子力更活跃",
                    "看对面怎么应对", "看看对面怎么应对", "看人家怎么应对",
-                   "肯定有好戏", "挺有意思", "这步很关键")
+                   "肯定有好戏", "挺有意思", "这步很关键",
+                   "直接威胁", "更加活跃", "更佳位置")
         if any(term in text for term in generic):
             return False
         notation = str(payload.get("我方计划走法") or "")
+        move = LiveController._spoken_notation(notation)
         if notation and "，吃" not in notation and any(
-                term in text for term in ("收下这枚", "吃掉一枚", "直接拿下")):
+                term in text for term in (
+                    "收下", "拿下", "吃掉", "吃到", "这波交换")):
             return False
+        if "，吃" in notation:
+            captured = notation.rsplit("吃", 1)[-1][:1]
+            if any(term in text for term in ("吃", "拿下", "收下")) and captured not in text:
+                return False
+        # Short move calls only discuss the current move.  Reject the most
+        # common hallucination class before it can enter TTS: describing a
+        # rook/cannon/elephant move as a horse jump (or vice versa).
+        if kind == "关键走棋解说" and move:
+            piece = move[:1]
+            action_words = {
+                "马": ("跳马", "马腿", "跃马", "回马"),
+                "车": ("平车", "提车", "出车", "退车", "大车"),
+                "炮": ("架炮", "平炮", "抬炮", "退炮", "炮位"),
+                "兵卒": ("拱兵", "拱卒", "过河兵", "小兵", "小卒"),
+                "相象": ("飞相", "飞象", "补相", "补象"),
+                "仕士": ("补仕", "补士"),
+            }
+            for allowed, words in action_words.items():
+                if piece not in allowed and any(word in text for word in words):
+                    return False
         return True
     """Generate text/TTS in background; never blocks chess input."""
     def __init__(self, settings, notify, llm=respond, tts=synthesize):
@@ -1140,12 +1163,49 @@ class LiveController:
                 "卒": "拱卒", "相": "飞相", "象": "飞象", "仕": "补仕",
                 "士": "补士", "帅": "动帅", "将": "动将",
             }.get(base_move[:1], "走子")
-            return f"{action}，{base_move}，吃掉一枚{captured}。"
-        return cls._quiet_move_text(base_move, number)
+            suffix = "，顺手将军" if "形成将军" in reasons else ""
+            return f"{action}，{base_move}，吃掉一枚{captured}{suffix}。"
+        return cls._quiet_move_text(base_move, number, reasons)
 
     @classmethod
-    def _quiet_move_text(cls, move, number=0):
+    def _quiet_move_text(cls, move, number=0, reasons=()):
         """Give quiet moves distinct wording without inventing a tactic."""
+        reasons = tuple(str(item) for item in (reasons or ()))
+        if "形成将军" in reasons:
+            return f"{move}，这手将军。"
+        if "先解除将军" in reasons:
+            return f"{move}，先把将解开。"
+        if "争夺中路" in reasons:
+            action = {
+                "马": "回马靠中", "车": "平车占中",
+                "炮": "平炮看中路", "兵": "小兵往中路靠",
+                "卒": "小卒往中路靠",
+            }.get(move[:1], "往中路靠")
+            return f"{action}，走{move}。"
+        reason_text = "、".join(reasons)
+        horse_to_center = "回马靠中" if "退" in move else "跳马靠中"
+        grounded = (
+            ("马向中路靠拢", horse_to_center),
+            ("马向前跃进", "跃马向前"),
+            ("马回撤调整", "回马调整"),
+            ("车横向换线", "平车换线"),
+            ("车向前推进", "大车前压一线"),
+            ("车回撤调整", "退车重新站位"),
+            ("炮横向换线", "平炮换线"),
+            ("炮向前推进", "炮位往前挪"),
+            ("炮回撤调整", "炮先回一格"),
+            ("过河兵向中路靠拢", "过河兵往中路一靠"),
+            ("过河兵横向换线", "过河兵横着换一路"),
+            ("刚刚过河", "小兵过河"),
+            ("向前推进", "往前拱一格"),
+            ("飞相调整防线", "飞相补一手"),
+            ("飞象调整防线", "飞象补一手"),
+            ("补仕守住宫门", "补仕护住宫门"),
+            ("补士守住宫门", "补士护住宫门"),
+        )
+        for fact, phrase in grounded:
+            if fact in reason_text:
+                return f"{phrase}，走{move}。"
         piece = move[:1]
         if piece == "车":
             variants = (("平车换线", "大车横过来换条路") if "平" in move
@@ -1155,8 +1215,8 @@ class LiveController:
             variants = ("跳马抢位", "马腿一抬，先抢个支点")
         elif piece == "炮":
             variants = (("平炮转线", "炮架横过来换个角度") if "平" in move
-                        else ("抬炮施压", "炮往前架，先占住线路") if "进" in move
-                        else ("退炮留根", "炮先回撤，给后排留照应"))
+                        else ("炮位前移", "炮往前挪一格") if "进" in move
+                        else ("炮先回撤", "炮位往后收一收"))
         elif piece in ("兵", "卒"):
             variants = ("拱兵开路", "小兵往前顶，先争一格")
         elif piece in ("相", "象"):
@@ -1193,6 +1253,9 @@ class LiveController:
             return f"{move}，把过河兵顶上去，多添一个进攻点。"
         if reason.startswith("吃掉"):
             return ""  # The exact capture was already called at the move.
+        grounded = cls._quiet_move_text(move, number, reasons)
+        if grounded and not grounded.startswith("先把位置站稳"):
+            return grounded
         # Generic placement labels have no demonstrable tactical content.
         # Stay quiet until the engine provides a specific consequence.
         return ""

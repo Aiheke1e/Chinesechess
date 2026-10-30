@@ -78,19 +78,55 @@ def _move_facts(board, move):
         facts.append("先解除将军")
     if after.in_check(opponent):
         facts.append("形成将军")
-    _, from_col = divmod(move[0], 9)
+    from_row, from_col = divmod(move[0], 9)
     to_row, to_col = divmod(move[1], 9)
-    if to_col == 4 and from_col != 4:
+    piece_name = PIECE_NAMES.get(piece, piece) if piece else "棋子"
+    forward = to_row < from_row if side == RED else to_row > from_row
+    if (piece and piece.upper() in "NRCP" and
+            to_col == 4 and from_col != 4):
         facts.append("争夺中路")
     if piece and piece.upper() in "NRC":
         home_row = 9 if side == RED else 0
         if divmod(move[0], 9)[0] == home_row:
             facts.append("调动后排大子")
-    if piece and piece.upper() == "P":
-        crossed = to_row <= 4 if side == RED else to_row >= 5
-        if crossed:
+    # Positional facts below only describe geometry that is visible on the
+    # board.  They deliberately avoid invented claims such as "施压" or
+    # "制造威胁" when the search result does not prove one.
+    if piece and piece.upper() in "RC":
+        if from_row == to_row:
+            facts.append(piece_name + "横向换线")
+        elif forward:
+            facts.append(piece_name + "向前推进")
+        else:
+            facts.append(piece_name + "回撤调整")
+    elif piece and piece.upper() == "N":
+        if abs(to_col - 4) < abs(from_col - 4):
+            facts.append("马向中路靠拢")
+        elif forward:
+            facts.append("马向前跃进")
+        else:
+            facts.append("马回撤调整")
+    elif piece and piece.upper() == "P":
+        crossed_before = from_row <= 4 if side == RED else from_row >= 5
+        crossed_after = to_row <= 4 if side == RED else to_row >= 5
+        if from_row == to_row:
+            if abs(to_col - 4) < abs(from_col - 4):
+                facts.append("过河兵向中路靠拢")
+            else:
+                facts.append("过河兵横向换线")
+        elif not crossed_before and crossed_after:
+            facts.append(piece_name + "刚刚过河")
+        elif crossed_after:
             facts.append("让过河兵参与进攻")
-    return facts or ["改善棋子位置"]
+        else:
+            facts.append(piece_name + "向前推进")
+    elif piece and piece.upper() == "B":
+        facts.append("飞" + piece_name + "调整防线")
+    elif piece and piece.upper() == "A":
+        facts.append("补" + piece_name + "守住宫门")
+    elif piece and piece.upper() == "K":
+        facts.append(piece_name + "调整位置")
+    return list(dict.fromkeys(facts))
 
 
 def build_queen_evidence(board, chosen_move, candidates):

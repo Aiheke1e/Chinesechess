@@ -37,6 +37,16 @@ class QueenCommentaryTests(unittest.TestCase):
         self.assertIn("吃掉马", evidence["选择理由"])
         self.assertTrue(evidence["值得展开"])
 
+    def test_quiet_move_uses_visible_geometry_not_generic_intent(self):
+        board = Board.from_fen(START_FEN)
+        move = Board.from_ucci("g3g4")
+        evidence = build_queen_evidence(board, move, [{
+            "score_type": "cp", "score": 20,
+            "pv": [Board.ucci(move)],
+        }])
+        self.assertIn("兵向前推进", evidence["选择理由"])
+        self.assertNotIn("改善棋子位置", evidence["选择理由"])
+
 
 if __name__ == "__main__":
     unittest.main()
