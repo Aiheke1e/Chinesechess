@@ -118,6 +118,18 @@ def _position_matches(board, image, orientation):
     observed = recognize_occupancy(image, orientation)
     if trusted_position_matches(board.sq, observed, range(90)):
         return True
+    # Piece artwork can be temporarily covered by JJ's last-move glow even
+    # though every occupied square and side colour is already correct.  Exact
+    # coloured occupancy is sufficient for the sandbox gate: every legal move
+    # changes at least a source and destination square, so an opponent move
+    # cannot pass this zero-difference check.
+    if observed is not None and len(observed) == 90:
+        same_coloured_occupancy = all(
+            ((wanted is None) == (seen is None) and
+             (wanted is None or wanted.isupper() == seen.isupper()))
+            for wanted, seen in zip(board.sq, observed))
+        if same_coloured_occupancy:
+            return True
     # The live board often retains red/green last-move rings exactly when a
     # sandbox trigger fires.  Presence-only recognition is allowed to repair
     # that display variant, but it must describe the unchanged trusted board;
@@ -321,7 +333,7 @@ def _return_to_live(device, live_board, orientation, attempts=2,
 
 def play_plan(device, live_board, orientation, plan, stop_requested=None,
               on_step=None, on_enter=None, review_seconds=5.0, max_seconds=8.0,
-              gate_timeout=0.75):
+              gate_timeout=1.5):
     """Enter JJ sandbox, play 3–4 PV plies, review, and safely return.
 
     Returns a dict with ``entered`` and ``safe_exit``.  No route click is sent

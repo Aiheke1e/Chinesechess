@@ -632,9 +632,12 @@ class SpeechPipeline:
                 if self.settings.speech_enabled:
                     self.notify("speech_status", "正在生成百炼语音", payload)
                     audio = self.tts(text, self.settings.voice)
-                    self.notify("speech_status", "正在播放", payload)
-                    self._mark_speech_started(payload)
                     with self.playback_lock:
+                        # This event is the real acoustic start.  Emitting it
+                        # before taking the lock made the transcript claim two
+                        # clips overlapped even though PlaySound was serialized.
+                        self.notify("speech_status", "正在播放", payload)
+                        self._mark_speech_started(payload)
                         winsound.PlaySound(str(audio), winsound.SND_FILENAME)
                     self._prune_audio(Path(audio).parent)
                 else:
@@ -795,7 +798,7 @@ class LiveController:
         if "吃" in notation:
             captured = notation.rsplit("吃", 1)[-1][:1]
             value = {"车": 9, "马": 7, "炮": 7, "相": 5, "象": 5,
-                     "仕": 5, "士": 5, "兵": 4, "卒": 4}.get(captured, 6)
+                     "仕": 5, "士": 5, "兵": 5, "卒": 5}.get(captured, 6)
             importance = max(importance, value)
             reasons.append("吃子")
         analysis = event.get("analysis") or {}
@@ -819,8 +822,12 @@ class LiveController:
                     importance = max(importance, 5)
                     reasons.append("胜负趋势")
             elif abs(score) >= 300:
-                importance = max(importance, 5)
-                reasons.append("优劣明显")
+                # Announce the threshold crossing once.  The old rule kept
+                # every later quiet move permanently above the natural speech
+                # threshold after one side became better.
+                if previous is None or abs(previous) < 300:
+                    importance = max(importance, 5)
+                    reasons.append("优劣明显")
             if previous is not None:
                 swing = abs(score - previous)
                 if swing >= 180:
@@ -951,6 +958,12 @@ class LiveController:
                     "开局编号": found.get("ecco"),
                     "资料来源": "CCPD大师棋谱",
                 })
+            # The opening label already explains this move.  Drop a prepared
+            # waiting-window paraphrase for the same move so "中炮开门" is not
+            # immediately followed by another generic middle-control line.
+            cancel_idle = getattr(self.pipeline, "cancel_idle", None)
+            if callable(cancel_idle):
+                cancel_idle()
             self.pipeline.submit(
                 2, "开局定式解说", evidence,
                 direct_text=text)
@@ -965,6 +978,9 @@ class LiveController:
             if name and canonical not in known:
                 announced.add(name)
                 text = f"走到这里，棋谱库把这路归在{name}。"
+                cancel_idle = getattr(self.pipeline, "cancel_idle", None)
+                if callable(cancel_idle):
+                    cancel_idle()
                 self.pipeline.submit(
                     2, "开局定式解说",
                     {"布局名称": name,
@@ -1183,6 +1199,21 @@ class LiveController:
             }.get(move[:1], "往中路靠")
             return f"{action}，走{move}。"
         reason_text = "、".join(reasons)
+        piece = move[:1]
+        if piece in ("兵", "卒") and (
+                f"{piece}向前推进" in reason_text or
+                "让过河兵参与进攻" in reason_text):
+            variants = (
+                f"拱{piece}开路", f"小{piece}往前顶，先争一格",
+                f"这枚{piece}继续往前走", f"先把{piece}往前送一手",
+                f"{piece}线再推进一步",
+            )
+            try:
+                index = max(1, int(number or 1)) - 1
+            except (TypeError, ValueError):
+                index = 0
+            index += sum(ord(char) for char in move)
+            return f"{variants[index % len(variants)]}，走{move}。"
         horse_to_center = "回马靠中" if "退" in move else "跳马靠中"
         grounded = (
             ("马向中路靠拢", horse_to_center),
@@ -1206,24 +1237,35 @@ class LiveController:
         for fact, phrase in grounded:
             if fact in reason_text:
                 return f"{phrase}，走{move}。"
-        piece = move[:1]
         if piece == "车":
             variants = (("平车换线", "大车横过来换条路") if "平" in move
                         else ("提车压上", "大车往前占线") if "进" in move
                         else ("退车重整", "大车回身留个照应"))
         elif piece == "马":
-            variants = ("跳马抢位", "马腿一抬，先抢个支点")
+            variants = (("回马调整", "这匹马先往回收一手") if "退" in move
+                        else ("跳马抢位", "马腿一抬，先抢个支点"))
         elif piece == "炮":
             variants = (("平炮转线", "炮架横过来换个角度") if "平" in move
-                        else ("炮位前移", "炮往前挪一格") if "进" in move
+                        else ("炮位前移", "炮往前压一压") if "进" in move
                         else ("炮先回撤", "炮位往后收一收"))
         elif piece in ("兵", "卒"):
-            variants = ("拱兵开路", "小兵往前顶，先争一格")
-        elif piece in ("相", "象"):
+            name = "兵" if piece == "兵" else "卒"
+            variants = (
+                f"拱{name}开路", f"小{name}往前顶，先争一格",
+                f"这枚{name}继续往前走", f"先把{name}往前送一手",
+                f"{name}线再推进一步",
+            )
+        elif piece == "相":
+            variants = ("飞相补住阵脚", "补一手相，家里先站稳")
+        elif piece == "象":
             variants = ("飞象补住阵脚", "补一手象，家里先站稳")
-        elif piece in ("仕", "士"):
+        elif piece == "仕":
+            variants = ("补仕稳住宫门", "仕先归位，把宫门护住")
+        elif piece == "士":
             variants = ("补士稳住宫门", "士先归位，把宫门护住")
-        elif piece in ("帅", "将"):
+        elif piece == "帅":
+            variants = ("挪帅避开锋线", "老帅换个位置，先躲开火力")
+        elif piece == "将":
             variants = ("挪将避开锋线", "老将换个位置，先躲开火力")
         else:
             variants = ("先把位置站稳",)
@@ -1231,6 +1273,9 @@ class LiveController:
             index = max(1, int(number or 1)) - 1
         except (TypeError, ValueError):
             index = 0
+        # Include the notation in the rotation.  Repeated pushes four moves
+        # apart no longer land on the same two-item template forever.
+        index += sum(ord(char) for char in move)
         intent = variants[index % len(variants)]
         return f"{intent}，走{move}。"
 
@@ -1240,19 +1285,14 @@ class LiveController:
         move = cls._spoken_notation(notation).split("，吃", 1)[0]
         reasons = list((evidence or {}).get("选择理由") or [])
         reason = str(reasons[0]) if reasons else ""
-        if reason == "争夺中路":
-            return f"{move}，把力量往中路靠，先把要道占住。"
-        if reason == "调动后排大子":
-            detail = {
-                "车": "把大车接出底线，后面转线更快",
-                "马": "让这匹马离开底线，先找个落脚点",
-                "炮": "把炮架调出来，线路马上就宽了",
-            }.get(move[:1], "先把后排棋子调出来")
-            return f"{move}，{detail}。"
-        if reason == "让过河兵参与进攻":
-            return f"{move}，把过河兵顶上去，多添一个进攻点。"
         if reason.startswith("吃掉"):
             return ""  # The exact capture was already called at the move.
+        if reason == "争夺中路":
+            return f"{move}，把力量往中路靠，先把要道占住。"
+        if reason == "让过河兵参与进攻":
+            return f"{move}，把过河兵顶上去，多添一个进攻点。"
+        # Prefer exact movement geometry over the generic "activate a back-rank
+        # piece" label.  In particular, 车九平八 stays on the back rank.
         grounded = cls._quiet_move_text(move, number, reasons)
         if grounded and not grounded.startswith("先把位置站稳"):
             return grounded
@@ -1276,7 +1316,7 @@ class LiveController:
     def _victory_text(self):
         self.victory_count = getattr(self, "victory_count", 0) + 1
         variants = (
-            "拿下！这盘赢得不算轻松，四舍五入也算一场险胜。",
+            "拿下！收尾干净利落，棋盘擦一擦，继续迎客。",
             "稳稳收下。有请下一位受害者——开个玩笑，下一位挑战者请入场。",
             "结束，棋盘已经打扫干净。下一位朋友，里面请。",
         )
@@ -1291,6 +1331,7 @@ class LiveController:
             self.pending_prediction = None
             self.reply_context = None
             self.recent_chess_topics.clear()
+            self.closing_announced = False
             return
         if event.get("event") == "game_sandbox":
             action = event.get("action")
@@ -1345,7 +1386,8 @@ class LiveController:
                     direct_text=self._victory_text())
             elif (event.get("result") == "finished" and
                   event.get("reason") in (
-                      "jj_result_screen", "delayed_jj_result_screen")):
+                       "jj_result_screen", "delayed_jj_result_screen",
+                       "rank_promotion_screen")):
                 self.pipeline.submit(
                     0, "结算收官", event,
                     direct_text="结算页出来了，看样子这盘是收下了。行，棋盘擦一擦，接着迎客。")
@@ -1468,6 +1510,8 @@ class LiveController:
             payload["沙盘战术落点"] = sandtable["target"]
         near_win, forced_win = self._is_near_win(event)
         importance, reasons = self._commentary_importance(event)
+        evidence = event.get("queen_evidence") or {}
+        factual_reasons = list(evidence.get("选择理由") or [])
         if sandtable:
             importance = max(importance, 10)
             reasons.append("沙盘推演")
@@ -1477,11 +1521,20 @@ class LiveController:
             importance = max(importance, 8)
             reasons.append("收官")
             self.closing_announced = True
-        elif (near_win and getattr(self, "closing_announced", False) and
-              importance <= 8 and set(reasons).issubset({"胜负趋势"})):
-            # Avoid repeating the same "almost won" line every move.  A later
-            # capture, tactical swing or mate signal can still break through.
-            importance = 0
+        elif near_win and getattr(self, "closing_announced", False):
+            # A mate score can persist for several moves.  Say the closing line
+            # once; later captures may still get an exact factual call, but do
+            # not repeat "victory is at the door" every turn.
+            near_win = False
+            reasons = [item for item in reasons
+                       if item not in ("杀棋", "胜负趋势", "战术危险")]
+            if "吃" in notation:
+                captured = notation.rsplit("吃", 1)[-1][:1]
+                importance = {"车": 9, "马": 7, "炮": 7, "相": 5,
+                              "象": 5, "仕": 5, "士": 5,
+                              "兵": 5, "卒": 5}.get(captured, 6)
+            else:
+                importance = 0
         if importance >= threshold:
             self.quiet_move_count = 0
             important_payload = {
@@ -1499,7 +1552,8 @@ class LiveController:
                         notation, event.get("number", 0), forced_win)
             if direct is None and importance >= threshold:
                 direct = self._synced_move_text(
-                    notation, reasons, event.get("number", 0),
+                    notation, factual_reasons + reasons,
+                    event.get("number", 0),
                     sandtable=False)
             if token:
                 if sandtable:
@@ -1528,7 +1582,6 @@ class LiveController:
             else:
                 self.pipeline.submit(1, kind, important_payload,
                                      direct_text=direct)
-            evidence = event.get("queen_evidence") or {}
             settings = getattr(self, "settings", None)
             if reply_context:
                 self.pipeline.prepare_idle({

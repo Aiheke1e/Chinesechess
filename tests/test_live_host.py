@@ -378,6 +378,36 @@ class LiveHostTests(unittest.TestCase):
                 "candidates": [], "pv": []})
         self.assertEqual(len(submitted), 1)
 
+    def test_forced_mate_closing_line_is_spoken_only_once(self):
+        submitted = []
+
+        class Pipeline:
+            def submit(self, priority, kind, payload, direct_text=None):
+                submitted.append((kind, direct_text))
+
+            def prepare_idle(self, *args, **kwargs):
+                pass
+
+        controller = object.__new__(LiveController)
+        controller.settings = LiveSettings(commentary_density="自然")
+        controller.last_engine_score = None
+        controller.last_chess_spoken_at = time.monotonic()
+        controller.quiet_move_count = 0
+        controller.closing_announced = False
+        controller.pipeline = Pipeline()
+        controller._notify = lambda *args: None
+        for number, move, mate in (
+                (8, "红方 车六进二", 3),
+                (9, "红方 车六平五", 2),
+                (10, "红方 车五进一", 1)):
+            controller.submit_chess({
+                "event": "engine_analysis", "number": number,
+                "notation": move, "summary": "预计很快将胜",
+                "analysis": {"score_type": "mate", "score": mate},
+                "candidates": [], "pv": []})
+        self.assertEqual(len(submitted), 1)
+        self.assertEqual(submitted[0][0], "收官解说")
+
     def test_confirmed_win_uses_rotating_victory_line(self):
         submitted = []
 
@@ -630,6 +660,53 @@ class LiveHostTests(unittest.TestCase):
         self.assertIn("中路", text)
         self.assertNotIn("怎么应对", text)
         self.assertNotIn("有好戏", text)
+
+    def test_idle_rook_horizontal_move_never_claims_it_left_back_rank(self):
+        text = LiveController._idle_move_text(
+            "红方 车九平八",
+            {"选择理由": ["调动后排大子", "车横向换线"]}, 5)
+        self.assertIn("平车", text)
+        self.assertNotIn("接出底线", text)
+
+    def test_local_move_words_preserve_direction_piece_and_distance(self):
+        self.assertIn("回马", LiveController._synced_move_text(
+            "红方 马五退六", ["马回撤调整"], 8))
+        elephant = LiveController._synced_move_text(
+            "红方 相七进五", [], 16)
+        self.assertNotIn("飞象", elephant)
+        self.assertNotIn("补一手象", elephant)
+        cannon = LiveController._synced_move_text(
+            "黑方 炮2进2", ["炮向前推进"], 14)
+        self.assertNotIn("一格", cannon)
+
+    def test_repeated_pawn_pushes_rotate_factual_wording(self):
+        lines = {
+            LiveController._synced_move_text(
+                "红方 兵三进一", ["兵向前推进"], number)
+            for number in (13, 17, 23)
+        }
+        self.assertGreaterEqual(len(lines), 2)
+
+    def test_advantage_band_only_triggers_when_crossed(self):
+        controller = object.__new__(LiveController)
+        controller.last_engine_score = 250
+        first, _ = controller._commentary_importance({
+            "number": 8, "notation": "红方 车八平七",
+            "analysis": {"score_type": "cp", "score": 330}})
+        second, _ = controller._commentary_importance({
+            "number": 9, "notation": "红方 车七平八",
+            "analysis": {"score_type": "cp", "score": 350}})
+        self.assertGreaterEqual(first, 5)
+        self.assertLess(second, 5)
+
+    def test_pawn_capture_is_worth_a_factual_call_at_natural_density(self):
+        controller = object.__new__(LiveController)
+        controller.last_engine_score = 0
+        importance, reasons = controller._commentary_importance({
+            "number": 6, "notation": "红方 兵五进一，吃卒",
+            "analysis": {"score_type": "cp", "score": 10}})
+        self.assertEqual(importance, 5)
+        self.assertIn("吃子", reasons)
 
     def test_chess_speech_rejects_empty_capture_and_generic_tail(self):
         payload = {"我方计划走法": "红方 车二进八"}

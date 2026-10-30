@@ -12,6 +12,7 @@ from adb_bridge import adb, screenshot, tap
 
 ACTION_TEXTS = ("继续", "再来一局", "再来一盘", "下一局", "确定", "确认")
 CLOSE_TEXTS = ("关闭", "取消", "以后再说")
+PROMOTION_TEXTS = ("段位提升", "段位晋升", "晋级", "升段")
 BOUNDS_RE = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
 MATCH_MODE_X = {
     "5分钟": 0.19,
@@ -76,6 +77,22 @@ def read_ui_xml(device):
                  timeout=15, device=device)
     return ("" if result.returncode != 0 else
             result.stdout.decode("utf-8", "ignore"))
+
+
+def dismiss_rank_promotion(device):
+    """Leave JJ's full-screen rank animation only when its text is explicit.
+
+    Rank artwork changes colour between tiers, so this deliberately does not
+    use colour matching.  Android BACK is sent only after the accessibility
+    tree contains a rank-promotion label; unrelated non-board pages are left
+    untouched.
+    """
+    xml_text = read_ui_xml(device)
+    if not any(text in xml_text for text in PROMOTION_TEXTS):
+        return False
+    adb(["shell", "input", "keyevent", "4"], device=device)
+    time.sleep(0.6)
+    return True
 
 
 def detect_large_action_button(image):

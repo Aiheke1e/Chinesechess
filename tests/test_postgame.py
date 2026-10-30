@@ -7,12 +7,29 @@ import numpy as np
 
 from postgame import (detect_confirmation_button, detect_large_action_button,
                       detect_match_mode_button, detect_modal_close,
+                      dismiss_rank_promotion,
                       detect_rules_overlay_dismiss,
                       handle_postgame, has_actionable_postgame,
                       parse_action_nodes)
 
 
 class PostgameTests(unittest.TestCase):
+    def test_rank_promotion_uses_text_not_tier_colour(self):
+        with patch("postgame.read_ui_xml",
+                   return_value='<node text="段位提升"/>'), \
+             patch("postgame.adb") as adb_mock, \
+             patch("postgame.time.sleep"):
+            self.assertTrue(dismiss_rank_promotion("device"))
+        adb_mock.assert_called_once_with(
+            ["shell", "input", "keyevent", "4"], device="device")
+
+    def test_unrelated_page_is_never_dismissed_as_rank_promotion(self):
+        with patch("postgame.read_ui_xml",
+                   return_value='<node text="活动中心"/>'), \
+             patch("postgame.adb") as adb_mock:
+            self.assertFalse(dismiss_rank_promotion("device"))
+        adb_mock.assert_not_called()
+
     @staticmethod
     def _gold_mode_page(dimmed=False):
         image = np.full((1000, 600, 3), (65, 65, 65) if dimmed else

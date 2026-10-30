@@ -520,6 +520,21 @@ def main():
                         now = time.monotonic()
                         if (anomaly_count == 3 or
                                 now - last_anomaly_report >= 15.0):
+                            if anomaly_count == 3:
+                                try:
+                                    from postgame import dismiss_rank_promotion
+                                    promotion_closed = dismiss_rank_promotion(device)
+                                except Exception:
+                                    promotion_closed = False
+                                if promotion_closed:
+                                    result = "finished"
+                                    print("[本局结束] 已识别并关闭段位提升页，准备进入下一局。",
+                                          flush=True)
+                                    events.emit(
+                                        "game_over", result=result,
+                                        reason="rank_promotion_screen",
+                                        fen=b.to_fen())
+                                    break
                             reason = {
                                 "retry": "棋盘偏差超过2格，正在重新截图",
                                 "illegal": "画面变化无法由合法走法反推",
@@ -539,6 +554,8 @@ def main():
                                            "trusted_fen": b.to_fen()})
                                 last_anomaly_capture = now
                             last_anomaly_report = now
+                        if result == "finished":
+                            break
                         continue
                     anomaly_count = 0
                     mv_seen, pending_opponent_move = confirmed_move_candidate(

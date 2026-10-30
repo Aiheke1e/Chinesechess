@@ -10,6 +10,18 @@ from notation import move_description
 
 
 class GameSandboxTests(unittest.TestCase):
+    def test_exact_coloured_occupancy_survives_piece_template_glow(self):
+        board = Board.from_fen(START_FEN)
+        observed = [None if piece is None else
+                    ("R" if piece.isupper() else "r")
+                    for piece in board.sq]
+        with patch.object(game_sandbox, "recognize_occupancy",
+                          return_value=observed), \
+             patch.object(game_sandbox, "recognize_presence_occupancy",
+                          return_value=[None] * 90):
+            self.assertTrue(game_sandbox._position_matches(
+                board, object(), "red_bottom"))
+
     def test_highlight_tolerant_position_match_requires_unchanged_board(self):
         board = Board.from_fen(START_FEN)
         presence = [None if piece is None else
