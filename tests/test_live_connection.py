@@ -153,12 +153,36 @@ class LiveConnectionTests(unittest.TestCase):
         self.assertIn("sign.js", controller._notify.call_args.args[1])
         self.assertEqual(controller.receive.call_args.args[0]["connector_epoch"], 3)
 
+    def test_connector_exit_preserves_ended_room_explanation(self):
+        controller = self.controller()
+        controller.connector_epoch = 3
+        event = {"type": "status", "state": "ended", "text": "该场直播已结束，请更换正在开播的直播间链接"}
+        process = Mock(stdout=io.StringIO("CHESS_LIVE_EVENT " + json.dumps(event) + "\n"))
+        controller._read_connector(process, 3)
+        self.assertEqual(controller._notify.call_args.args[1], event["text"])
+        self.assertEqual(controller._notify.call_args.args[2]["state"], "ended")
+
+    def test_room_snapshot_reads_room_status_instead_of_unrelated_page_status(self):
+        page = json.dumps({"status": 2, "roomInfo": {}, "roomStore": {"roomInfo": {
+            "room": {"id_str": "7703480882075454218", "status": 4}}}})
+        for source in (page, page.replace('"', '\\"')):
+            self.assertEqual(douyin_bridge.room_snapshot(source)["status"], 4)
+        self.assertEqual(douyin_bridge.room_snapshot('{"status":4,"roomInfo":{}}'), {})
+
     def test_adapter_binds_signature_asset_to_absolute_installation_path(self):
         module = types.ModuleType("liveMan")
         class Fetcher:
             def __init__(self, room, **kwargs):
                 self.session = Mock()
                 self.kwargs = kwargs
+                self.live_id = room
+                self.live_url = "https://live.douyin.com/"
+                self.headers = {"User-Agent": "test"}
+                self.ttwid = "test-cookie"
+                self.session.get.return_value.text = json.dumps({"roomInfo": {
+                    "room": {"id_str": "7703480882075454218", "status": 4}}})
+            def start(self):
+                self.started = True
         module.DouyinLiveWebFetcher = Fetcher
         signature = module.generateSignature = Mock(return_value="signature")
         proto = types.ModuleType("protobuf.douyin")
@@ -172,6 +196,16 @@ class LiveConnectionTests(unittest.TestCase):
         expected = str(douyin_bridge.UPSTREAM / "sign.js")
         signature.assert_called_once_with("wss://example.test", script_file=expected)
         self.assertEqual(fetcher.kwargs["abogus_file"], str(douyin_bridge.UPSTREAM / "a_bogus.js"))
+        # The adapter's sink is emit by default; intercept stdout to verify the
+        # real start path refuses an ended room before opening a websocket.
+        with patch("sys.stdout", new_callable=io.StringIO) as output:
+            fetcher.start()
+        self.assertTrue(fetcher.ended)
+        self.assertFalse(getattr(fetcher, "started", False))
+        self.assertIn('"ended"', output.getvalue())
+        fetcher.room_details["status"] = 2
+        fetcher.start()
+        self.assertTrue(fetcher.started)
 
     def test_connection_errors_are_specific_without_exposing_request_secrets(self):
         self.assertIn("sign.js", douyin_bridge.connection_error(FileNotFoundError(2, "missing", "sign.js")))

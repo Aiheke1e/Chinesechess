@@ -5,6 +5,7 @@ import argparse
 from functools import partial
 import gzip
 import json
+import re
 from pathlib import Path
 import sys
 import threading
@@ -34,6 +35,21 @@ def connection_error(error):
     return f"直播连接失败（{type(error).__name__}），请确认正在开播后重试"
 
 
+def room_snapshot(page):
+    """Read the actual room object, ignoring unrelated status fields on the page."""
+    decoder = json.JSONDecoder()
+    for candidate in (page, page.replace('\\"', '"')):
+        for match in re.finditer(r'"roomInfo"\s*:\s*(\{)', candidate):
+            try:
+                info, _ = decoder.raw_decode(candidate, match.start(1))
+            except ValueError:
+                continue
+            room = info.get("room")
+            if isinstance(room, dict) and str(room.get("id_str", "")).isdigit():
+                return room
+    return {}
+
+
 def create_fetcher(room, sink=emit):
     import liveMan
     from liveMan import DouyinLiveWebFetcher
@@ -57,6 +73,26 @@ def create_fetcher(room, sink=emit):
                 kwargs.setdefault("timeout", (8, 15))
                 return original_get(*args, **kwargs)
             self.session.get = bounded_get
+
+        @property
+        def room_id(self):
+            if not hasattr(self, "room_details"):
+                response = self.session.get(self.live_url + self.live_id, headers={
+                    **self.headers, "cookie": f"ttwid={self.ttwid}"})
+                response.raise_for_status()
+                self.room_details = room_snapshot(response.text)
+            return self.room_details.get("id_str") or super().room_id
+
+        def start(self):
+            # A websocket also opens for an ended room, but delivers no chat.
+            # Check the room itself before reporting a successful connection.
+            self.room_id
+            if str(self.room_details.get("status")) == "4":
+                self.ended = True
+                sink({"type": "status", "state": "ended",
+                      "text": "该场直播已结束，请更换正在开播的直播间链接"})
+                return
+            return super().start()
 
         def _wsOnOpen(self, ws):
             sink({"type": "status", "state": "connected", "text": "已连接抖音直播间"})

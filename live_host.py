@@ -2081,6 +2081,7 @@ class LiveController:
 
     def _read_connector(self, process, epoch):
         last_error = None
+        ended_text = None
         try:
             for line in process.stdout:
                 if epoch != self.connector_epoch:
@@ -2093,6 +2094,8 @@ class LiveController:
                                 last_error = event.get("text")
                             elif event.get("state") == "connected":
                                 last_error = None
+                            elif event.get("state") == "ended":
+                                ended_text = event.get("text") or "直播已结束"
                         self.receive({**event, "connector_epoch": epoch})
                     except (ValueError, TypeError):
                         pass
@@ -2102,9 +2105,9 @@ class LiveController:
                 process.stdout.close()
             if epoch == self.connector_epoch:
                 self._reset_chat_room()
-                self._notify("connection", "连接已停止：" + last_error if last_error
-                             else "抖音连接器已停止，请重新连接",
-                             {"connector_epoch": epoch})
+                self._notify("connection", ended_text or ("连接已停止：" + last_error if last_error
+                             else "抖音连接器已停止，请重新连接"),
+                             {"connector_epoch": epoch, **({"state": "ended"} if ended_text else {})})
 
     def disconnect(self, silent=False):
         with self.connector_lock:
