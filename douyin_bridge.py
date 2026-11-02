@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from functools import partial
 import gzip
 import json
 from pathlib import Path
@@ -18,12 +19,33 @@ def emit(event):
     print("CHESS_LIVE_EVENT " + json.dumps(event, ensure_ascii=False), flush=True)
 
 
+def connection_error(error):
+    """Useful diagnostics without publishing cookies or signed request URLs."""
+    if isinstance(error, FileNotFoundError):
+        filename = Path(error.filename or "连接器文件").name
+        return f"连接器缺少文件 {filename}，请检查连接器安装目录"
+    if isinstance(error, ModuleNotFoundError):
+        return f"连接器运行环境缺少依赖：{error.name}"
+    status = getattr(error, "status_code", None)
+    if isinstance(status, int):
+        return f"直播连接被服务器拒绝（HTTP {status}），请稍后重试"
+    if isinstance(error, TimeoutError) or "timeout" in type(error).__name__.lower():
+        return "连接直播间超时，请检查网络后重试"
+    return f"直播连接失败（{type(error).__name__}），请确认正在开播后重试"
+
+
 def create_fetcher(room, sink=emit):
+    import liveMan
     from liveMan import DouyinLiveWebFetcher
     from protobuf.douyin import (ChatMessage, ControlMessage, GiftMessage,
                                  MemberMessage, PushFrame, Response,
                                  SocialMessage)
     import websocket
+
+    # Upstream resolves this default against cwd. Our child runs in the chess
+    # project, so bind the asset explicitly instead of changing global cwd.
+    liveMan.generateSignature = partial(
+        liveMan.generateSignature, script_file=str(UPSTREAM / "sign.js"))
 
     class Fetcher(DouyinLiveWebFetcher):
         def __init__(self):
@@ -41,7 +63,7 @@ def create_fetcher(room, sink=emit):
             threading.Thread(target=self._sendHeartbeat, daemon=True).start()
 
         def _wsOnError(self, ws, error):
-            sink({"type": "status", "state": "error", "text": "抖音连接异常"})
+            sink({"type": "status", "state": "error", "text": connection_error(error)})
 
         def _wsOnClose(self, ws, *args):
             sink({"type": "status", "state": "ended" if self.ended else "disconnected",
@@ -108,9 +130,9 @@ def main():
             fetcher.start()
             if fetcher.ended:
                 return
-        except Exception:
+        except Exception as error:
             emit({"type": "status", "state": "error",
-                  "text": "连接失败，请确认直播间已开播且链接正确"})
+                  "text": connection_error(error)})
         if attempt < 4:
             time.sleep(min(2 ** (attempt + 1), 20))
 

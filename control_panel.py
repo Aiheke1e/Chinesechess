@@ -472,7 +472,9 @@ class ControlPanel:
         ttk.Entry(room, textvariable=self.live_room).pack(fill="x", pady=(0, 10))
         row = ttk.Frame(room, style="Card.TFrame")
         row.pack(fill="x")
-        ttk.Button(row, text="连接直播间", style="Primary.TButton", command=self.connect_live).pack(side="left")
+        self.live_connect_button = ttk.Button(
+            row, text="连接直播间", style="Primary.TButton", command=self.connect_live)
+        self.live_connect_button.pack(side="left")
         ttk.Button(row, text="断开", command=self.disconnect_live).pack(side="left", padx=6)
         ttk.Label(room, textvariable=self.live_status, style="Muted.TLabel").pack(anchor="w", pady=(10, 0))
         speech_card, speech = self._section(parent, "声音与讲解", "声音、解说频率修改后立即生效。")
@@ -1108,15 +1110,30 @@ class ControlPanel:
             self.append_live("系统", "直播解说已关闭，只自动下棋，不调用棋局语言模型和 TTS。")
 
     def connect_live(self):
+        if getattr(self, "live_connect_request", None) is not None:
+            return
         if not self.live_controller or not self.save_live_settings(quiet=True):
             return
-        try:
-            self.live_controller.connect(self.live_room.get())
-            self.live_status.set("正在连接直播间…")
-        except Exception as error:
-            messagebox.showerror("连接失败", str(error))
+        room = self.live_room.get()
+        request = self.live_connect_request = object()
+        self.live_connect_button.configure(state="disabled", text="连接中…")
+        self.live_status.set("正在解析直播间分享链接…")
+        controller = self.live_controller
+
+        def worker():
+            error = None
+            try:
+                controller.connect(room, cancelled=lambda: (
+                    request is not self.live_connect_request or self.closing))
+            except Exception as failure:
+                error = str(failure)
+            self.output.put(("live_connect_result", request, error))
+
+        threading.Thread(target=worker, name="douyin-connect", daemon=True).start()
 
     def disconnect_live(self):
+        self.live_connect_request = None
+        self.live_connect_button.configure(state="normal", text="连接直播间")
         if self.live_controller:
             self.live_controller.disconnect()
         self.live_status.set("直播间已断开")
@@ -1817,6 +1834,14 @@ class ControlPanel:
                     else:
                         self.status.set("开播体检发现关键故障")
                         self.append_live("错误", "红色项目必须修复后再开始自动直播。")
+                elif isinstance(item, tuple) and item[0] == "live_connect_result":
+                    if item[1] is not getattr(self, "live_connect_request", None):
+                        continue
+                    self.live_connect_request = None
+                    self.live_connect_button.configure(state="normal", text="连接直播间")
+                    if item[2]:
+                        self.live_status.set("连接失败：" + item[2])
+                        self.append_live("连接失败", item[2])
                 elif isinstance(item, tuple) and item[0] == "live_event":
                     record = item[1]
                     kind = record.get("kind", "status")
@@ -1828,6 +1853,9 @@ class ControlPanel:
                         self._handle_sandtable(record.get("data", {}))
                         continue
                     if kind == "connection":
+                        epoch = record.get("data", {}).get("connector_epoch")
+                        if epoch is not None and epoch != self.live_controller.connector_epoch:
+                            continue
                         self.live_status.set(text)
                     elif kind == "speech_status":
                         self.speech_status.set(text)

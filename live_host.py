@@ -51,7 +51,8 @@ COMMENTARY_DENSITY = {
 }
 
 
-def normalize_room(value):
+def room_input(value):
+    """Validate pasted input without making network requests."""
     value = str(value or "").strip()
     if re.fullmatch(r"\d{6,25}", value):
         return value
@@ -62,9 +63,26 @@ def normalize_room(value):
     if parsed.scheme != "https" or parsed.hostname not in (
             "live.douyin.com", "v.douyin.com", "webcast.amemv.com"):
         raise ValueError("请输入抖音直播间链接或数字房间号")
+    if parsed.hostname == "live.douyin.com" and not re.fullmatch(
+            r"/\d{6,25}/?", parsed.path):
+        raise ValueError("直播间链接中没有有效房间号")
+    if parsed.hostname == "webcast.amemv.com" and not re.fullmatch(
+            r"/douyin/webcast/reflow/\d{6,25}/?", parsed.path):
+        raise ValueError("分享链接没有有效直播间编号")
+    if parsed.hostname == "v.douyin.com" and not re.fullmatch(
+            r"/[A-Za-z0-9_-]+/?", parsed.path):
+        raise ValueError("请输入完整的抖音直播分享短链接")
+    return urls[0]
+
+
+def normalize_room(value):
+    value = room_input(value)
+    if value.isdigit():
+        return value
+    parsed = urlsplit(value)
     if parsed.hostname == "v.douyin.com":
         try:
-            request = Request(urls[0], headers={"User-Agent": "Mozilla/5.0"})
+            request = Request(value, headers={"User-Agent": "Mozilla/5.0"})
             with urlopen(request, timeout=10) as response:
                 parsed = urlsplit(response.url)
                 page = response.read(1024 * 1024).decode("utf-8", "ignore")
@@ -76,7 +94,7 @@ def normalize_room(value):
             raise ValueError("分享链接没有有效直播间编号")
         if "page" not in locals():
             try:
-                request = Request(urls[0], headers={"User-Agent": "Mozilla/5.0"})
+                request = Request(value, headers={"User-Agent": "Mozilla/5.0"})
                 with urlopen(request, timeout=10) as response:
                     page = response.read(1024 * 1024).decode("utf-8", "ignore")
             except Exception as error:
@@ -794,6 +812,7 @@ class LiveController:
         self.enabled = False
         self.connector = None
         self.connector_epoch = 0
+        self.connector_lock = threading.RLock()
         self.seen = {}
         self.welcomed = set()
         self.last_welcome = 0.0
@@ -1921,37 +1940,52 @@ class LiveController:
     def speak_intro(self):
         self.pipeline.submit(0, "自我介绍", {}, direct_text=self.settings.introduction)
 
-    def connect(self, room):
+    def connect(self, room, cancelled=None):
+        with self.connector_lock:
+            if cancelled and cancelled():
+                return
+            self.connector_epoch += 1
+            epoch = self.connector_epoch
+            previous, self.connector = self.connector, None
+        self._terminate_connector(previous)
+        self._notify("connection", "正在解析直播间分享链接…", {"connector_epoch": epoch})
         room = normalize_room(room)
-        self.disconnect(silent=True)
         runtime = Path(r"D:\environment\shuzhiren\runtime\douyin-env\Scripts\python.exe")
         if not runtime.is_file():
             raise RuntimeError("抖音弹幕连接器运行环境不存在")
         environment = os.environ.copy()
         environment["PYTHONIOENCODING"] = "utf-8"
         environment["PYTHONUTF8"] = "1"
-        process = subprocess.Popen(
-            [str(runtime), "-u", str(HERE / "douyin_bridge.py"), "--room", room],
-            cwd=str(HERE), env=environment, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, text=True, encoding="utf-8",
-            errors="replace", creationflags=subprocess.CREATE_NO_WINDOW)
-        self.connector = process
-        self.connector_epoch += 1
-        epoch = self.connector_epoch
-        self.settings.room = room
-        save_settings(self.settings)
-        threading.Thread(target=self._read_connector,
-                         args=(process, epoch), daemon=True).start()
-        self._notify("connection", "正在连接抖音直播间")
+        with self.connector_lock:
+            if epoch != self.connector_epoch or (cancelled and cancelled()):
+                return  # Disconnected while the short link was resolving.
+            process = subprocess.Popen(
+                [str(runtime), "-u", str(HERE / "douyin_bridge.py"), "--room", room],
+                cwd=str(HERE), env=environment, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                errors="replace", creationflags=subprocess.CREATE_NO_WINDOW)
+            self.connector = process
+            self.settings.room = room
+            save_settings(self.settings)
+            self._notify("connection", f"正在连接抖音直播间 {room}", {"connector_epoch": epoch})
+            threading.Thread(target=self._read_connector,
+                             args=(process, epoch), daemon=True).start()
 
     def _read_connector(self, process, epoch):
+        last_error = None
         try:
             for line in process.stdout:
                 if epoch != self.connector_epoch:
                     break
                 if line.startswith("CHESS_LIVE_EVENT ") and len(line) < 10000:
                     try:
-                        self.receive(json.loads(line[len("CHESS_LIVE_EVENT "):]))
+                        event = json.loads(line[len("CHESS_LIVE_EVENT "):])
+                        if event.get("type") == "status":
+                            if event.get("state") == "error":
+                                last_error = event.get("text")
+                            elif event.get("state") == "connected":
+                                last_error = None
+                        self.receive({**event, "connector_epoch": epoch})
                     except (ValueError, TypeError):
                         pass
             process.wait()
@@ -1959,19 +1993,28 @@ class LiveController:
             if process.stdout:
                 process.stdout.close()
             if epoch == self.connector_epoch:
-                self._notify("connection", "抖音连接器已停止")
+                self._notify("connection", "连接已停止：" + last_error if last_error
+                             else "抖音连接器已停止，请重新连接",
+                             {"connector_epoch": epoch})
 
     def disconnect(self, silent=False):
-        self.connector_epoch += 1
-        process, self.connector = self.connector, None
+        with self.connector_lock:
+            self.connector_epoch += 1
+            process, self.connector = self.connector, None
+        self._terminate_connector(process)
+        if not silent:
+            self._notify("connection", "已断开抖音直播间",
+                         {"connector_epoch": self.connector_epoch})
+
+    @staticmethod
+    def _terminate_connector(process):
         if process and process.poll() is None:
             process.terminate()
             try:
                 process.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 process.kill()
-        if not silent:
-            self._notify("connection", "已断开抖音直播间")
+                process.wait()
 
     def close(self):
         self._close_sandtable("程序关闭")

@@ -4,12 +4,12 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import json
 import os
-import re
 
 from adb_bridge import current_package, list_devices, resolution
 from bailian_tts import (CONFIG_PATH as TTS_CONFIG, available_voices,
                          load_api_key as load_tts_key)
 from glm_client import load_api_key as load_llm_key
+from live_host import room_input
 from pikafish import DEFAULT_EXE
 
 
@@ -84,8 +84,11 @@ def collect_readiness(settings, *, device_provider=list_devices,
         ("语音开关未开启" if not speech else "百炼配置、密钥或音色不可用")))
 
     room = str(settings.get("room") or "").strip()
-    room_ok = bool(re.fullmatch(r"\d{6,25}", room) or
-                   re.fullmatch(r"https://live\.douyin\.com/\d{6,25}/?", room))
+    try:
+        room_input(room)
+        room_ok = True
+    except ValueError:
+        room_ok = False
     items.append(_item(
         "room", "直播间", "ok" if room_ok else "warn",
         "直播间地址已配置" if room_ok else "尚未配置抖音直播间"))
