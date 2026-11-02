@@ -55,6 +55,30 @@ class BroadcastViewTests(unittest.TestCase):
             self.assertIsNone(panel.broadcast_window)
             self.assertEqual(self.message.trace_info(), [])
 
+    def test_collapsing_operator_preview_keeps_the_capture_window_in_sync(self):
+        panel = object.__new__(ControlPanel)
+        panel.root = self.root
+        panel.interaction_user, panel.interaction_message = self.user, self.message
+        panel.broadcast_window = None
+        panel.preview_visible = True
+        panel.broadcast_view = BroadcastView(self.root, self.user, self.message, THEME)
+        panel.broadcast_view.pack(fill="x")
+        panel.controls = tk.Frame(self.root)
+        panel.controls.pack(fill="x")
+        panel.preview_toggle = Mock()
+        panel._schedule_ui_save = Mock()
+        panel.open_broadcast_window()
+        window = panel.broadcast_window
+        window.withdraw()
+        panel.toggle_preview()
+        self.assertEqual(panel.broadcast_view.winfo_manager(), "")
+        self.message.set("后台收起预览，直播画面仍应继续更新。")
+        capture = window.winfo_children()[0]
+        self.assertEqual(capture.message_label.cget("text"), self.message.get())
+        panel.toggle_preview()
+        self.assertEqual(panel.broadcast_view.winfo_manager(), "pack")
+        self.root.tk.call(window.protocol("WM_DELETE_WINDOW"))
+
     def test_state_switch_keeps_callback_and_disabled_behavior(self):
         panel = object.__new__(ControlPanel)
         panel.root = self.root

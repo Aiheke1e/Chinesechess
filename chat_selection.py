@@ -63,7 +63,7 @@ class ChatSelector:
         with self.lock:
             return self._stats(self.clock())
 
-    def offer(self, event):
+    def offer(self, event, eligible=True):
         now = self.clock()
         text = " ".join(str(event.get("text") or "").split())
         with self.lock:
@@ -74,6 +74,8 @@ class ChatSelector:
             else:
                 self.arrivals.append((second, 1))
             self._prune(now)
+            if not eligible:
+                return False
             # Keep meaningful text, not long advertisements or pure emoji/666.
             meaningful = re.sub(r"[^\w\u4e00-\u9fff]", "", text)
             if (len(meaningful) < 2 or len(text) > 160

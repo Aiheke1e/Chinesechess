@@ -15,6 +15,7 @@ from adb_bridge import (adb, current_package, list_devices, resolution,
                         screenshot, tap, cancellable_adb, TaskCancelled)
 from board import Board, START_FEN
 from broadcast_view import BroadcastView
+from monitoring import MonitorIssues, player_view, speech_view, live_view
 from diagnostics import DIAGNOSTIC_DIR, capture_diagnostic
 from recognizer import recognize_position
 from state import position_errors, validate_board
@@ -103,7 +104,7 @@ THEME = dict(THEMES["云白青黛"])
 
 
 def load_ui_settings():
-    defaults = {"theme": "云白青黛", "opacity": 100}
+    defaults = {"theme": "云白青黛", "opacity": 100, "preview_visible": True}
     try:
         with open(UI_CFG, encoding="utf-8") as stream:
             saved = json.load(stream)
@@ -112,6 +113,7 @@ def load_ui_settings():
         if name in THEMES:
             defaults["theme"] = name
         defaults["opacity"] = max(72, min(100, int(saved.get("opacity", 100))))
+        defaults["preview_visible"] = bool(saved.get("preview_visible", True))
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         pass
     return defaults
@@ -138,6 +140,12 @@ class ControlPanel:
         self.theme_name = tk.StringVar(value=ui["theme"])
         self.opacity = tk.IntVar(value=ui["opacity"])
         self.current_palette = dict(THEME)
+        self.preview_visible = ui.get("preview_visible", True)
+        self.monitor_issues = MonitorIssues()
+        self._monitor_job = None
+        self._player_runtime = None
+        self.connection_state = "disconnected"
+        self.room_metrics = {}
         self.process = None
         self.output = queue.Queue()
         self.status = tk.StringVar(value="正在检查设备…")
@@ -180,6 +188,8 @@ class ControlPanel:
         self.broadcast_window = None
         self.interaction_id = None
         self.runtime_stats = tk.StringVar(value="识别告警 0 · 成功落子 0 · 完成对局 0")
+        self.session_summary = tk.StringVar(value="本次 0 手 · 0 局")
+        self.attention_text = tk.StringVar(value="")
         self.sandtable_title = tk.StringVar(value="战术沙盘")
         self.sandtable_status = tk.StringVar(value="")
         self.sandtable_jobs = []
@@ -202,6 +212,7 @@ class ControlPanel:
         self.status.trace_add("write", self._sync_status_badges)
         self.speech_status.trace_add("write", self._sync_live_badges)
         self.live_status.trace_add("write", self._sync_live_badges)
+        self.live_speech.trace_add("write", self._queue_monitor)
         try:
             self.live_controller = LiveController(
                 lambda record: self.output.put(("live_event", record)))
@@ -210,6 +221,7 @@ class ControlPanel:
                 self.live_controller.enable()
                 self.interaction_state.set("自动抽选中")
         except Exception as error:
+            self._note_issue("后台", "直播互动模块初始化失败：" + str(error))
             self.append_live("错误", "直播互动模块初始化失败：" + str(error))
         self.refresh_device()
         root.after(80, self._poll)
@@ -232,11 +244,12 @@ class ControlPanel:
 
         self.broadcast_view = BroadcastView(
             self.root, self.interaction_user, self.interaction_message, THEME)
-        self.broadcast_view.pack(fill="x", padx=16, pady=(12, 10))
+        if self.preview_visible:
+            self.broadcast_view.pack(fill="x", padx=16, pady=(12, 10))
         self.theme_name.trace_add("write", self._change_theme)
 
-        controls = self._ui_card(self.root)
-        controls.pack(fill="x", padx=16, pady=(0, 6))
+        controls = self.controls = self._ui_card(self.root)
+        controls.pack(fill="x", padx=16, pady=(0 if self.preview_visible else 12, 6))
         actions = ttk.Frame(controls, style="Card.TFrame", padding=(12, 10))
         actions.pack(fill="x")
         self.start_button = ttk.Button(actions, text="▶  开始对弈", width=14,
@@ -245,11 +258,10 @@ class ControlPanel:
         self.stop_button = ttk.Button(actions, text="■  停止  F8", width=12,
             style="Action.Danger.TButton", command=self.stop)
         self.stop_button.pack(side="left", padx=(8, 16))
-        self.header_status = tk.Label(actions, textvariable=self.board_state,
-            bg=THEME["panel2"], fg=THEME["muted"], padx=10, pady=5,
-            font=("Microsoft YaHei UI", 9))
-        self.header_status.pack(side="left")
         ttk.Button(actions, text="弹出展示 ↗", command=self.open_broadcast_window).pack(side="right")
+        self.preview_toggle = ttk.Button(actions, text="收起预览" if self.preview_visible else "展开预览",
+                                        command=self.toggle_preview)
+        self.preview_toggle.pack(side="right", padx=(0, 6))
         for text, variable, command in (("语音", self.live_speech, self.toggle_live_speech),
                 ("解说", self.live_commentary, self.toggle_live_commentary),
                 ("自动连局", self.continuous, None)):
@@ -257,21 +269,37 @@ class ControlPanel:
                 side="right", padx=(0, 12))
 
         indicators = tk.Frame(controls, bg=THEME["panel"])
-        indicators.pack(fill="x", padx=14, pady=(0, 8))
-        for key, label, variable in (("device", "设备", self.device_state),
-                                     ("stream", "直播", self.stream_state)):
-            dot = tk.Canvas(indicators, width=10, height=10, bg=THEME["panel"], highlightthickness=0)
-            dot.pack(side="left", padx=(0, 5))
+        indicators.pack(fill="x", padx=14, pady=(0, 10))
+        self.monitor_labels = {}
+        for i, (key, caption) in enumerate((("board", "对弈"), ("voice", "语音"), ("stream", "直播"))):
+            indicators.columnconfigure(i, weight=1, uniform="monitor")
+            cell = tk.Frame(indicators, bg=THEME["panel"])
+            cell.grid(row=0, column=i, sticky="ew", padx=(0, 12 if i < 2 else 0))
+            cell.columnconfigure(2, weight=1)
+            dot = tk.Canvas(cell, width=10, height=10, bg=THEME["panel"], highlightthickness=0)
+            dot.grid(row=0, column=0, padx=(0, 5))
             oval = dot.create_oval(2, 2, 8, 8, fill=THEME["muted"], outline=THEME["muted"])
-            tk.Label(indicators, text=label, bg=THEME["panel"], fg=THEME["muted"],
-                     font=("Microsoft YaHei UI", 8)).pack(side="left", padx=(0, 4))
-            tk.Label(indicators, textvariable=variable, bg=THEME["panel"], fg=THEME["muted"],
-                     font=("Microsoft YaHei UI", 8)).pack(side="left", padx=(0, 20))
+            tk.Label(cell, text=caption, bg=THEME["panel"], fg=THEME["muted"],
+                     font=("Microsoft YaHei UI", 9)).grid(row=0, column=1, sticky="w", padx=(0, 10))
+            title = tk.Label(cell, text="待机", bg=THEME["panel"], fg=THEME["text"],
+                             font=("Microsoft YaHei UI", 10, "bold"), anchor="w")
+            title.grid(row=0, column=2, sticky="ew")
+            detail = tk.Label(cell, text="", bg=THEME["panel"], fg=THEME["muted"],
+                              font=("Microsoft YaHei UI", 8), anchor="w")
+            detail.grid(row=1, column=1, columnspan=2, sticky="ew", pady=(3, 0))
+            detail.bind("<Configure>", lambda event, target=detail:
+                        target.configure(wraplength=max(120, event.width)))
+            self.monitor_labels[key] = (title, detail)
             self.indicators[key] = (dot, oval)
-        tk.Label(indicators, textvariable=self.interaction_state, bg=THEME["panel"],
-                 fg=THEME["muted"], font=("Microsoft YaHei UI", 8)).pack(side="left")
-        tk.Label(indicators, textvariable=self.audience_text, bg=THEME["panel"],
-                 fg=THEME["muted"], font=("Microsoft YaHei UI", 8)).pack(side="right")
+        self.header_status = self.monitor_labels["board"][0]
+        self.attention_bar = tk.Frame(controls, bg=THEME["error_bg"])
+        self.attention_label = tk.Label(self.attention_bar, textvariable=self.attention_text,
+            bg=THEME["error_bg"], fg=THEME["error_fg"], font=("Microsoft YaHei UI", 9),
+            anchor="w", justify="left", padx=12, pady=7)
+        self.attention_label.pack(side="left", fill="x", expand=True)
+        self.attention_label.bind("<Configure>", lambda event:
+            self.attention_label.configure(wraplength=max(200, event.width - 24)))
+        ttk.Button(self.attention_bar, text="查看详情", command=self.show_monitor_issues).pack(side="right", padx=8)
 
         footer = tk.Frame(self.root, bg=THEME["bg"])
         footer.pack(side="bottom", fill="x", padx=20, pady=(8, 12))
@@ -292,6 +320,7 @@ class ControlPanel:
         self.root.bind("<F8>", lambda event: self.stop())
         self.root.bind("<MouseWheel>", self._scroll_settings, add="+")
         self.broadcaster_open = True
+        self._queue_monitor()
 
     @staticmethod
     def _ui_card(parent):
@@ -319,6 +348,16 @@ class ControlPanel:
             window.destroy()
 
         window.protocol("WM_DELETE_WINDOW", close_display)
+
+    def toggle_preview(self):
+        self.preview_visible = not self.preview_visible
+        if self.preview_visible:
+            self.broadcast_view.pack(fill="x", padx=16, pady=(12, 10), before=self.controls)
+        else:
+            self.broadcast_view.pack_forget()
+        self.controls.pack_configure(pady=(0 if self.preview_visible else 12, 6))
+        self.preview_toggle.configure(text="收起预览" if self.preview_visible else "展开预览")
+        self._schedule_ui_save()
 
     def _section(self, parent, title, subtitle=""):
         card = self._ui_card(parent)
@@ -379,6 +418,9 @@ class ControlPanel:
             heading = ttk.Frame(panel, style="Card.TFrame", padding=(14, 8))
             heading.grid(row=0, column=0, sticky="ew")
             ttk.Label(heading, text=title, style="Section.TLabel").pack(side="left")
+            if key == "chess":
+                tk.Label(heading, textvariable=self.session_summary, bg=THEME["panel"],
+                    fg=THEME["muted"], font=("Microsoft YaHei UI", 8)).pack(side="left", padx=10)
             ttk.Button(heading, text="清空", width=5,
                        command=lambda k=key: self._clear_log_view(k)).pack(side="right")
             ttk.Button(heading, text="最新" if key == "chess" else "跳过", width=5,
@@ -715,7 +757,8 @@ class ControlPanel:
             os.makedirs(os.path.dirname(UI_CFG), exist_ok=True)
             with open(UI_CFG, "w", encoding="utf-8") as stream:
                 json.dump({"theme": self.theme_name.get(),
-                           "opacity": int(self.opacity.get())},
+                           "opacity": int(self.opacity.get()),
+                           "preview_visible": getattr(self, "preview_visible", True)},
                           stream, ensure_ascii=False, indent=2)
         except OSError:
             pass
@@ -728,16 +771,8 @@ class ControlPanel:
 
     def _sync_status_badges(self, *_):
         text = self.status.get()
-        lowered = text.lower()
-        if any(word in text for word in ("失败", "未找到", "异常")):
-            color, bg = THEME["error_fg"], THEME["error_bg"]
-        elif any(word in text for word in ("等待", "准备", "检查", "连接")):
-            color, bg = THEME["wait_fg"], THEME["wait_bg"]
-        elif any(word in text for word in ("运行", "接管", "检测到", "正常")):
-            color, bg = THEME["ok_fg"], THEME["ok_bg"]
-        else:
-            color, bg = THEME["muted"], THEME["panel2"]
-        self.header_status.configure(fg=color, bg=bg)
+        if any(word in text for word in ("失败", "未找到", "异常", "锁定", "未启动", "未确认", "拒绝")):
+            self._note_issue("设备" if any(x in text for x in ("设备", "ADB", "模拟器")) else "对弈", text)
         if hasattr(self, "start_button"):
             running = bool(not self.task_cancel.is_set() and
                            self.process and self.process.poll() is None)
@@ -762,6 +797,7 @@ class ControlPanel:
         else:
             self.board_state.set("准备就绪")
             self._set_indicator("board", THEME["muted"])
+        self._queue_monitor()
 
     def _sync_live_badges(self, *_):
         speech = self.speech_status.get()
@@ -770,14 +806,125 @@ class ControlPanel:
             "voice", THEME["jade"] if self.live_speech.get() else THEME["purple"])
         live = self.live_status.get()
         if any(word in live for word in ("已连接", "连接成功")) and "未" not in live:
+            self.connection_state = "connected"
+            self._clear_issue("直播")
             self.stream_state.set("已连接")
             self._set_indicator("stream", THEME["jade"])
-        elif any(word in live for word in ("正在连接", "连接中")):
+        elif any(word in live for word in ("正在连接", "连接中", "正在解析")):
+            self.connection_state = "connecting"
             self.stream_state.set("连接中")
             self._set_indicator("stream", THEME["gold"])
         else:
             self.stream_state.set("未连接")
             self._set_indicator("stream", THEME["muted"])
+            if any(word in live for word in ("失败", "异常", "缺少", "拒绝")):
+                self.connection_state = "error"
+                self._note_issue("直播", live)
+            elif "结束" in live:
+                self.connection_state = "ended"
+            elif "断开" in live or "未连接" in live:
+                self.connection_state = "disconnected"
+        if "异常" in speech or "失败" in speech:
+            self._note_issue("播报", speech)
+        self._queue_monitor()
+
+    def _note_issue(self, source, text, level="error"):
+        if hasattr(self, "monitor_issues"):
+            message = str(text).strip()
+            if source == "播报":
+                message = message.removeprefix("播报异常：").strip()
+            self.monitor_issues.set(source, message, level)
+            self._queue_monitor()
+
+    def _clear_issue(self, source):
+        if hasattr(self, "monitor_issues"):
+            self.monitor_issues.clear(source)
+            self._queue_monitor()
+
+    def _queue_monitor(self, *_):
+        if hasattr(self, "monitor_labels") and not getattr(self, "_monitor_job", None):
+            self._monitor_job = self.root.after_idle(self._refresh_monitor)
+
+    def _refresh_monitor(self):
+        self._monitor_job = None
+        if not hasattr(self, "monitor_labels") or self.closing:
+            return
+        running = bool(self.process and self.process.poll() is None)
+        board = player_view(self._player_runtime, pid=self.process.pid if running else None,
+            running=running, stopped=self.task_cancel.is_set(), waiting=self.waiting_for_board,
+            warning_after=getattr(self, "_heartbeat_warning_seconds", 25))
+        if board[0] == "待机":
+            board = (board[0], "设备" + self.device_state.get() + " · 等待开始", board[2])
+        if running and board[2] == "ok":
+            self.monitor_issues.clear("对弈")
+        if board[0] == "心跳停滞":
+            self.monitor_issues.set("心跳", board[1])
+        else:
+            self.monitor_issues.clear("心跳")
+        if self.device_state.get() == "已连接":
+            self.monitor_issues.clear("设备")
+        if not self.live_speech.get():
+            self.monitor_issues.clear("播报")
+        if self.task_cancel.is_set():
+            self.monitor_issues.clear("对弈")
+            self.monitor_issues.clear("识别")
+        elif "识别" in self.monitor_issues.active:
+            board = ("自动复核", "正在核对棋盘，暂缓落子", "warn")
+        elif not running and "对弈" in self.monitor_issues.active:
+            board = ("已暂停", self.monitor_issues.active["对弈"][0][:42], "error")
+        activity = self.live_controller.pipeline.activity_snapshot() if self.live_controller else {}
+        if not isinstance(activity, dict):
+            activity = {}
+        voice = speech_view(self.live_speech.get(), activity, self.speech_status.get())
+        if "播报" in self.monitor_issues.active and voice[0] == "待播":
+            voice = ("播报异常", self.monitor_issues.active["播报"][0][:48], "error")
+        live = live_view(self.connection_state, self.room_metrics.get("online"), self.room_metrics.get("chat_rate", 0))
+        colors = {"ok": THEME["jade"], "warn": THEME["gold"], "error": THEME["red"], "muted": THEME["muted"]}
+        for key, (title, detail, level) in (("board", board), ("voice", voice), ("stream", live)):
+            labels = self.monitor_labels[key]
+            labels[0].configure(text=title, fg=colors[level])
+            labels[1].configure(text=detail)
+            self._set_indicator(key, colors[level])
+        issues = self.monitor_issues.rows()
+        if issues:
+            source, message, level = issues[0]
+            self.attention_text.set(f"需关注 {len(issues)} 项 · {source}：{message}")
+            bg, fg = (THEME["error_bg"], THEME["error_fg"]) if level == "error" else (THEME["wait_bg"], THEME["wait_fg"])
+            self.attention_bar.configure(bg=bg)
+            self.attention_label.configure(bg=bg, fg=fg)
+            if not self.attention_bar.winfo_manager():
+                self.attention_bar.pack(fill="x")
+        else:
+            self.attention_bar.pack_forget()
+        if (getattr(self, "_issue_window", None) is not None and self._issue_window.winfo_exists()
+                and issues != getattr(self, "_issue_details_snapshot", None)):
+            self._issue_details_snapshot = issues
+            self._issue_text.configure(state="normal")
+            self._issue_text.delete("1.0", "end")
+            self._issue_text.insert("end", "\n\n".join(f"{source}\n{message}" for source, message, _ in issues)
+                                    or "当前没有需要处理的异常。")
+            self._issue_text.configure(state="disabled")
+
+    def show_monitor_issues(self):
+        rows = self.monitor_issues.rows()
+        if not rows:
+            return
+        if getattr(self, "_issue_window", None) is not None and self._issue_window.winfo_exists():
+            self._issue_window.deiconify()
+            self._issue_window.lift()
+            return
+        window = tk.Toplevel(self.root)
+        self._issue_window = window
+        window.title("当前异常")
+        window.geometry("620x300")
+        window.configure(bg=THEME["panel"])
+        text = tk.Text(window, wrap="word", bg=THEME["panel"], fg=THEME["text"],
+            relief="flat", padx=18, pady=18, font=("Microsoft YaHei UI", 10))
+        text.pack(fill="both", expand=True)
+        self._issue_text = text
+        self._issue_details_snapshot = rows
+        text.insert("end", "\n\n".join(f"{source}\n{message}" for source, message, _ in rows))
+        text.configure(state="disabled")
 
     def run_health_check(self):
         """Run a non-network livestream readiness check in the background."""
@@ -1087,6 +1234,7 @@ class ControlPanel:
         self.live_connect_button.configure(state="normal", text="连接直播间")
         if self.live_controller:
             self.live_controller.disconnect()
+        self._clear_issue("直播")
         self.live_status.set("直播间已断开")
 
     def jump_live_speech(self):
@@ -1153,14 +1301,20 @@ class ControlPanel:
             self.warning_count += 1
             self.board_state.set("自动复核中")
             self._set_indicator("board", THEME["gold"])
+            self._note_issue("识别", text.replace("[识别告警]", "").strip(), "warn")
+        if "对方回应：" in text or "棋盘识别成功" in text:
+            self._clear_issue("识别")
         if "落子确认：成功" in text or "落子确认成功；" in text:
             self.move_success_count += 1
             self.board_state.set("识别稳定")
             self._set_indicator("board", THEME["jade"])
+            self._clear_issue("识别")
         if "对局结束：" in text:
             self.game_count += 1
         self.runtime_stats.set(
             f"识别告警 {self.warning_count} · 成功落子 {self.move_success_count} · 完成对局 {self.game_count}")
+        if hasattr(self, "session_summary"):
+            self.session_summary.set(f"本次 {self.move_success_count} 手 · {self.game_count} 局")
         shown = text if display_text is Ellipsis else display_text
         if shown:
             self.log.configure(state="normal")
@@ -1192,14 +1346,18 @@ class ControlPanel:
         try:
             running = bool(self.process and self.process.poll() is None)
             status = read_runtime_status() if running else None
+            self._player_runtime = status if status and status.get("pid") == self.process.pid else None
             if running and status and status.get("pid") == self.process.pid:
                 age = heartbeat_age(status)
                 stage = status.get("stage", "")
                 label = RUNTIME_STAGE_LABELS.get(stage, stage or "运行中")
                 if age is not None and age < 5 and stage != "stopped":
                     self.board_state.set(label)
+                    if self.status.get().startswith("运行心跳停滞"):
+                        self.status.set("运行心跳已恢复")
                 cfg = self._assistant_cfg()
                 warning_after = float(cfg.get("watchdog_warning_seconds", 25))
+                self._heartbeat_warning_seconds = warning_after
                 recovery_after = float(cfg.get("watchdog_recovery_seconds", 75))
                 now = time.monotonic()
                 if age is not None and age >= warning_after:
@@ -1230,6 +1388,7 @@ class ControlPanel:
                 self.status.set("看门狗检查失败：" + str(error))
         finally:
             if not self.closing:
+                self._queue_monitor()
                 self.root.after(1500, self._watchdog_tick)
 
     def _watchdog_capture(self, stage, age):
@@ -1797,20 +1956,31 @@ class ControlPanel:
                         epoch = record.get("data", {}).get("connector_epoch")
                         if epoch is not None and epoch != self.live_controller.connector_epoch:
                             continue
+                        self.connection_state = record.get("data", {}).get("state") or getattr(self, "connection_state", "disconnected")
+                        if self.connection_state == "error":
+                            self._note_issue("直播", text)
+                        elif record.get("data", {}).get("state") == "disconnected":
+                            self._note_issue("直播", "直播连接已断开，请重新连接", "warn")
+                        elif self.connection_state == "ended":
+                            self._clear_issue("直播")
                         self.live_status.set(text)
                         if record.get("data", {}).get("state") in ("disconnected", "ended", "error"):
+                            self.room_metrics = {}
                             self.audience_text.set("在线人数 · 待获取")
+                        self._queue_monitor()
                     elif kind == "room_stats":
                         stats = record.get("data") or {}
                         epoch = stats.get("connector_epoch")
                         if epoch is not None and epoch != self.live_controller.connector_epoch:
                             continue
+                        self.room_metrics = stats
                         count = stats.get("online")
                         self.audience_text.set(f"在线 {count:,} 人" if isinstance(count, int)
                                                else "在线人数 · 待获取")
                         self.chat_sampling_text.set(
                             f"自动抽选 · 约每 {stats.get('interval', 8)} 秒最多回复一条 · "
                             f"弹幕 {stats.get('chat_rate', 0):g} 条/秒")
+                        self._queue_monitor()
                     elif kind == "interaction_done":
                         data = record.get("data") or {}
                         if data.get("互动标识") == self.interaction_id:
@@ -1822,6 +1992,7 @@ class ControlPanel:
                     elif kind == "error":
                         self.speech_status.set("播报异常：" + str(text)[:80])
                     elif kind == "reply":
+                        self._clear_issue("播报")
                         data = record.get("data") or {}
                         if data.get("kind") == "弹幕回复":
                             self.interaction_id = data.get("互动标识")

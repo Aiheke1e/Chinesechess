@@ -287,6 +287,17 @@ class SpeechPipeline:
                     and getattr(self, "current_playback", None) != "high"
                     and not self.prepared)
 
+    def activity_snapshot(self):
+        with self.condition:
+            queued = len(self.jobs)
+            working = bool(getattr(self, "active_kind", None))
+        with self.prepared_lock:
+            preparing = len(self.prepared)
+        with self.playback_state_lock:
+            playing = bool(getattr(self, "audio_active", False))
+        return {"queued": queued, "working": working, "preparing": preparing,
+                "playing": playing, "suspended": bool(getattr(self, "suspended", False))}
+
     def cancel_chats(self):
         with self.condition:
             self.chat_epoch += 1
@@ -411,20 +422,26 @@ class SpeechPipeline:
             return False
         duration = self._audio_duration(audio)
         winsound.PlaySound(str(audio), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
-        self.notify("reply", text, {"kind": kind, **payload})
-        if acknowledge:
-            self._mark_speech_started(payload)
-        until = time.monotonic() + duration
-        while time.monotonic() < until:
+        with self.playback_state_lock:
+            self.audio_active = True
+        try:
+            self.notify("reply", text, {"kind": kind, **payload})
+            if acknowledge:
+                self._mark_speech_started(payload)
+            until = time.monotonic() + duration
+            while time.monotonic() < until:
+                if not valid():
+                    winsound.PlaySound(None, winsound.SND_PURGE)
+                    return False
+                self.closed.wait(min(0.03, max(0, until - time.monotonic())))
             if not valid():
-                winsound.PlaySound(None, winsound.SND_PURGE)
                 return False
-            self.closed.wait(min(0.03, max(0, until - time.monotonic())))
-        if not valid():
-            return False
-        if acknowledge and payload.get("绝杀长播报"):
-            self._mark_speech_finished(payload)
-        return True
+            if acknowledge and payload.get("绝杀长播报"):
+                self._mark_speech_finished(payload)
+            return True
+        finally:
+            with self.playback_state_lock:
+                self.audio_active = False
 
     @staticmethod
     def _clean_text(text):
@@ -761,13 +778,16 @@ class SpeechPipeline:
                 (priority, sequence, created, epoch, kind, payload,
                  direct) = heapq.heappop(self.jobs)
                 self.active_chat = kind == "弹幕回复"
+                self.active_kind = kind
             if epoch != self.cancel_epoch or getattr(self, "suspended", False):
                 self.active_chat = False
+                self.active_kind = None
                 continue
             if (kind in CHESS_SPEECH_KINDS and
                     (time.monotonic() - created > 10.0 or
                      payload.get("_chess_epoch", 0) != getattr(self, "chess_epoch", 0))):
                 self.notify("speech_status", "已跳过过期棋局讲解", payload)
+                self.active_kind = None
                 continue
             chat_completed = False
             try:
@@ -822,6 +842,7 @@ class SpeechPipeline:
                                 {**payload, "completed": chat_completed})
                 with self.condition:
                     self.active_chat = False
+                    self.active_kind = None
 
     @staticmethod
     def _prune_audio(folder, keep=20):
@@ -1913,8 +1934,6 @@ class LiveController:
         epoch = event.get("connector_epoch")
         if epoch is not None and epoch != self.connector_epoch:
             return
-        if getattr(self, "suspended", False):
-            return
         kind = event.get("type", "chat")
         if kind == "status":
             if event.get("state") in ("disconnected", "ended"):
@@ -1924,6 +1943,10 @@ class LiveController:
         if kind == "audience":
             if self.chat_selector.update_online(event.get("online")):
                 self._publish_chat_stats()
+            return
+        if getattr(self, "suspended", False):
+            if kind == "chat" and not force and hasattr(self, "chat_selector"):
+                self.chat_selector.offer(event, eligible=False)
             return
         user = str(event.get("user") or "观众")[:30]
         text = str(event.get("text") or "").strip()[:300]
@@ -1940,17 +1963,17 @@ class LiveController:
             self.seen.pop(next(iter(self.seen)))
         if kind == "gift":
             self._notify(kind, f"{user}：{text}", event)
+        if kind == "chat" and not force:
+            self.chat_selector.offer({**event, "user": user, "text": text}, eligible=bool(self.enabled))
+            return
         if not (self.enabled or force):
             return
         if kind == "gift" and self.settings.gift_enabled:
             self._queue_gift(user, event.get("gift") or text,
                              event.get("count", 1), force=force)
         elif kind == "chat":
-            if force:
-                self.pipeline.submit(1, "弹幕回复", {"观众": user, "弹幕": text,
-                                     "互动标识": f"test-{time.time_ns()}"})
-            else:
-                self.chat_selector.offer({**event, "user": user, "text": text})
+            self.pipeline.submit(1, "弹幕回复", {"观众": user, "弹幕": text,
+                                 "互动标识": f"test-{time.time_ns()}"})
         elif (kind == "member" and self.settings.welcome_enabled and
               (event.get("user_id") or user) not in self.welcomed and
               now - self.last_welcome >= 8):
