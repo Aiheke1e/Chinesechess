@@ -218,7 +218,7 @@ class SelectedReplyTests(unittest.TestCase):
         event("interaction_done", {"互动标识": "one", "completed": True})
         panel._poll()
         panel.audience_text.set.assert_called_with("在线 1,200 人")
-        panel.interaction_state.set.assert_called_with("本条互动完成 · 继续抽选")
+        panel.interaction_state.set.assert_called_with("已回复 · 自动抽选中")
 
 
 if __name__ == "__main__":
