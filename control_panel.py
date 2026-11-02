@@ -155,10 +155,9 @@ class ControlPanel:
         self.live_model = tk.StringVar(value=live.model)
         self.live_voice = tk.StringVar(value=live.voice)
         self.live_density = tk.StringVar(value=live.commentary_density)
-        self.live_prefix = tk.StringVar(value=live.prefix)
         self.live_cooldown = tk.StringVar(value=str(live.cooldown))
         self.live_user = tk.StringVar(value="测试观众")
-        self.live_test_text = tk.StringVar(value="问主播 这步棋为什么这样走？")
+        self.live_test_text = tk.StringVar(value="这步棋为什么这样走？")
         self.live_welcome = tk.BooleanVar(value=live.welcome_enabled)
         self.live_gifts = tk.BooleanVar(value=live.gift_enabled)
         self.live_speech = tk.BooleanVar(value=live.speech_enabled)
@@ -175,6 +174,12 @@ class ControlPanel:
         self.voice_state = tk.StringVar(
             value="已开启" if live.speech_enabled else "仅文本")
         self.stream_state = tk.StringVar(value="未连接")
+        self.audience_text = tk.StringVar(value="在线人数 · 待获取")
+        self.chat_sampling_text = tk.StringVar(value="自动抽选 · 无需弹幕前缀")
+        self.interaction_state = tk.StringVar(value="等待抽选弹幕")
+        self.interaction_user = tk.StringVar(value="开启互动后，自动挑选观众交流")
+        self.interaction_message = tk.StringVar(value="开始回复时，这里显示观众昵称和原话。")
+        self.interaction_id = None
         self.runtime_stats = tk.StringVar(value="识别告警 0 · 成功落子 0 · 完成对局 0")
         self.sandtable_title = tk.StringVar(value="战术沙盘")
         self.sandtable_status = tk.StringVar(value="")
@@ -204,7 +209,7 @@ class ControlPanel:
             self.append_live("系统", "棋局台词会自动显示；开启互动后可接收弹幕。")
             if self.live_speech.get():
                 self.live_controller.enable()
-                self.live_status.set("直播讲解运行中")
+                self.interaction_state.set("自动抽选中 · 等待合适的弹幕")
         except Exception as error:
             self.append_live("错误", "直播互动模块初始化失败：" + str(error))
         self.refresh_device()
@@ -248,6 +253,23 @@ class ControlPanel:
             bg=THEME["panel2"], fg=THEME["muted"], padx=14, pady=7,
             font=("Microsoft YaHei UI", 9, "bold"))
         self.header_status.pack(side="right", padx=18)
+
+        interaction = tk.Frame(header, bg=THEME["panel"],
+            highlightbackground=THEME["border"], highlightthickness=1, padx=12, pady=6)
+        interaction.pack(side="left", fill="both", expand=True, padx=(20, 0))
+        interaction.columnconfigure(0, weight=1)
+        tk.Label(interaction, textvariable=self.interaction_state, bg=THEME["panel"],
+            fg=THEME["muted"], font=("Microsoft YaHei UI", 8)).grid(row=0, column=0, sticky="w")
+        tk.Label(interaction, textvariable=self.audience_text, bg=THEME["panel"],
+            fg=THEME["muted"], font=("Microsoft YaHei UI", 8)).grid(row=0, column=1, sticky="e")
+        tk.Label(interaction, textvariable=self.interaction_user, bg=THEME["panel"],
+            fg=THEME["jade"], font=("Microsoft YaHei UI", 10, "bold"), anchor="w").grid(
+                row=1, column=0, columnspan=2, sticky="ew")
+        comment = tk.Label(interaction, textvariable=self.interaction_message,
+            bg=THEME["panel"], fg=THEME["text"], font=("Microsoft YaHei UI", 9),
+            anchor="nw", justify="left", height=2, wraplength=400)
+        comment.grid(row=2, column=0, columnspan=2, sticky="ew")
+        interaction.bind("<Configure>", lambda event: comment.configure(wraplength=max(120, event.width - 28)))
 
         controls = self._ui_card(self.root)
         controls.pack(fill="x", padx=20, pady=(0, 12))
@@ -511,12 +533,13 @@ class ControlPanel:
             setattr(self, attr, editor)
         ttk.Button(intro, text="试听开场介绍", command=self.speak_intro).pack(anchor="w", pady=(10, 0))
 
-        interaction_card, interaction = self._section(parent, "观众互动", "仅回复指定前缀的弹幕；前缀留空则回复全部。")
+        interaction_card, interaction = self._section(parent, "观众互动", "自动抽选弹幕，无需前缀；人多或刷屏时减少回复。")
         interaction_card.grid(row=2, column=0, sticky="nsew", padx=(0, 10), pady=(0, 10))
         row = ttk.Frame(interaction, style="Card.TFrame")
         row.pack(fill="x")
-        ttk.Label(row, text="弹幕前缀", style="Card.TLabel").pack(side="left")
-        ttk.Entry(row, textvariable=self.live_prefix, width=12).pack(side="left", padx=10)
+        ttk.Label(row, textvariable=self.audience_text, style="Card.TLabel").pack(side="left")
+        ttk.Label(interaction, textvariable=self.chat_sampling_text,
+                  style="Muted.TLabel", wraplength=400).pack(anchor="w", pady=(6, 0))
         row = ttk.Frame(interaction, style="Card.TFrame")
         row.pack(fill="x", pady=10)
         ttk.Checkbutton(row, text="欢迎进场", variable=self.live_welcome).pack(side="left")
@@ -1053,7 +1076,7 @@ class ControlPanel:
             "model": self.live_model.get().strip() or "glm-4-flash",
             "voice": self.live_voice.get(),
             "commentary_density": self.live_density.get(),
-            "prefix": self.live_prefix.get().strip(),
+            "prefix": "",
             "cooldown": cooldown,
             "persona": self.persona_text.get("1.0", "end").strip(),
             "introduction": self.intro_text.get("1.0", "end").strip(),
@@ -1081,19 +1104,19 @@ class ControlPanel:
     def enable_live(self):
         if self.save_live_settings(quiet=True):
             self.live_controller.enable()
-            self.live_status.set("互动运行中")
+            self.interaction_state.set("自动抽选中 · 等待合适的弹幕")
 
     def pause_live(self):
         if self.live_controller:
             self.live_controller.pause()
-        self.live_status.set("互动已暂停")
+        self.interaction_state.set("互动已暂停")
 
     def toggle_live_speech(self):
         if not self.save_live_settings(quiet=True):
             return
         if self.live_speech.get():
             self.live_controller.enable()
-            self.live_status.set("直播讲解运行中")
+            self.interaction_state.set("自动抽选中 · 等待合适的弹幕")
             self.speech_status.set("语音已开启")
             self.append_live("语音", "开播语音已开启，后续内容会调用百炼 TTS。")
         else:
@@ -1690,6 +1713,8 @@ class ControlPanel:
         self.task_cancel.set()
         self.waiting_for_board = False
         self.auto_retry = False
+        if hasattr(self, "interaction_state"):
+            self.interaction_state.set("互动已停止")
         self._cancel_sandtable_jobs()
         self._close_sandtable_ui()
         if self.live_controller:
@@ -1846,7 +1871,7 @@ class ControlPanel:
                     record = item[1]
                     kind = record.get("kind", "status")
                     if self.task_cancel.is_set() and kind in (
-                            "reply", "speech_status", "queued", "chess", "sandtable"):
+                            "reply", "speech_status", "queued", "chess", "sandtable", "interaction_done"):
                         continue
                     text = record.get("text", "")
                     if kind == "sandtable":
@@ -1857,11 +1882,36 @@ class ControlPanel:
                         if epoch is not None and epoch != self.live_controller.connector_epoch:
                             continue
                         self.live_status.set(text)
+                        if record.get("data", {}).get("state") in ("disconnected", "ended", "error"):
+                            self.audience_text.set("在线人数 · 待获取")
+                    elif kind == "room_stats":
+                        stats = record.get("data") or {}
+                        epoch = stats.get("connector_epoch")
+                        if epoch is not None and epoch != self.live_controller.connector_epoch:
+                            continue
+                        count = stats.get("online")
+                        self.audience_text.set(f"在线 {count:,} 人" if isinstance(count, int)
+                                               else "在线人数 · 待获取")
+                        self.chat_sampling_text.set(
+                            f"自动抽选 · 约每 {stats.get('interval', 8)} 秒最多回复一条 · "
+                            f"弹幕 {stats.get('chat_rate', 0):g} 条/秒")
+                    elif kind == "interaction_done":
+                        data = record.get("data") or {}
+                        if data.get("互动标识") == self.interaction_id:
+                            self.interaction_state.set("互动已暂停" if not self.live_controller.enabled else (
+                                "本条互动完成 · 继续抽选" if data.get("completed")
+                                else "本条互动已中断 · 优先播报棋局"))
                     elif kind == "speech_status":
                         self.speech_status.set(text)
                     elif kind == "error":
                         self.speech_status.set("播报异常：" + str(text)[:80])
                     elif kind == "reply":
+                        data = record.get("data") or {}
+                        if data.get("kind") == "弹幕回复":
+                            self.interaction_id = data.get("互动标识")
+                            self.interaction_state.set("正在互动 · 回复这位观众")
+                            self.interaction_user.set(str(data.get("观众") or "观众"))
+                            self.interaction_message.set(str(data.get("弹幕") or ""))
                         self.append_speech(record)
 
                 else:

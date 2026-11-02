@@ -163,7 +163,7 @@ class LiveConnectionTests(unittest.TestCase):
         signature = module.generateSignature = Mock(return_value="signature")
         proto = types.ModuleType("protobuf.douyin")
         for name in ("ChatMessage", "ControlMessage", "GiftMessage", "MemberMessage",
-                     "PushFrame", "Response", "SocialMessage"):
+                     "PushFrame", "Response", "SocialMessage", "RoomUserSeqMessage"):
             setattr(proto, name, Mock())
         with patch.dict("sys.modules", {"liveMan": module, "protobuf": types.ModuleType("protobuf"),
                                        "protobuf.douyin": proto, "websocket": Mock()}):

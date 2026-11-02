@@ -39,7 +39,7 @@ def create_fetcher(room, sink=emit):
     from liveMan import DouyinLiveWebFetcher
     from protobuf.douyin import (ChatMessage, ControlMessage, GiftMessage,
                                  MemberMessage, PushFrame, Response,
-                                 SocialMessage)
+                                 SocialMessage, RoomUserSeqMessage)
     import websocket
 
     # Upstream resolves this default against cwd. Our child runs in the chess
@@ -89,6 +89,10 @@ def create_fetcher(room, sink=emit):
                             self.ended = True
                             sink({"type": "status", "state": "ended", "text": "直播已结束"})
                             self.stop()
+                        continue
+                    if item.method == "WebcastRoomUserSeqMessage":
+                        stats = RoomUserSeqMessage().parse(item.payload)
+                        sink({"type": "audience", "online": int(stats.total)})
                         continue
                     if item.method not in handlers:
                         continue
