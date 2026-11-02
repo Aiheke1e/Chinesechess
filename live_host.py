@@ -1932,9 +1932,7 @@ class LiveController:
             if self.chat_selector.update_online(event.get("online")):
                 self._publish_chat_stats()
             return
-        if getattr(self, "suspended", False):
-            if kind == "chat" and not force and hasattr(self, "chat_selector"):
-                self.chat_selector.offer(event, eligible=False)
+        if getattr(self, "suspended", False) and force:
             return
         user = str(event.get("user") or "观众")[:30]
         text = str(event.get("text") or "").strip()[:300]
@@ -1949,6 +1947,14 @@ class LiveController:
         self.seen[key] = now
         while len(self.seen) > 2000:
             self.seen.pop(next(iter(self.seen)))
+        # The incoming feed is complete even when interaction is paused or the
+        # message is filtered out of speech selection. Test inputs stay local.
+        if not force and kind in ("chat", "gift", "member", "social", "like"):
+            self._notify("room_message", "", event)
+        if getattr(self, "suspended", False):
+            if kind == "chat" and hasattr(self, "chat_selector"):
+                self.chat_selector.offer(event, eligible=False)
+            return
         if kind == "gift":
             self._notify(kind, f"{user}：{text}", event)
         if kind == "chat" and not force:

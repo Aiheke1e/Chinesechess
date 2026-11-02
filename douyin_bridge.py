@@ -55,7 +55,8 @@ def create_fetcher(room, sink=emit):
     from liveMan import DouyinLiveWebFetcher
     from protobuf.douyin import (ChatMessage, ControlMessage, GiftMessage,
                                  MemberMessage, PushFrame, Response,
-                                 SocialMessage, RoomUserSeqMessage)
+                                 SocialMessage, RoomUserSeqMessage, LikeMessage,
+                                 EmojiChatMessage)
     import websocket
 
     # Upstream resolves this default against cwd. Our child runs in the chess
@@ -118,6 +119,8 @@ def create_fetcher(room, sink=emit):
                     "WebcastGiftMessage": (GiftMessage, "gift"),
                     "WebcastMemberMessage": (MemberMessage, "member"),
                     "WebcastSocialMessage": (SocialMessage, "social"),
+                    "WebcastLikeMessage": (LikeMessage, "like"),
+                    "WebcastEmojiChatMessage": (EmojiChatMessage, "chat"),
                 }
                 for item in response.messages_list:
                     if item.method == "WebcastControlMessage":
@@ -139,15 +142,20 @@ def create_fetcher(room, sink=emit):
                              "user": (parsed.user.nick_name or "观众")[:50],
                              "user_id": str(parsed.user.id or "")}
                     if kind == "chat":
-                        event["text"] = parsed.content[:500]
+                        event["text"] = (parsed.default_content if item.method == "WebcastEmojiChatMessage"
+                                         else parsed.content)[:500]
                     elif kind == "gift":
                         count = parsed.combo_count or parsed.repeat_count or 1
                         event.update({"gift": parsed.gift.name, "count": count,
                                       "text": f"送出 {parsed.gift.name} × {count}"})
                     elif kind == "member":
                         event["text"] = "进入直播间"
+                    elif kind == "like":
+                        event["text"] = f"点赞 × {parsed.count or 1}"
                     else:
-                        event["text"] = "关注或点赞互动"
+                        event["text"] = ("关注了主播" if parsed.follow_count else
+                                         "分享了直播间" if parsed.share_target or parsed.share_type
+                                         else "参与直播互动")
                     sink(event)
             except Exception:
                 sink({"type": "status", "state": "error",
