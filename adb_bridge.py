@@ -5,18 +5,61 @@ import os
 import subprocess
 import time
 import tempfile
+import threading
+from contextlib import contextmanager
+
+
+class TaskCancelled(Exception):
+    """The user stopped the task that owns this ADB command."""
+
+
+_task_context = threading.local()
+
+
+@contextmanager
+def cancellable_adb(cancel):
+    previous = getattr(_task_context, "cancel", None)
+    _task_context.cancel = cancel
+    try:
+        yield
+    finally:
+        _task_context.cancel = previous
 
 ADB = os.environ.get("ADB", r"D:\environment\Android\Sdk\platform-tools\adb.exe")
 NO_CONSOLE = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 
 def adb(args, timeout=30, device=None):
+    cancel = getattr(_task_context, "cancel", None)
+    if cancel is not None and cancel.is_set():
+        raise TaskCancelled()
     cmd = [ADB]
     if device:
         cmd += ["-s", device]
     cmd += args
-    return subprocess.run(cmd, capture_output=True, timeout=timeout,
-                          creationflags=NO_CONSOLE)
+    if cancel is None:
+        return subprocess.run(cmd, capture_output=True, timeout=timeout,
+                              creationflags=NO_CONSOLE)
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          creationflags=NO_CONSOLE) as process:
+        deadline = time.monotonic() + timeout
+        while True:
+            if cancel.is_set():
+                process.kill()
+                process.communicate()
+                raise TaskCancelled()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                process.kill()
+                process.communicate()
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            try:
+                stdout, stderr = process.communicate(timeout=min(0.05, remaining))
+                if cancel.is_set():
+                    raise TaskCancelled()
+                return subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
+            except subprocess.TimeoutExpired:
+                continue
 
 
 def list_devices():

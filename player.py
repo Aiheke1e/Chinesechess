@@ -82,37 +82,81 @@ def load_cfg():
 def _read_speech_marker(path):
     try:
         with open(path, encoding="utf-8") as stream:
-            return json.load(stream)
+            marker = json.load(stream)
+            return marker if isinstance(marker, dict) else {}
     except (OSError, ValueError):
         return {}
 
 
-def wait_for_speech_start(token, plan_timeout=0.25, audio_timeout=2.8):
-    """Wait only for a planned normal line, and stop as soon as audio starts."""
+class SpeechSyncError(RuntimeError):
+    pass
+
+
+def _speech_enabled():
     try:
         with open(LIVE_CFG_PATH, encoding="utf-8") as stream:
             live = json.load(stream)
-    except (OSError, ValueError):
+        if not isinstance(live, dict):
+            raise ValueError("直播配置格式错误")
+        return bool(live.get("commentary_enabled") and live.get("speech_enabled"))
+    except FileNotFoundError:
         return False
-    if not (live.get("commentary_enabled") and live.get("speech_enabled")):
+    except (OSError, ValueError) as error:
+        raise SpeechSyncError("无法核对语音开关，未发送点击") from error
+
+
+def wait_for_speech_start(token, plan_timeout=2.0, audio_timeout=15.0,
+                          cancelled=None, deadline=None, finish_timeout=40.0):
+    """Require matching audio start; verified finishers must finish before input."""
+    if token.endswith(":sandbox"):
         return False
-    deadline = time.monotonic() + max(0.0, plan_timeout)
+    if not _speech_enabled():
+        return False
+    deadline = deadline if deadline is not None else time.monotonic() + max(0.0, audio_timeout)
+    plan_deadline = min(deadline, time.monotonic() + max(0.0, plan_timeout))
     plan = {}
-    while time.monotonic() < deadline:
+    while time.monotonic() < plan_deadline:
+        if cancelled and cancelled():
+            return False
         plan = _read_speech_marker(SPEECH_PREPARING_PATH)
         if plan.get("token") == token:
             break
         time.sleep(0.02)
-    if (plan.get("token") != token or not plan.get("enabled") or
-            plan.get("deferred")):
-        return False
-    deadline = time.monotonic() + max(0.0, audio_timeout)
-    while time.monotonic() < deadline:
+    if plan.get("token") != token:
+        raise SpeechSyncError("未收到本手播报计划，未发送点击")
+    if plan.get("deferred"):
+        if token.endswith(":sandbox"):
+            return False
+        raise SpeechSyncError("本手短播报被错误标为沙盘讲解，未发送点击")
+    if not plan.get("enabled"):
+        if not _speech_enabled():
+            return False
+        raise SpeechSyncError("本手语音没有启用，未发送点击")
+    wait_finished = bool(plan.get("wait_finished"))
+    completion_deadline = None
+    heartbeat_at = time.monotonic() + 1.0
+    while time.monotonic() < (completion_deadline or deadline):
+        if cancelled and cancelled():
+            return False
+        if not _speech_enabled():
+            return False
         started = _read_speech_marker(SPEECH_STARTED_PATH)
         if started.get("token") == token:
-            return True
+            if started.get("status") == "failed":
+                raise SpeechSyncError(str(started.get("message") or "语音启动失败"))
+            if started.get("status") in ("started", "finished"):
+                if not wait_finished or started.get("status") == "finished":
+                    return True
+                if completion_deadline is None:
+                    completion_deadline = time.monotonic() + max(0.0, finish_timeout)
+        if wait_finished and time.monotonic() >= heartbeat_at:
+            write_runtime_status("speech_waiting", "绝杀收尾播报中，说完后落子",
+                                 details={"speech_token": token})
+            heartbeat_at = time.monotonic() + 1.0
         time.sleep(0.03)
-    return False
+    if completion_deadline is not None:
+        raise SpeechSyncError("绝杀解说未在时限内完整播完，已暂停且未发送点击")
+    raise SpeechSyncError("本手语音未在15秒内启动，已暂停且未发送点击")
 
 
 def read_squares(device, orientation="auto"):
@@ -701,7 +745,7 @@ def main():
                         engine=desc, fen_before=b.to_fen(),
                         speech_token=speech_token)
             events.emit("engine_analysis", number=n + 1, ucci=u,
-                        notation=d, side=b.turn,
+                        notation=d, side=b.turn, dry_run=cfg["dry_run"],
                         fen_before=b.to_fen(),
                         material=material_summary(b),
                         summary=analysis_summary, analysis=analysis,
@@ -710,15 +754,28 @@ def main():
                         speech_token=speech_token,
                         pv=[{"ucci": move_ucci, "notation": text}
                             for move_ucci, text in pv_line])
-            print("[语音同步] 落子与短解说预生成已并行启动；"
-                  "将在点击棋子前开始播放。", flush=True)
+            speech_deadline = time.monotonic() + 15.0
             events.emit("move_command", number=n + 1, ucci=u, notation=d,
-                        speech_token=speech_token,
+                        speech_token=speech_token, speech_deadline=speech_deadline,
                         from_index=mv[0], to_index=mv[1],
                         from_screen=from_xy, to_screen=to_xy,
                         orientation=orientation)
-            if wait_for_speech_start(speech_token):
-                print("[语音同步] 解说已起声，现在执行棋盘点击。", flush=True)
+            if not cfg["dry_run"]:
+                write_runtime_status("speech_waiting", "等待本手播报确认",
+                                     details={"own_moves": n + 1, "ucci": u})
+                try:
+                    if wait_for_speech_start(speech_token, cancelled=stop_requested,
+                                             deadline=speech_deadline):
+                        print("[语音同步] 本手播报已确认，现在执行棋盘点击。", flush=True)
+                except SpeechSyncError as error:
+                    result = "speech_pause"
+                    events.emit("speech_cancelled", number=n + 1, notation=d,
+                                speech_token=speech_token, reason=str(error))
+                    print(f"[语音同步] {error}；本次没有发送落子。", flush=True)
+                    break
+                if stop_requested():
+                    events.emit("speech_cancelled", notation=d, speech_token=speech_token)
+                    break
 
             confirmation_seconds = 0.0
             if cfg["dry_run"]:
@@ -921,6 +978,7 @@ def main():
             "unsafe_position": "落子未确认，已锁定当前局面",
             "recognition_pause": "识别暂不稳定，断点已保留",
             "recovery_pause": "落子结果待恢复，断点已保留",
+            "speech_pause": "本手语音未启动，已暂停且未落子",
         }.get(result, result)
         print("\n" + "=" * 54)
         print(f"对局结束：{result_text}｜我方共走 {n} 步")
@@ -963,6 +1021,8 @@ def main():
                     print("[故障截图] 已保存现场：" + diagnostic)
         if pf:
             pf.quit()
+    if result == "speech_pause":
+        return 15
     if result == "engine_error":
         return 12
     if result == "unsafe_position":

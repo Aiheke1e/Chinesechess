@@ -216,7 +216,7 @@ class LiveHostTests(unittest.TestCase):
             tts=lambda *args: self.fail("文本模式不应调用语音"))
         pipeline.prepare_idle(
             {"引擎预测应手": "黑方 马8进7"}, kind="应手预判",
-            direct_text="我猜他可能走马8进7。")
+            direct_text="对手可能走马8进7。")
         self.assertTrue(pipeline.open_idle_window())
         self.assertTrue(spoken.wait(1))
         pipeline.close()
@@ -426,7 +426,8 @@ class LiveHostTests(unittest.TestCase):
             "event": "game_over", "result": "won",
             "reason": "no_legal_moves"})
         self.assertEqual(submitted[0][0], "获胜收官")
-        self.assertIn("下一位受害者", submitted[0][1])
+        self.assertIn("稳稳收下", submitted[0][1])
+        self.assertNotIn("受害者", submitted[0][1])
 
     def test_surrender_result_gets_cautious_closing_line(self):
         submitted = []
@@ -445,7 +446,9 @@ class LiveHostTests(unittest.TestCase):
             "event": "game_over", "result": "finished",
             "reason": "jj_result_screen"})
         self.assertEqual(submitted[0][0], "结算收官")
-        self.assertIn("看样子", submitted[0][1])
+        self.assertIn("已经结束", submitted[0][1])
+        for claim in ("赢", "收下", "获胜"):
+            self.assertNotIn(claim, submitted[0][1])
 
     def test_capture_uses_detailed_commentary(self):
         submitted = []
@@ -466,7 +469,8 @@ class LiveHostTests(unittest.TestCase):
             "candidates": [], "pv": []})
         self.assertEqual(submitted[0][0], "关键走棋解说")
         self.assertIn("炮五进四", submitted[0][1])
-        self.assertIn("吃掉一枚马", submitted[0][1])
+        self.assertIn("马", submitted[0][1])
+        self.assertIn("收掉", submitted[0][1])
         self.assertNotIn("收下这枚", submitted[0][1])
 
     def test_queen_style_explanation_is_prepared_for_wait_window(self):
@@ -497,6 +501,8 @@ class LiveHostTests(unittest.TestCase):
                 "最终选择": "红方 炮五进四，吃马",
                 "选择理由": ["吃掉马"],
                 "候选取舍": [{"走法": "马三进五", "取舍": "较慢"}],
+                "最可能应手": "黑方 车9平8",
+                "主线参考": ["黑方 车9平8", "红方 炮五平七，吃炮"],
                 "值得展开": True,
             },
         })
@@ -637,15 +643,15 @@ class LiveHostTests(unittest.TestCase):
         self.assertEqual(
             LiveController._synced_move_text(
                 "红方 马七退五", ["争夺中路", "马向中路靠拢"], 6),
-            "回马靠中，走马七退五。")
+            "马七退五，把子力往中路集中。")
         self.assertEqual(
             LiveController._synced_move_text(
                 "红方 马二进三", ["马向中路靠拢"], 2),
-            "跳马靠中，走马二进三。")
+            "马二进三，马往中路靠一靠。")
         self.assertEqual(
             LiveController._synced_move_text(
                 "红方 炮二退一", ["炮回撤调整"], 7),
-            "炮先回一格，走炮二退一。")
+            "炮二退一，炮先回撤。")
 
     def test_capture_names_the_exact_captured_piece_once(self):
         text = LiveController._synced_move_text(
@@ -657,15 +663,41 @@ class LiveHostTests(unittest.TestCase):
     def test_idle_move_text_has_no_canned_opponent_tail(self):
         text = LiveController._idle_move_text(
             "红方 炮八平五", {"选择理由": ["争夺中路"]}, 6)
-        self.assertIn("中路", text)
+        self.assertEqual(text, "")
         self.assertNotIn("怎么应对", text)
         self.assertNotIn("有好戏", text)
+
+    def test_waiting_explanation_only_adds_a_reply_without_repeating_call_or_material(self):
+        text = LiveController._idle_move_text("黑方 炮2平5", {
+            "选择理由": ["争夺中路", "炮横向换线"],
+            "当前子力": "咱们多一点子力",
+            "最可能应手": "红方 马八进七",
+        })
+        self.assertEqual(text, "对手可能走马八进七。")
+        self.assertNotIn("多一点子力", text)
+        self.assertNotIn("炮2平5", text)
+        self.assertNotIn("红方", text)
+
+    def test_king_move_without_check_does_not_invent_an_attack(self):
+        text = LiveController._synced_move_text("黑方 将5平4", ["将调整位置"], 18)
+        for word in ("火力", "避开", "躲", "解将"):
+            self.assertNotIn(word, text)
+
+    def test_horizontal_pawn_move_is_not_described_as_forward(self):
+        text = LiveController._synced_move_text("黑方 卒5平4", [], 9)
+        self.assertIn("横", text)
+        self.assertNotIn("向前", text)
+
+    def test_cannon_retreat_does_not_invent_a_one_square_distance(self):
+        text = LiveController._synced_move_text("红方 炮二退五", ["炮回撤调整"], 7)
+        self.assertNotIn("一格", text)
+        self.assertIn("回撤", text)
 
     def test_idle_rook_horizontal_move_never_claims_it_left_back_rank(self):
         text = LiveController._idle_move_text(
             "红方 车九平八",
             {"选择理由": ["调动后排大子", "车横向换线"]}, 5)
-        self.assertIn("平车", text)
+        self.assertEqual(text, "")
         self.assertNotIn("接出底线", text)
 
     def test_local_move_words_preserve_direction_piece_and_distance(self):
@@ -729,7 +761,7 @@ class LiveHostTests(unittest.TestCase):
             "预判走法": "黑方 马8进7", "实际应手": "黑方 车9平8",
             "预判兑现": False})
         self.assertIn("车9平8", text)
-        self.assertIn("马8进7", text)
+        self.assertNotIn("马8进7", text)
 
     def test_normal_speech_commits_before_adb_move(self):
         decisions = []

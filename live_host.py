@@ -17,10 +17,13 @@ import time
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 import winsound
+import wave
 
 from bailian_tts import available_voices, synthesize
 from glm_client import DEFAULT_MODEL, respond
 from opening_library import load_opening_library
+from commentary_text import complete_note, connected_move_note, waiting_note, confirmed_win_note
+from mate_patterns import build_finisher, confirmed_finisher_note
 
 
 HERE = Path(__file__).resolve().parent
@@ -32,12 +35,12 @@ SPEECH_PREPARING = HERE / "work" / "speech_preparing.json"
 CHESS_SPEECH_KINDS = {
     "我方走棋播报", "我方走棋解说", "对手走棋播报", "对手走棋解说",
     "关键走棋解说", "关键应手解说", "等待期长讲解", "应手预判",
-    "开局定式解说",
+    "开局定式解说", "绝杀长解说",
     "沙盘推演解说", "QUEEN式等待期解说", "收官解说", "获胜收官", "结算收官",
 }
 OWN_SPEECH_KINDS = {
     "我方走棋播报", "关键走棋解说", "沙盘推演解说",
-    "获胜收官", "结算收官",
+    "获胜收官", "结算收官", "绝杀长解说",
 }
 
 COMMENTARY_DENSITY = {
@@ -126,8 +129,13 @@ def load_settings():
 
 
 def save_settings(settings):
-    CONFIG_PATH.write_text(json.dumps(asdict(settings), ensure_ascii=False,
-                                      indent=2) + "\n", encoding="utf-8")
+    temporary = CONFIG_PATH.with_name(f"{CONFIG_PATH.name}.{threading.get_ident()}.tmp")
+    try:
+        temporary.write_text(json.dumps(asdict(settings), ensure_ascii=False,
+                                        indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, CONFIG_PATH)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 class SpeechPipeline:
@@ -146,16 +154,22 @@ class SpeechPipeline:
         generic = ("改善棋子位置", "棋子更活跃", "子力更活跃",
                    "看对面怎么应对", "看看对面怎么应对", "看人家怎么应对",
                    "肯定有好戏", "挺有意思", "这步很关键",
-                   "直接威胁", "更加活跃", "更佳位置")
+                   "直接威胁", "更加活跃", "更佳位置", "更灵活",
+                   "感觉", "稍显", "效果差点", "来得直接", "一举两得",
+                   "主要是为了吃掉", "主要是为了形成将军")
         if any(term in text for term in generic):
+            return False
+        if any(term in text for term in ("候选", "备选", "首选", "也可以考虑",
+                "两种走法", "另一个选择", "另一种选择", "猜", "押", "八成", "蒙对")):
             return False
         notation = str(payload.get("我方计划走法") or "")
         move = LiveController._spoken_notation(notation)
-        if notation and "，吃" not in notation and any(
+        short_call = kind in ("关键走棋解说", "我方走棋播报", "我方走棋解说")
+        if short_call and notation and "，吃" not in notation and any(
                 term in text for term in (
                     "收下", "拿下", "吃掉", "吃到", "这波交换")):
             return False
-        if "，吃" in notation:
+        if short_call and "，吃" in notation:
             captured = notation.rsplit("吃", 1)[-1][:1]
             if any(term in text for term in ("吃", "拿下", "收下")) and captured not in text:
                 return False
@@ -176,7 +190,7 @@ class SpeechPipeline:
                 if piece not in allowed and any(word in text for word in words):
                     return False
         return True
-    """Generate text/TTS in background; never blocks chess input."""
+    """Generate text/TTS in background and acknowledge move-specific playback."""
     def __init__(self, settings, notify, llm=respond, tts=synthesize):
         self.settings, self.notify = settings, notify
         self.llm, self.tts = llm, tts
@@ -186,6 +200,7 @@ class SpeechPipeline:
         self.jobs = []
         self.sequence = 0
         self.cancel_epoch = 0
+        self.chess_epoch = 0
         self.history = deque(maxlen=8)
         self.prepared = {}
         self.prepared_lock = threading.Lock()
@@ -200,7 +215,7 @@ class SpeechPipeline:
 
     def _ensure_worker(self):
         with self.worker_lock:
-            if self.closed.is_set():
+            if self.closed.is_set() or getattr(self, "suspended", False):
                 return False
             if self.generator is not None and self.generator.is_alive():
                 return True
@@ -215,7 +230,11 @@ class SpeechPipeline:
     def submit(self, priority, kind, payload, direct_text=None):
         if not self._ensure_worker():
             return False
+        if kind in CHESS_SPEECH_KINDS:
+            payload = {**payload, "_chess_epoch": getattr(self, "chess_epoch", 0)}
         with self.condition:
+            if self.closed.is_set() or getattr(self, "suspended", False):
+                return False
             self.sequence += 1
             # Once our next move is known, any queued older chess narration is
             # already behind the board.  Keep chat/gifts, but let the latest
@@ -266,37 +285,99 @@ class SpeechPipeline:
         self.notify("speech_status", "已清除排队旧讲解；当前句说完后跳到最新", {})
 
     @staticmethod
-    def _mark_speech_started(payload):
-        token = str(payload.get("speech_token") or "").strip()
-        if not token:
-            return
+    def _write_speech_marker(path, data):
         try:
-            SPEECH_STARTED.parent.mkdir(parents=True, exist_ok=True)
-            temporary = SPEECH_STARTED.with_suffix(".tmp")
-            temporary.write_text(json.dumps({
-                "token": token, "started": time.time()
-            }, ensure_ascii=False), encoding="utf-8")
-            os.replace(temporary, SPEECH_STARTED)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_name(f"{path.name}.{threading.get_ident()}.tmp")
+            temporary.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            os.replace(temporary, path)
         except OSError:
             pass
 
     @staticmethod
+    def _mark_speech_started(payload):
+        token = str(payload.get("speech_token") or "").strip()
+        if not token or token.endswith(":sandbox"):
+            return
+        SpeechPipeline._write_speech_marker(SPEECH_STARTED, {
+            "token": token, "status": "started", "started": time.time()})
+
+    @staticmethod
+    def _mark_speech_failed(payload, reason):
+        if payload.get("speech_token") and not str(payload["speech_token"]).endswith(":sandbox"):
+            SpeechPipeline._write_speech_marker(SPEECH_STARTED, {
+                "token": payload["speech_token"], "status": "failed", "message": str(reason)})
+
+    @staticmethod
+    def _mark_speech_finished(payload):
+        token = str(payload.get("speech_token") or "").strip()
+        if token and not token.endswith(":sandbox"):
+            SpeechPipeline._write_speech_marker(SPEECH_STARTED, {
+                "token": token, "status": "finished", "finished": time.time()})
+
+    @staticmethod
     def _mark_speech_preparing(payload, enabled):
         token = str(payload.get("speech_token") or "").strip()
-        if not token:
+        if not token or token.endswith(":sandbox"):
             return
-        try:
-            SPEECH_PREPARING.parent.mkdir(parents=True, exist_ok=True)
-            temporary = SPEECH_PREPARING.with_suffix(".tmp")
-            temporary.write_text(json.dumps({
+        SpeechPipeline._write_speech_marker(SPEECH_PREPARING, {
                 "token": token,
                 "enabled": bool(enabled),
-                "deferred": bool(payload.get("沙盘路线")),
+                "deferred": False,
+                "wait_finished": bool(payload.get("绝杀长播报")),
                 "created": time.time(),
-            }, ensure_ascii=False), encoding="utf-8")
-            os.replace(temporary, SPEECH_PREPARING)
+            })
+
+    def invalidate_chess(self):
+        """A new board supersedes every pending narration of the old board."""
+        self.chess_epoch += 1
+        self.cancel_idle()
+        with self.condition:
+            self.jobs = [job for job in self.jobs if job[4] not in CHESS_SPEECH_KINDS]
+            heapq.heapify(self.jobs)
+        with self.prepared_lock:
+            states = list(self.prepared.values())
+            self.prepared.clear()
+        for state in states:
+            state["approved"] = False
+            state["decision"].set()
+
+    @staticmethod
+    def _audio_duration(audio):
+        try:
+            with wave.open(str(audio), "rb") as stream:
+                return stream.getnframes() / stream.getframerate()
         except OSError:
-            pass
+            return 0.0
+        except (EOFError, wave.Error) as error:
+            raise RuntimeError("语音文件格式无效，未启动播放") from error
+
+    def _play_synced_audio(self, audio, payload, state, text, kind, acknowledge=True):
+        # Caller owns the playback lock.  Publish the acknowledgement only
+        # AFTER Windows accepts playback; never before waiting for the lock.
+        valid = lambda: (state.get("approved", True) and state["epoch"] == self.cancel_epoch
+                         and not self.closed.is_set() and not getattr(self, "suspended", False)
+                         and self.settings.speech_enabled
+                         and not (state.get("cancel") and state["cancel"].is_set())
+                         and state.get("chess_epoch", self.chess_epoch) == self.chess_epoch)
+        if not valid() or time.monotonic() >= state.get("deadline", float("inf")):
+            return False
+        duration = self._audio_duration(audio)
+        winsound.PlaySound(str(audio), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+        self.notify("reply", text, {"kind": kind, **payload})
+        if acknowledge:
+            self._mark_speech_started(payload)
+        until = time.monotonic() + duration
+        while time.monotonic() < until:
+            if not valid():
+                winsound.PlaySound(None, winsound.SND_PURGE)
+                return False
+            self.closed.wait(min(0.03, max(0, until - time.monotonic())))
+        if not valid():
+            return False
+        if acknowledge and payload.get("绝杀长播报"):
+            self._mark_speech_finished(payload)
+        return True
 
     @staticmethod
     def _clean_text(text):
@@ -327,8 +408,7 @@ class SpeechPipeline:
         if other:
             cleaned = cleaned.replace(other, "对面")
         return (cleaned.replace("我方", "咱们")
-                .replace("对方", "对面")
-                .replace("对手", "对面"))
+                .replace("对方", "对面"))
 
     @classmethod
     def _short_chess_text(cls, text):
@@ -367,8 +447,10 @@ class SpeechPipeline:
         if not token or not self._ensure_worker():
             return False
         state = {"decision": threading.Event(), "approved": None,
-                 "epoch": self.cancel_epoch}
+                 "epoch": self.cancel_epoch, "chess_epoch": self.chess_epoch}
         with self.prepared_lock:
+            if self.closed.is_set() or getattr(self, "suspended", False):
+                return False
             older = list(self.prepared.values()) if replace_older else []
             if replace_older:
                 self.prepared.clear()
@@ -381,60 +463,55 @@ class SpeechPipeline:
             target=self._prepare_move_worker,
             args=(token, kind, dict(payload), state, direct_text),
             name="chess-move-prewarm", daemon=True).start()
-        self.notify("queued", "走棋短解说正在并行预生成", payload)
+        self.notify("queued", "走棋解说正在并行预生成", payload)
         return True
 
     def _prepare_move_worker(self, token, kind, payload, state, direct_text=None):
         audio = None
         try:
-            self.notify("speech_status", "正在预生成走棋短解说", payload)
+            self.notify("speech_status", "正在准备绝杀收尾" if payload.get("绝杀长播报")
+                        else "正在预生成走棋短解说", payload)
             text = direct_text or self.llm(
                 kind, {"主播设定": self.settings.persona, **payload},
                 list(self.history), model=self.settings.model)
             text = self._first_person_text(text, payload)
-            text = self._short_chess_text(text)
-            if not self._chess_line_valid(text, kind, payload):
-                text = direct_text or ""
-            if not text:
+            text = (self._complete_chess_text(text, max_chars=220)
+                    if payload.get("绝杀长播报") else self._short_chess_text(text))
+            if not text or not self._chess_line_valid(text, kind, payload):
+                self._mark_speech_failed(payload, "没有可播报的有效台词")
                 return
-            tts_error = None
             if self.settings.speech_enabled:
-                try:
-                    self.notify("speech_status", "正在预热走棋语音", payload)
-                    audio = self.tts(text, self.settings.voice)
-                except Exception as error:
-                    tts_error = str(error)[:200]
-            # Commit may arrive before generation finishes.  The decision flag
-            # is sticky, so generation and board validation remain independent.
+                self.notify("speech_status", "正在预热走棋语音", payload)
+                audio = self.tts(text, self.settings.voice)
             if not state["decision"].wait(30.0) or not state["approved"]:
                 return
-            if state["epoch"] != self.cancel_epoch:
+            if (state["epoch"] != self.cancel_epoch or self.closed.is_set() or
+                    getattr(self, "suspended", False)):
                 return
-            self.notify("reply", text, {"kind": kind, **payload})
-            if tts_error:
-                self.notify("error", tts_error, {"kind": kind})
-            elif audio and self.settings.speech_enabled:
-                self.notify("speech_status", "落子即将执行，播放预热语音", payload)
-                self._mark_speech_started(payload)
+            if audio and self.settings.speech_enabled:
                 self.cancel_idle()
                 with self.high_speech_lock:
                     with self.playback_lock:
                         with self.playback_state_lock:
                             self.current_playback = "high"
                         try:
-                            winsound.PlaySound(str(audio), winsound.SND_FILENAME)
+                            if not self._play_synced_audio(audio, payload, state, text, kind):
+                                return
                         finally:
                             with self.playback_state_lock:
                                 self.current_playback = None
                 self._prune_audio(Path(audio).parent)
             else:
-                self.notify("speech_status", "落子即将执行，仅显示文本", payload)
+                self.notify("reply", text, {"kind": kind, **payload})
+                self.notify("speech_status", "仅显示文本，未启动语音", payload)
             self.history.extend([
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
                 {"role": "assistant", "content": text}])
             self.notify("speech_status", "等待下一条内容", payload)
         except Exception as error:
-            self.notify("error", str(error)[:200], {"kind": kind})
+            if state.get("approved") is not False and state["epoch"] == self.cancel_epoch:
+                self._mark_speech_failed(payload, str(error)[:200])
+                self.notify("error", str(error)[:200], {"kind": kind})
         finally:
             with self.prepared_lock:
                 if self.prepared.get(token) is state:
@@ -455,7 +532,12 @@ class SpeechPipeline:
         state["decision"].set()
         return True
 
-    def commit_move(self, token):
+    def commit_move(self, token, deadline=None):
+        if deadline is not None:
+            with self.prepared_lock:
+                state = self.prepared.get(str(token))
+                if state is not None:
+                    state["deadline"] = float(deadline)
         return self._decide_move(token, True)
 
     def discard_move(self, token):
@@ -464,29 +546,42 @@ class SpeechPipeline:
     def play_high(self, kind, payload, direct_text):
         """Play a mandatory short move call without waiting for the LLM."""
         text = self._short_chess_text(direct_text)
-        if not text:
+        if not text or self.closed.is_set() or getattr(self, "suspended", False):
+            return False
+        if not self._chess_line_valid(text, kind, payload):
             return False
         self.cancel_idle()
+        payload = dict(payload)
+        if kind in CHESS_SPEECH_KINDS:
+            payload["_chess_epoch"] = self.chess_epoch
         threading.Thread(
             target=self._play_high_worker,
-            args=(kind, dict(payload), text),
+            args=(kind, dict(payload), text, self.cancel_epoch),
             name="chess-high-speech", daemon=True).start()
         return True
 
-    def _play_high_worker(self, kind, payload, text):
+    def _play_high_worker(self, kind, payload, text, epoch=None):
+        epoch = self.cancel_epoch if epoch is None else epoch
         try:
-            self.notify("reply", text, {"kind": kind, **payload})
+            if epoch != self.cancel_epoch or self.closed.is_set():
+                return
             if not self.settings.speech_enabled:
+                self.notify("reply", text, {"kind": kind, **payload})
                 self.notify("speech_status", "高优走步仅显示文本", payload)
                 return
             self.notify("speech_status", "正在生成高优走步语音", payload)
             audio = self.tts(text, self.settings.voice)
+            state = {"epoch": epoch, "approved": True}
+            if kind in CHESS_SPEECH_KINDS:
+                state["chess_epoch"] = payload.get("_chess_epoch", self.chess_epoch)
             with self.high_speech_lock:
                 with self.playback_lock:
                     with self.playback_state_lock:
                         self.current_playback = "high"
                     try:
-                        winsound.PlaySound(str(audio), winsound.SND_FILENAME)
+                        if not self._play_synced_audio(audio, payload, state, text, kind,
+                                                       acknowledge=False):
+                            return
                     finally:
                         with self.playback_state_lock:
                             self.current_playback = None
@@ -498,13 +593,18 @@ class SpeechPipeline:
 
     def prepare_idle(self, payload, kind="等待期长讲解", direct_text=None):
         """Pre-generate low-priority speech; play only in a wait window."""
+        if self.closed.is_set() or getattr(self, "suspended", False):
+            return False
         self.cancel_idle()
         state = {
             "cancel": threading.Event(), "window": threading.Event(),
             "epoch": self.cancel_epoch, "payload": dict(payload),
+            "chess_epoch": self.chess_epoch,
             "kind": str(kind), "direct_text": direct_text,
         }
         with self.idle_lock:
+            if self.closed.is_set() or getattr(self, "suspended", False):
+                return False
             self.idle_state = state
         threading.Thread(
             target=self._prepare_idle_worker, args=(state,),
@@ -521,8 +621,7 @@ class SpeechPipeline:
                 kind, {"主播设定": self.settings.persona, **payload},
                 list(self.history), model=self.settings.model)
             text = self._first_person_text(text, payload)
-            text = (self._short_chess_text(text) if kind == "应手预判"
-                    else self._complete_chess_text(text))
+            text = complete_note(text)
             if not self._chess_line_valid(text, kind, payload):
                 return
             if kind in CHESS_SPEECH_KINDS and self._recently_spoken(text):
@@ -536,7 +635,6 @@ class SpeechPipeline:
                     break
             if state["cancel"].is_set() or state["epoch"] != self.cancel_epoch:
                 return
-            self.notify("reply", text, {"kind": kind, **payload})
             if audio and self.settings.speech_enabled:
                 self.notify("speech_status", f"等待落子，播放{kind}", payload)
                 with self.playback_lock:
@@ -545,12 +643,15 @@ class SpeechPipeline:
                     with self.playback_state_lock:
                         self.current_playback = "low"
                     try:
-                        winsound.PlaySound(str(audio), winsound.SND_FILENAME)
+                        if not self._play_synced_audio(audio, payload, state, text, kind,
+                                                       acknowledge=False):
+                            return
                     finally:
                         with self.playback_state_lock:
                             self.current_playback = None
                 self._prune_audio(Path(audio).parent)
             else:
+                self.notify("reply", text, {"kind": kind, **payload})
                 self.notify("speech_status", f"{kind}仅显示文本", payload)
             self.history.extend([
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
@@ -612,10 +713,11 @@ class SpeechPipeline:
                     continue
                 (priority, sequence, created, epoch, kind, payload,
                  direct) = heapq.heappop(self.jobs)
-            if epoch != self.cancel_epoch:
+            if epoch != self.cancel_epoch or getattr(self, "suspended", False):
                 continue
             if (kind in CHESS_SPEECH_KINDS and
-                    time.monotonic() - created > 10.0):
+                    (time.monotonic() - created > 10.0 or
+                     payload.get("_chess_epoch", 0) != getattr(self, "chess_epoch", 0))):
                 self.notify("speech_status", "已跳过过期棋局讲解", payload)
                 continue
             try:
@@ -626,21 +728,32 @@ class SpeechPipeline:
                 text = self._first_person_text(text, payload)[:300]
                 if not text:
                     continue
+                if not self._chess_line_valid(text, kind, payload):
+                    continue
                 if epoch != self.cancel_epoch:
                     continue
-                self.notify("reply", text, {"kind": kind, **payload})
+                if (kind in CHESS_SPEECH_KINDS and
+                        payload.get("_chess_epoch", 0) != self.chess_epoch):
+                    continue
                 if self.settings.speech_enabled:
                     self.notify("speech_status", "正在生成百炼语音", payload)
                     audio = self.tts(text, self.settings.voice)
+                    state = {"epoch": epoch, "approved": True}
+                    if kind in CHESS_SPEECH_KINDS:
+                        state["chess_epoch"] = payload.get("_chess_epoch", 0)
                     with self.playback_lock:
-                        # This event is the real acoustic start.  Emitting it
-                        # before taking the lock made the transcript claim two
-                        # clips overlapped even though PlaySound was serialized.
-                        self.notify("speech_status", "正在播放", payload)
-                        self._mark_speech_started(payload)
-                        winsound.PlaySound(str(audio), winsound.SND_FILENAME)
+                        with self.playback_state_lock:
+                            self.current_playback = "low" if kind in CHESS_SPEECH_KINDS else "interaction"
+                        try:
+                            if not self._play_synced_audio(audio, payload, state, text, kind,
+                                                           acknowledge=False):
+                                continue
+                        finally:
+                            with self.playback_state_lock:
+                                self.current_playback = None
                     self._prune_audio(Path(audio).parent)
                 else:
+                    self.notify("reply", text, {"kind": kind, **payload})
                     self.notify("speech_status", "仅文本模式：未调用 TTS", payload)
                 self.history.extend([{"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
                                      {"role": "assistant", "content": text}])
@@ -662,7 +775,8 @@ class SpeechPipeline:
             pass
 
     def close(self):
-        self.cancel_idle()
+        self.suspended = True
+        self.clear(stop_audio=True)
         self.closed.set()
         with self.condition:
             self.condition.notify_all()
@@ -753,6 +867,7 @@ class LiveController:
         self._notify("status", "互动设置已保存")
 
     def enable(self):
+        self.resume_tasks()
         self.enabled = True
         self._notify("status", "弹幕互动已开启；棋局讲解会始终生成")
 
@@ -760,6 +875,29 @@ class LiveController:
         self.enabled = False
         self.pipeline.clear(stop_audio=True)
         self._notify("status", "弹幕互动已暂停；后续棋局台词仍会生成")
+
+    def stop_tasks(self):
+        self.suspended = True
+        self.commentary_analyses = {}
+        self.last_confirmed_analysis = None
+        self.last_commentary_reply = None
+        self.pipeline.suspended = True
+        self.pipeline.clear(stop_audio=True)
+        self.pending_move_events.clear()
+        self.pending_prediction = None
+        self.reply_context = None
+        self.sandbox_speech_tokens.clear()
+        self.sandbox_speech_by_move.clear()
+        self._close_sandtable("已停止")
+        with self.gift_lock:
+            for timer in self.gift_timers.values():
+                timer.cancel()
+            self.gift_timers.clear()
+            self.pending_gifts.clear()
+
+    def resume_tasks(self):
+        self.suspended = False
+        self.pipeline.suspended = False
 
     def jump_to_latest(self):
         self.pipeline.jump_to_latest()
@@ -869,10 +1007,12 @@ class LiveController:
     def _engine_prediction_text(cls, notation, count=1):
         """Phrase Pikafish's first reply; never infer or replace the move."""
         move = cls._spoken_notation(notation)
+        if not move:
+            return ""
         variants = (
-            f"我猜他可能走{move}，看看押不押得中。",
-            f"这回我押{move}，八成会往这边走。",
-            f"我先预判个{move}，等他揭晓答案。",
+            f"对手可能走{move}。",
+            f"接下来留意{move}，对手可能从这里接。",
+            f"看对手会不会走{move}。",
         )
         return variants[(max(1, int(count or 1)) - 1) % len(variants)]
 
@@ -934,7 +1074,7 @@ class LiveController:
                 matches.append(initial)
         return matches
 
-    def _record_opening_move(self, notation):
+    def _record_opening_move(self, notation, number=None):
         moves = getattr(self, "opening_moves", None)
         if moves is None:
             self._reset_opening()
@@ -950,7 +1090,8 @@ class LiveController:
             if name in announced:
                 continue
             announced.add(name)
-            evidence = {"布局名称": name, "判定依据": list(moves)}
+            evidence = {"布局名称": name, "判定依据": list(moves),
+                        "解说对应走法": notation, "解说对应手数": number}
             if found:
                 evidence.update({
                     "参考棋谱数": found.get("games"),
@@ -984,6 +1125,7 @@ class LiveController:
                 self.pipeline.submit(
                     2, "开局定式解说",
                     {"布局名称": name,
+                     "解说对应走法": notation, "解说对应手数": number,
                      "匹配手数": found.get("matched_plies"),
                      "参考棋谱数": found.get("games"),
                      "资料来源": "CCPD大师棋谱"},
@@ -1151,18 +1293,19 @@ class LiveController:
         return f"{action}，{move}。"
 
     @classmethod
-    def _closing_move_text(cls, notation, number=0, forced=False):
+    def _closing_move_text(cls, notation, number=0, forced=False, reasons=()):
         move = cls._spoken_notation(notation)
         if forced:
-            variants = (
-                f"这手{move}，网差不多收紧了。不过最后一步没落袋，香槟咱先别开。",
-                f"走完{move}，胜利已经在门口敲门了，稳住，别自己给它关门外。",
-            )
+            if "，吃" in move:
+                return cls._synced_move_text(notation, reasons, number) + "咱们按这条线收官。"
+            if "形成将军" in reasons:
+                return f"{move}，将军，咱们按这条线收官。"
+            variants = (f"{move}，咱们按这条杀棋路线走稳。",
+                        f"{move}，杀棋的路线有了，稳稳下完。")
         else:
             variants = (
-                f"这手{move}，局面已经很舒服了。不出意外应该能收下，不过棋没结束，先不贷款庆祝。",
-                f"走个{move}，优势差不多攥在手里了。稳稳收官，别在终点线前表演平地摔。",
-                f"这步{move}之后，赢面挺大。有请下一位挑战者先排队，这盘咱还差个句号。",
+                f"{move}，目前局面占优，咱们继续走稳。",
+                f"{move}，优势还在，先把眼前这手下好。",
             )
         return variants[(max(1, int(number or 1)) - 1) % len(variants)]
 
@@ -1174,130 +1317,81 @@ class LiveController:
         captured = move.rsplit("吃", 1)[-1][:1] if "吃" in move else ""
         base_move = move.split("，吃", 1)[0]
         if captured:
-            action = {
-                "马": "跳马", "车": "出车", "炮": "架炮", "兵": "拱兵",
-                "卒": "拱卒", "相": "飞相", "象": "飞象", "仕": "补仕",
-                "士": "补士", "帅": "动帅", "将": "动将",
-            }.get(base_move[:1], "走子")
-            suffix = "，顺手将军" if "形成将军" in reasons else ""
-            return f"{action}，{base_move}，吃掉一枚{captured}{suffix}。"
+            calls = (f"吃掉一枚{captured}", f"把这枚{captured}拿掉", f"先收掉这枚{captured}")
+            index = (int(number or 1) - 1) % len(calls)
+            if "形成将军" in reasons:
+                return f"{base_move}，吃{captured}带将。"
+            return f"{base_move}，{calls[index]}。"
         return cls._quiet_move_text(base_move, number, reasons)
+
+    @staticmethod
+    def _fact_phrase(fact):
+        return {
+            "争夺中路": "把子力往中路集中",
+            "马向中路靠拢": "马往中路靠一靠",
+            "马向前跃进": "马向前跳出",
+            "马回撤调整": "回马调整位置",
+            "车横向换线": "平车换线",
+            "车向前推进": "把车向前送",
+            "车回撤调整": "把车收回来",
+            "炮横向换线": "平炮换个方向",
+            "炮向前推进": "把炮向前送",
+            "炮回撤调整": "炮先回撤",
+            "兵刚刚过河": "这枚兵刚过河，之后可以横走了",
+            "卒刚刚过河": "这枚卒刚过河，之后可以横走了",
+            "让过河兵参与进攻": "过河的小兵继续向前",
+            "过河兵向中路靠拢": "过河兵向中路靠拢",
+            "过河兵横向换线": "过河兵横着换一路",
+            "飞相调整防线": "飞相调整防线",
+            "飞象调整防线": "飞象调整防线",
+            "补仕守住宫门": "补仕照看宫门",
+            "补士守住宫门": "补士照看宫门",
+            "先解除将军": "先解将，保住将帅",
+            "形成将军": "这手将军，对面得先解将",
+        }.get(str(fact), "")
 
     @classmethod
     def _quiet_move_text(cls, move, number=0, reasons=()):
-        """Give quiet moves distinct wording without inventing a tactic."""
-        reasons = tuple(str(item) for item in (reasons or ()))
-        if "形成将军" in reasons:
-            return f"{move}，这手将军。"
-        if "先解除将军" in reasons:
-            return f"{move}，先把将解开。"
-        if "争夺中路" in reasons:
-            action = {
-                "马": "回马靠中", "车": "平车占中",
-                "炮": "平炮看中路", "兵": "小兵往中路靠",
-                "卒": "小卒往中路靠",
-            }.get(move[:1], "往中路靠")
-            return f"{action}，走{move}。"
-        reason_text = "、".join(reasons)
+        """One move call plus a visible fact; never invent a tactical purpose."""
+        reasons = tuple(str(item) for item in reasons)
+        for fact in ("先解除将军", "形成将军", "争夺中路"):
+            if fact in reasons:
+                return f"{move}，{cls._fact_phrase(fact)}。"
+        for fact in reasons:
+            phrase = cls._fact_phrase(fact)
+            if phrase:
+                return f"{move}，{phrase}。"
         piece = move[:1]
-        if piece in ("兵", "卒") and (
-                f"{piece}向前推进" in reason_text or
-                "让过河兵参与进攻" in reason_text):
-            variants = (
-                f"拱{piece}开路", f"小{piece}往前顶，先争一格",
-                f"这枚{piece}继续往前走", f"先把{piece}往前送一手",
-                f"{piece}线再推进一步",
-            )
-            try:
-                index = max(1, int(number or 1)) - 1
-            except (TypeError, ValueError):
-                index = 0
-            index += sum(ord(char) for char in move)
-            return f"{variants[index % len(variants)]}，走{move}。"
-        horse_to_center = "回马靠中" if "退" in move else "跳马靠中"
-        grounded = (
-            ("马向中路靠拢", horse_to_center),
-            ("马向前跃进", "跃马向前"),
-            ("马回撤调整", "回马调整"),
-            ("车横向换线", "平车换线"),
-            ("车向前推进", "大车前压一线"),
-            ("车回撤调整", "退车重新站位"),
-            ("炮横向换线", "平炮换线"),
-            ("炮向前推进", "炮位往前挪"),
-            ("炮回撤调整", "炮先回一格"),
-            ("过河兵向中路靠拢", "过河兵往中路一靠"),
-            ("过河兵横向换线", "过河兵横着换一路"),
-            ("刚刚过河", "小兵过河"),
-            ("向前推进", "往前拱一格"),
-            ("飞相调整防线", "飞相补一手"),
-            ("飞象调整防线", "飞象补一手"),
-            ("补仕守住宫门", "补仕护住宫门"),
-            ("补士守住宫门", "补士护住宫门"),
-        )
-        for fact, phrase in grounded:
-            if fact in reason_text:
-                return f"{phrase}，走{move}。"
-        if piece == "车":
-            variants = (("平车换线", "大车横过来换条路") if "平" in move
-                        else ("提车压上", "大车往前占线") if "进" in move
-                        else ("退车重整", "大车回身留个照应"))
+        if piece in ("兵", "卒"):
+            if "平" in move:
+                phrase = f"这枚{piece}横着换一路"
+            else:
+                variants = (f"这枚{piece}向前一步", f"小{piece}继续往前走",
+                            f"先拱一手{piece}", f"{piece}往前推进一格")
+                phrase = variants[(int(number or 0) + sum(map(ord, move))) % len(variants)]
+        elif piece in ("车", "炮"):
+            phrase = cls._fact_phrase(piece + ("横向换线" if "平" in move else
+                                     "向前推进" if "进" in move else "回撤调整"))
         elif piece == "马":
-            variants = (("回马调整", "这匹马先往回收一手") if "退" in move
-                        else ("跳马抢位", "马腿一抬，先抢个支点"))
-        elif piece == "炮":
-            variants = (("平炮转线", "炮架横过来换个角度") if "平" in move
-                        else ("炮位前移", "炮往前压一压") if "进" in move
-                        else ("炮先回撤", "炮位往后收一收"))
-        elif piece in ("兵", "卒"):
-            name = "兵" if piece == "兵" else "卒"
-            variants = (
-                f"拱{name}开路", f"小{name}往前顶，先争一格",
-                f"这枚{name}继续往前走", f"先把{name}往前送一手",
-                f"{name}线再推进一步",
-            )
-        elif piece == "相":
-            variants = ("飞相补住阵脚", "补一手相，家里先站稳")
-        elif piece == "象":
-            variants = ("飞象补住阵脚", "补一手象，家里先站稳")
-        elif piece == "仕":
-            variants = ("补仕稳住宫门", "仕先归位，把宫门护住")
-        elif piece == "士":
-            variants = ("补士稳住宫门", "士先归位，把宫门护住")
-        elif piece == "帅":
-            variants = ("挪帅避开锋线", "老帅换个位置，先躲开火力")
-        elif piece == "将":
-            variants = ("挪将避开锋线", "老将换个位置，先躲开火力")
+            phrase = "回马调整" if "退" in move else "马向前跳出"
+        elif piece in ("帅", "将"):
+            phrase = "先给" + piece + "换个位置"
+        elif piece in ("相", "象", "仕", "士"):
+            phrase = ("飞" if piece in ("相", "象") else "补") + piece
         else:
-            variants = ("先把位置站稳",)
-        try:
-            index = max(1, int(number or 1)) - 1
-        except (TypeError, ValueError):
-            index = 0
-        # Include the notation in the rotation.  Repeated pushes four moves
-        # apart no longer land on the same two-item template forever.
-        index += sum(ord(char) for char in move)
-        intent = variants[index % len(variants)]
-        return f"{intent}，走{move}。"
+            return f"{move}。"
+        return f"{move}，{phrase}。"
 
     @classmethod
     def _idle_move_text(cls, notation, evidence=None, number=0):
-        """Short waiting-window thought with no canned opponent-response tail."""
-        move = cls._spoken_notation(notation).split("，吃", 1)[0]
-        reasons = list((evidence or {}).get("选择理由") or [])
-        reason = str(reasons[0]) if reasons else ""
-        if reason.startswith("吃掉"):
-            return ""  # The exact capture was already called at the move.
-        if reason == "争夺中路":
-            return f"{move}，把力量往中路靠，先把要道占住。"
-        if reason == "让过河兵参与进攻":
-            return f"{move}，把过河兵顶上去，多添一个进攻点。"
-        # Prefer exact movement geometry over the generic "activate a back-rank
-        # piece" label.  In particular, 车九平八 stays on the back rank.
-        grounded = cls._quiet_move_text(move, number, reasons)
-        if grounded and not grounded.startswith("先把位置站稳"):
-            return grounded
-        # Generic placement labels have no demonstrable tactical content.
-        # Stay quiet until the engine provides a specific consequence.
+        """Explain a concrete point during the wait without calling the move again."""
+        evidence = evidence or {}
+        note = waiting_note(evidence)
+        if note:
+            return note
+        reply = cls._spoken_notation(evidence.get("最可能应手"))
+        if reply:
+            return complete_note(f"对手可能走{reply}。")
         return ""
 
     @staticmethod
@@ -1317,12 +1411,14 @@ class LiveController:
         self.victory_count = getattr(self, "victory_count", 0) + 1
         variants = (
             "拿下！收尾干净利落，棋盘擦一擦，继续迎客。",
-            "稳稳收下。有请下一位受害者——开个玩笑，下一位挑战者请入场。",
+            "稳稳收下，刚才忙活的几枚子，总算能歇口气了。",
             "结束，棋盘已经打扫干净。下一位朋友，里面请。",
         )
         return variants[(self.victory_count - 1) % len(variants)]
 
     def submit_chess(self, event):
+        if getattr(self, "suspended", False):
+            return
         if not getattr(getattr(self, "settings", None),
                        "commentary_enabled", True):
             return
@@ -1332,6 +1428,9 @@ class LiveController:
             self.reply_context = None
             self.recent_chess_topics.clear()
             self.closing_announced = False
+            self.commentary_analyses = {}
+            self.last_confirmed_analysis = None
+            self.last_commentary_reply = None
             return
         if event.get("event") == "game_sandbox":
             action = event.get("action")
@@ -1370,7 +1469,16 @@ class LiveController:
                         f"JJ游戏沙盘已跳过：{event.get('reason', '界面未确认')}")
             return
         if event.get("event") == "game_over":
+            last_move = getattr(self, "last_confirmed_analysis", None)
+            win_note = (confirmed_finisher_note(event, last_move)
+                        or confirmed_win_note(event, last_move))
+            self.commentary_analyses = {}
+            self.last_confirmed_analysis = None
+            self.last_commentary_reply = None
             self.pipeline.cancel_idle()
+            invalidate = getattr(self.pipeline, "invalidate_chess", None)
+            if callable(invalidate):
+                invalidate()
             for token in list(getattr(self, "sandbox_speech_tokens", set())):
                 self.pipeline.discard_move(token)
             getattr(self, "sandbox_speech_tokens", set()).clear()
@@ -1381,16 +1489,20 @@ class LiveController:
             self.reply_context = None
             self.closing_announced = False
             if event.get("result") == "won":
+                victory_payload = dict(event)
+                if win_note:
+                    victory_payload.update(解说对应手数=last_move.get("number"),
+                                           解说对应走法=last_move.get("notation"))
                 self.pipeline.submit(
-                    0, "获胜收官", event,
-                    direct_text=self._victory_text())
+                    0, "获胜收官", victory_payload,
+                    direct_text=win_note or self._victory_text())
             elif (event.get("result") == "finished" and
                   event.get("reason") in (
                        "jj_result_screen", "delayed_jj_result_screen",
                        "rank_promotion_screen")):
                 self.pipeline.submit(
                     0, "结算收官", event,
-                    direct_text="结算页出来了，看样子这盘是收下了。行，棋盘擦一擦，接着迎客。")
+                    direct_text="这盘已经结束，等下一局棋盘。")
             return
         notation = str(event.get("notation") or "").strip()
         if event.get("event") == "waiting_for_opponent":
@@ -1403,6 +1515,9 @@ class LiveController:
             # lifecycle boundary requested for the previous sandbox.
             self._close_sandtable("下一次主动落子前")
             self.pipeline.cancel_idle()
+            invalidate = getattr(self.pipeline, "invalidate_chess", None)
+            if callable(invalidate):
+                invalidate()
             token = str(event.get("speech_token") or "")
             if token:
                 pending = getattr(self, "pending_move_events", None)
@@ -1415,19 +1530,30 @@ class LiveController:
             return
         if event.get("event") == "move_command":
             token = str(event.get("speech_token") or "")
-            # Every real move gets its short call before ADB taps.  A longer
-            # sandbox explanation has a separate token and stays deferred.
+            # Every real move gets its own call before ADB taps. Verified
+            # finishers wait for completion; sandbox tokens stay independent.
             if token:
-                self.pipeline.commit_move(token)
+                deadline = event.get("speech_deadline")
+                if deadline is None:
+                    self.pipeline.commit_move(token)
+                else:
+                    self.pipeline.commit_move(token, deadline=deadline)
+            return
+        if event.get("event") == "speech_cancelled":
+            self.pipeline.discard_move(str(event.get("speech_token") or ""))
+            self.pipeline.cancel_idle()
             return
         if event.get("event") == "move_applied":
             token = str(event.get("speech_token") or "")
+            self.last_confirmed_analysis = getattr(self, "commentary_analyses", {}).pop(token, None)
             getattr(self, "pending_move_events", {}).pop(
                 token, None)
-            self._record_opening_move(notation)
+            self._record_opening_move(notation, event.get("number"))
             return
         if event.get("event") in ("move_rejected", "move_preview"):
             token = str(event.get("speech_token") or "")
+            getattr(self, "commentary_analyses", {}).pop(token, None)
+            self.last_confirmed_analysis = None
             self.pipeline.discard_move(token)
             sandbox_token = getattr(
                 self, "sandbox_speech_by_move", {}).pop(token, "")
@@ -1439,7 +1565,11 @@ class LiveController:
                 str(event.get("speech_token") or ""), None)
             return
         if event.get("event") == "opponent_move":
+            self.last_commentary_reply = dict(event)
             self.pipeline.cancel_idle()
+            invalidate = getattr(self.pipeline, "invalidate_chess", None)
+            if callable(invalidate):
+                invalidate()
             # If no sandbox-entered event arrived before the real reply, the
             # prepared route no longer belongs to the visible position.
             for token in list(getattr(self, "sandbox_speech_tokens", set())):
@@ -1475,6 +1605,13 @@ class LiveController:
                     "notation": notation, "spoken": False})
             self._record_opening_move(notation)
             return
+        if event.get("dry_run"):
+            return
+        continuation = connected_move_note(
+            event, getattr(self, "last_confirmed_analysis", None),
+            getattr(self, "last_commentary_reply", None))
+        if event.get("event") == "engine_analysis" and event.get("speech_token"):
+            self.commentary_analyses = {event["speech_token"]: dict(event)}
         payload = {"我方计划走法": notation,
                    # Diagnostic-only metadata.  The control panel displays it
                    # beside the transcript label; neither field is appended to
@@ -1487,13 +1624,27 @@ class LiveController:
                    "speech_token": event.get("speech_token"),
                    "子力盘点": event.get("material"),
                    "局势分析": event.get("summary"),
-                   "QUEEN式证据": event.get("queen_evidence") or {},
-                   "候选方案": [
-                       {"走法": item.get("move"),
-                        "局面判断": item.get("assessment"),
-                        "短变化": item.get("line", [])}
-                       for item in event.get("candidates", [])[:3]],
+                   "QUEEN式证据": {key: value for key, value in
+                       (event.get("queen_evidence") or {}).items() if key != "候选取舍"},
                    "预测路线": [item.get("notation") for item in event.get("pv", [])[:4]]}
+        finisher = build_finisher(
+            event, getattr(self, "last_confirmed_analysis", None),
+            getattr(self, "last_commentary_reply", None))
+        if finisher:
+            payload.update({"绝杀长播报": True, "杀法名称": finisher["name"],
+                            "我方计划走法": finisher["notation"],
+                            "解说对应走法": finisher["notation"]})
+            token = event.get("speech_token")
+            if token:
+                self.commentary_analyses[token]["finisher"] = finisher
+                self.pipeline.prepare_move("绝杀长解说", payload,
+                                           direct_text=finisher["text"])
+            else:
+                self.pipeline.submit(0, "绝杀长解说", payload,
+                                     direct_text=finisher["text"])
+            self.reply_context = None
+            self.pipeline.cancel_idle()
+            return
         reply_context = getattr(self, "reply_context", None)
         if reply_context:
             payload["上一手预判复盘"] = reply_context
@@ -1512,6 +1663,14 @@ class LiveController:
         importance, reasons = self._commentary_importance(event)
         evidence = event.get("queen_evidence") or {}
         factual_reasons = list(evidence.get("选择理由") or [])
+        current_tactic = ("，吃" in notation or
+                          bool({"形成将军", "先解除将军"}.intersection(factual_reasons)) or
+                          (event.get("analysis") or {}).get("score_type") == "mate")
+        if current_tactic:
+            # A previous opponent move must not displace this move's capture,
+            # check or escape. Its context is consumed, never replayed later.
+            reply_context = None
+            payload.pop("上一手预判复盘", None)
         if sandtable:
             importance = max(importance, 10)
             reasons.append("沙盘推演")
@@ -1535,6 +1694,8 @@ class LiveController:
                               "兵": 5, "卒": 5}.get(captured, 6)
             else:
                 importance = 0
+        if {"形成将军", "先解除将军"}.intersection(factual_reasons):
+            importance = max(importance, threshold)
         if importance >= threshold:
             self.quiet_move_count = 0
             important_payload = {
@@ -1549,9 +1710,9 @@ class LiveController:
                 if not sandtable:
                     kind = "收官解说"
                     direct = self._closing_move_text(
-                        notation, event.get("number", 0), forced_win)
+                        notation, event.get("number", 0), forced_win, factual_reasons)
             if direct is None and importance >= threshold:
-                direct = self._synced_move_text(
+                direct = continuation or self._synced_move_text(
                     notation, factual_reasons + reasons,
                     event.get("number", 0),
                     sandtable=False)
@@ -1569,9 +1730,8 @@ class LiveController:
                     self.pipeline.prepare_move(
                         "沙盘推演解说", sandbox_payload,
                         direct_text=(
-                            "来，沿着这条路线摆到"
-                            f"{self._spoken_notation(sandtable['target'])}，"
-                            f"看看这手{sandtable['target_kind']}。"),
+                            "来，摆一条可能的接法。对手照这条线应，咱们就能"
+                            f"{self._spoken_notation(sandtable['target']).replace('，吃', '吃')}。"),
                         replace_older=True)
                     self.pipeline.prepare_move(
                         kind, important_payload, direct_text=direct,
@@ -1583,25 +1743,29 @@ class LiveController:
                 self.pipeline.submit(1, kind, important_payload,
                                      direct_text=direct)
             settings = getattr(self, "settings", None)
-            if reply_context:
+            note = (waiting_note(evidence) if settings is not None and
+                    getattr(settings, "queen_commentary_enabled", True) and
+                    not sandtable and evidence.get("值得展开") else "")
+            if note:
                 self.pipeline.prepare_idle({
                     **payload,
+                    "要求": "只补充已验证路线中的新看点，不重复报招，不强行比较候选；最多两句。",
+                }, kind="QUEEN式等待期解说", direct_text=note)
+            elif reply_context:
+                self.pipeline.prepare_idle({
+                    **self._reply_review_payload(payload, reply_context),
                     "要求": "只用上一手预判复盘的事实，轻轻回应一次；不编棋局影响",
                 }, kind="QUEEN式等待期解说",
                     direct_text=self._prediction_followup(reply_context))
-            elif (settings is not None and
-                    getattr(settings, "queen_commentary_enabled", True) and
-                    not sandtable and evidence.get("值得展开")):
-                self.pipeline.prepare_idle({
-                    **payload,
-                    "要求": ("使用QUEEN式候选比较：先说咱们为什么选这手，"
-                             "再用一句说明另一个候选差在哪里，最后点出最可能应手；"
-                             "只依据QUEEN式证据，不念评分，不说红方黑方，最多三句"),
-                }, kind="QUEEN式等待期解说")
             self._remember_chess_topic(notation)
             return
+        if (token and getattr(getattr(self, "settings", None), "speech_enabled", False)
+                and not event.get("dry_run")):
+            self.pipeline.prepare_move("我方走棋播报", payload,
+                                       direct_text=self._synced_move_text(
+                                           notation, factual_reasons, event.get("number", 0)))
         if reply_context:
-            self.pipeline.prepare_idle({**payload},
+            self.pipeline.prepare_idle(self._reply_review_payload(payload, reply_context),
                 kind="QUEEN式等待期解说",
                 direct_text=self._prediction_followup(reply_context))
             self._remember_chess_topic(notation)
@@ -1637,13 +1801,40 @@ class LiveController:
                 }, direct_text=idle_text)
         self._remember_chess_topic(notation)
 
+    @staticmethod
+    def _reply_review_payload(payload, context):
+        """A quiet-turn callback describes the opponent reply, not our new move."""
+        return {
+            "主播执棋": payload.get("主播执棋"),
+            "speech_token": str(payload.get("speech_token") or "") + ":reply-review",
+            "解说对应手数": None,
+            "解说对应走法": context.get("实际应手"),
+            "上一手预判复盘": dict(context),
+            "讲解范围": "上一手对手应手",
+        }
+
     @classmethod
     def _prediction_followup(cls, context):
         actual = cls._spoken_notation(context.get("实际应手"))
-        predicted = cls._spoken_notation(context.get("预判走法"))
+        if not actual:
+            return ""
+        index = sum(ord(char) for char in actual)
         if context.get("预判兑现"):
-            return f"还真走了{actual}，刚才这手猜中了。"
-        return f"咦，没走预想的{predicted}，他改走{actual}。"
+            variants = (
+                f"对手走了{actual}，这条路线接上了。",
+                f"对手{actual}，和刚才分析的路线一致。",
+                f"{actual}落下来了，继续看这条线。",
+            )
+        elif "，吃" in actual:
+            return complete_note(f"对手这手{actual}，咱们得认真接了。")
+        else:
+            variants = (
+                f"对手是个高手啊，这手{actual}，有自己的想法。",
+                f"嚯，{actual}，对手没按这条路来。",
+                f"对手走了{actual}，这位棋友有自己的剧本。",
+                f"这手{actual}，对手另有安排，咱们接着拆招。",
+            )
+        return complete_note(variants[index % len(variants)])
 
     def _remember_chess_topic(self, notation):
         topics = getattr(self, "recent_chess_topics", None)
@@ -1652,6 +1843,8 @@ class LiveController:
         topics.append(notation)
 
     def receive(self, event, force=False):
+        if getattr(self, "suspended", False):
+            return
         kind = event.get("type", "chat")
         if kind == "status":
             self._notify("connection", event.get("text", ""), event)
@@ -1820,7 +2013,7 @@ class ChessEventTailer(threading.Thread):
                             continue
                         if event.get("event") in (
                                 "start",
-                                "move_selected", "move_command", "move_applied", "move_rejected",
+                                "move_selected", "move_command", "move_applied", "move_rejected", "speech_cancelled",
                                 "move_preview", "engine_analysis", "opponent_move",
                                 "game_sandbox",
                                 "waiting_for_opponent", "game_over"):

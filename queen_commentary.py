@@ -149,15 +149,23 @@ def build_queen_evidence(board, chosen_move, candidates):
             "走法": move_description(board, move),
             "直接作用": _move_facts(board, move),
             "后续路线": line[1:4],
+            "回应坐标": pv[1] if len(line) >= 2 else None,
             "引擎值": _score(analysis),
         })
 
-    best_score = candidate_rows[0]["引擎值"] if candidate_rows else None
+    chosen_notation = move_description(board, chosen_move)
+    chosen_row = next((row for row in candidate_rows
+                       if row["走法"] == chosen_notation), None)
+    best_score = chosen_row["引擎值"] if chosen_row else None
     alternatives = []
-    for row in candidate_rows[1:]:
+    for row in candidate_rows:
+        if row is chosen_row:
+            continue
         gap = None if best_score is None or row["引擎值"] is None else best_score - row["引擎值"]
         if gap is None:
             comparison = "作为备选，但缺少足够证据判断差距"
+        elif gap <= -60:
+            comparison = "此候选评价更高，当前排序需要复核"
         elif gap >= 180:
             comparison = "明显不如首选稳妥"
         elif gap >= 60:
@@ -171,8 +179,12 @@ def build_queen_evidence(board, chosen_move, candidates):
         })
 
     chosen_facts = _move_facts(board, chosen_move)
-    reply = candidate_rows[0]["后续路线"][0] if (
-        candidate_rows and candidate_rows[0]["后续路线"]) else ""
+    reply = chosen_row["后续路线"][0] if (
+        chosen_row and chosen_row["后续路线"]) else ""
+    reply_recaptures = False
+    if chosen_row and chosen_row["回应坐标"]:
+        response = Board.from_ucci(chosen_row["回应坐标"])
+        reply_recaptures = response[1] == chosen_move[1]
     tactical = any(word in "、".join(chosen_facts)
                    for word in ("吃掉", "将军", "解除"))
     score_gap = False
@@ -187,8 +199,9 @@ def build_queen_evidence(board, chosen_move, candidates):
         "最终选择": move_description(board, chosen_move),
         "选择理由": chosen_facts,
         "最可能应手": reply,
+        "应手回吃本子": reply_recaptures,
         "候选取舍": alternatives,
-        "主线参考": (candidate_rows[0]["后续路线"] if candidate_rows else []),
+        "主线参考": chosen_row["后续路线"] if chosen_row else [],
         "值得展开": bool(tactical or score_gap),
         "事实边界": "只能改写以上事实，不得增加杀棋、弃子或战术结论",
     }
