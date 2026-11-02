@@ -636,7 +636,7 @@ class LiveHostTests(unittest.TestCase):
         text = LiveController._synced_move_text(
             "红方 车九平二", ["改善棋子位置"], number=5)
         self.assertIn("车九平二", text)
-        self.assertIn("平车换线", text)
+        self.assertEqual(text, "车九平二。")
         self.assertNotIn("直接收下这枚", text)
 
     def test_quiet_move_uses_engine_grounded_geometry(self):
@@ -651,7 +651,7 @@ class LiveHostTests(unittest.TestCase):
         self.assertEqual(
             LiveController._synced_move_text(
                 "红方 炮二退一", ["炮回撤调整"], 7),
-            "炮二退一，炮先回撤。")
+            "炮二退一。")
 
     def test_capture_names_the_exact_captured_piece_once(self):
         text = LiveController._synced_move_text(
@@ -685,13 +685,13 @@ class LiveHostTests(unittest.TestCase):
 
     def test_horizontal_pawn_move_is_not_described_as_forward(self):
         text = LiveController._synced_move_text("黑方 卒5平4", [], 9)
-        self.assertIn("横", text)
+        self.assertEqual(text, "卒5平4。")
         self.assertNotIn("向前", text)
 
     def test_cannon_retreat_does_not_invent_a_one_square_distance(self):
         text = LiveController._synced_move_text("红方 炮二退五", ["炮回撤调整"], 7)
         self.assertNotIn("一格", text)
-        self.assertIn("回撤", text)
+        self.assertIn("退五", text)
 
     def test_idle_rook_horizontal_move_never_claims_it_left_back_rank(self):
         text = LiveController._idle_move_text(
@@ -701,8 +701,8 @@ class LiveHostTests(unittest.TestCase):
         self.assertNotIn("接出底线", text)
 
     def test_local_move_words_preserve_direction_piece_and_distance(self):
-        self.assertIn("回马", LiveController._synced_move_text(
-            "红方 马五退六", ["马回撤调整"], 8))
+        self.assertEqual(LiveController._synced_move_text(
+            "红方 马五退六", ["马回撤调整"], 8), "马五退六。")
         elephant = LiveController._synced_move_text(
             "红方 相七进五", [], 16)
         self.assertNotIn("飞象", elephant)
@@ -711,13 +711,13 @@ class LiveHostTests(unittest.TestCase):
             "黑方 炮2进2", ["炮向前推进"], 14)
         self.assertNotIn("一格", cannon)
 
-    def test_repeated_pawn_pushes_rotate_factual_wording(self):
+    def test_plain_pawn_pushes_do_not_get_empty_direction_variations(self):
         lines = {
             LiveController._synced_move_text(
                 "红方 兵三进一", ["兵向前推进"], number)
             for number in (13, 17, 23)
         }
-        self.assertGreaterEqual(len(lines), 2)
+        self.assertEqual(lines, {"兵三进一。"})
 
     def test_advantage_band_only_triggers_when_crossed(self):
         controller = object.__new__(LiveController)

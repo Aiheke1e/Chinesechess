@@ -1097,10 +1097,13 @@ class LiveController:
         move = cls._spoken_notation(notation)
         if not move:
             return ""
+        if "，吃" in move:
+            action, target = move.rsplit("，吃", 1)
+            return f"对手可能走{action}，吃掉咱们一枚{target[:1]}。"
         variants = (
             f"对手可能走{move}。",
-            f"接下来留意{move}，对手可能从这里接。",
-            f"看对手会不会走{move}。",
+            f"对手这边可能接{move}。",
+            f"对手有可能走{move}。",
         )
         return variants[(max(1, int(count or 1)) - 1) % len(variants)]
 
@@ -1445,30 +1448,15 @@ class LiveController:
         for fact in ("先解除将军", "形成将军", "争夺中路"):
             if fact in reasons:
                 return f"{move}，{cls._fact_phrase(fact)}。"
+        # Advancing/retreating/changing file is already in the notation.
+        # Add only a new, verified fact; do not pad the same move with synonyms.
+        informative = {"马向中路靠拢", "兵刚刚过河", "卒刚刚过河", "过河兵向中路靠拢"}
         for fact in reasons:
-            phrase = cls._fact_phrase(fact)
-            if phrase:
-                return f"{move}，{phrase}。"
-        piece = move[:1]
-        if piece in ("兵", "卒"):
-            if "平" in move:
-                phrase = f"这枚{piece}横着换一路"
-            else:
-                variants = (f"这枚{piece}向前一步", f"小{piece}继续往前走",
-                            f"先拱一手{piece}", f"{piece}往前推进一格")
-                phrase = variants[(int(number or 0) + sum(map(ord, move))) % len(variants)]
-        elif piece in ("车", "炮"):
-            phrase = cls._fact_phrase(piece + ("横向换线" if "平" in move else
-                                     "向前推进" if "进" in move else "回撤调整"))
-        elif piece == "马":
-            phrase = "回马调整" if "退" in move else "马向前跳出"
-        elif piece in ("帅", "将"):
-            phrase = "先给" + piece + "换个位置"
-        elif piece in ("相", "象", "仕", "士"):
-            phrase = ("飞" if piece in ("相", "象") else "补") + piece
-        else:
-            return f"{move}。"
-        return f"{move}，{phrase}。"
+            if fact in informative:
+                phrase = cls._fact_phrase(fact)
+                if phrase:
+                    return f"{move}，{phrase}。"
+        return f"{move}。"
 
     @classmethod
     def _idle_move_text(cls, notation, evidence=None, number=0):

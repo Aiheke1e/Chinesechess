@@ -983,7 +983,13 @@ class ControlPanel:
             "沙盘推演解说": "沙盘推演", "开局定式解说": "开局讲解",
             "获胜收官": "本局结束", "结算收官": "本局结束",
             "绝杀长解说": "绝杀解说",
+            "关键走棋解说": "本手走法", "我方走棋播报": "本手走法", "我方走棋解说": "本手走法",
+            "等待期长讲解": "后续看点", "QUEEN式等待期解说": "后续看点",
+            "应手预判": "可能应手", "对手走棋播报": "对手应手",
+            "对手走棋解说": "对手应手", "关键应手解说": "对手应手",
         }.get(kind, "棋局解说" if kind in CHESS_SPEECH_KINDS else "主播口播")
+        if data.get("上一手预判复盘"):
+            label = "对手应手"
         # Provenance belongs to this speech job, never to the newer live board.
         meta = ControlPanel._commentary_log_label(label, data)
         timestamp = str(record.get("time") or "").strip()
@@ -1012,7 +1018,7 @@ class ControlPanel:
                    data.get("我方计划走法") or "").strip()
         details = []
         if number not in (None, ""):
-            details.append(f"第{number}手")
+            details.append(f"第{number}手后" if label in ("后续看点", "可能应手") else f"第{number}手")
         if move:
             details.append(move)
         return f"{label} · {' · '.join(details)}" if details else label
@@ -1844,8 +1850,9 @@ class ControlPanel:
                     keep_running = (self.auto_retry and bool(self.continuous.get())
                                     and not self.closing)
                     if item[1] == 10:
-                        self.status.set("结算已处理，正在等待下一局…")
-                        self.append("[助手] 已完成结算页面操作，继续等待下一局。\n")
+                        self.status.set("结算已处理，正在等待下一局…" if keep_running else "本局已结束，自动连局已关闭")
+                        self.append("[助手] 已完成结算页面操作，继续等待下一局。\n" if keep_running
+                                    else "[任务结束] 本局已结束；自动连局已关闭，不再匹配下一局。\n")
                         if keep_running:
                             self._schedule_prepare()
                     elif item[1] == 0:
@@ -1874,8 +1881,10 @@ class ControlPanel:
                         self.status.set("落子未确认，当前局面已锁定")
                         self.append("[助手] 为防止重复点击，持续下棋已暂停；当前局面变化或进入新一局后再手动开始。\n")
                     elif item[1] == 14:
-                        self.status.set("识别短暂不稳定，正在从断点重新接管…")
-                        self.append("[助手] 本次未点击棋盘，已保留可信断点；等待画面稳定后自动恢复。\n")
+                        self.status.set("识别短暂不稳定，正在从断点重新接管…" if keep_running
+                                        else "当前落子未确认，已暂停并保留断点")
+                        self.append("[助手] 本次未点击棋盘，已保留可信断点；等待画面稳定后自动恢复。\n" if keep_running
+                                    else "[助手] 本次未点击棋盘，已保留可信断点；画面稳定后可手动开始。\n")
                         if keep_running:
                             self._schedule_prepare()
                     else:

@@ -97,6 +97,11 @@ class CommentaryTextTests(unittest.TestCase):
                 self.assertNotIn(word, text)
             self.assertTrue(SpeechPipeline._chess_line_valid(text, "应手预判", {}))
 
+    def test_capture_prediction_names_our_piece_without_reversed_sentence(self):
+        text = LiveController._engine_prediction_text("红方 车三进六，吃马", 2)
+        self.assertEqual(text, "对手可能走车三进六，吃掉咱们一枚马。")
+        self.assertNotIn("接下来留意", text)
+
     def test_matching_reply_connects_the_line_instead_of_celebrating_a_guess(self):
         for move in ("红方 车二进四", "红方 仕五退六", "红方 炮七平八"):
             text = LiveController._prediction_followup({"预判兑现": True, "实际应手": move})

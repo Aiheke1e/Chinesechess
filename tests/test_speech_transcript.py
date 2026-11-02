@@ -34,6 +34,19 @@ class SpeechTranscriptTests(unittest.TestCase):
         self.assertEqual(header, "礼物答谢")
         self.assertEqual(body, "谢谢棋友的小心心！")
 
+    def test_future_and_opponent_notes_are_distinguished_from_the_current_move(self):
+        data = {"解说对应手数": 7, "解说对应走法": "黑方 车8平6"}
+        for kind, expected in (("关键走棋解说", "本手走法"), ("等待期长讲解", "后续看点"),
+                               ("应手预判", "可能应手")):
+            header, _ = ControlPanel._speech_log_entry({"kind": "reply", "text": "台词。",
+                                                        "data": {**data, "kind": kind}})
+            self.assertIn(expected, header)
+            self.assertIn("第7手后" if kind != "关键走棋解说" else "第7手 ·", header)
+        header, _ = ControlPanel._speech_log_entry({"kind": "reply", "text": "对手这手有自己的安排。",
+            "data": {"kind": "QUEEN式等待期解说", "上一手预判复盘": {"实际应手": "红方 马二进三"},
+                     "解说对应走法": "红方 马二进三"}})
+        self.assertIn("对手应手", header)
+
     def test_queue_routes_only_reply_to_transcript_and_keeps_status_separate(self):
         panel = object.__new__(ControlPanel)
         panel.task_cancel = threading.Event()
