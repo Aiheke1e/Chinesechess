@@ -11,6 +11,7 @@ import numpy as np
 
 from adb_bridge import adb, screenshot, tap
 from board import Board
+from notation import move_description
 from mover import pt
 from recognizer import (recognize_indices, recognize_occupancy,
                         recognize_presence_indices,
@@ -21,6 +22,60 @@ from state import (resolve_legal_sequence_by_occupancy,
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIVE_CONFIG = os.path.join(HERE, "live_config.json")
+MAX_MATE_PLIES = 8
+
+
+class SandboxCadence:
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self.last_move, self.last_at = -100, -1e9
+
+    def allowed(self, plan, number):
+        return (plan.get("kind") == "mate" or
+                number - self.last_move >= 3 and self.clock() - self.last_at >= 25)
+
+    def record(self, number):
+        self.last_move, self.last_at = number, self.clock()
+
+
+def king_capture_finish(board):
+    """An illustration AFTER checkmate, never a legal move for the live game."""
+    loser = board.turn
+    if not board.in_check(loser) or board.legal_moves():
+        return None
+    target = board.king_pos(loser)
+    if target < 0:
+        return None
+    attacker = "b" if loser == "r" else "r"
+    captures = [move for move in board.legal_moves(attacker) if move[1] == target]
+    if not captures:
+        return None
+    move = sorted(captures)[0]
+    return {"ucci": Board.ucci(move), "notation": "演示收尾：" + move_description(board, move),
+            "illustration": "king_capture"}
+
+
+def validated_route(board, route, mate=False):
+    probe, result = board.copy(), []
+    if not route or len(route) > (MAX_MATE_PLIES if mate else 4):
+        return []
+    for index, item in enumerate(route):
+        try:
+            move = Board.from_ucci(item["ucci"])
+            if item.get("illustration"):
+                finish = king_capture_finish(probe)
+                if (not mate or index != len(route) - 1 or not finish or
+                        item.get("illustration") != "king_capture" or item["ucci"] != finish["ucci"]):
+                    return []
+            elif move not in probe.legal_moves() or (probe.sq[move[1]] or "").upper() == "K":
+                return []
+            result.append((item, move))
+            probe.apply(move)
+        except (KeyError, TypeError, ValueError, IndexError):
+            return []
+    if mate and route[-1].get("illustration") != "king_capture":
+        return []
+    return result
 
 
 def enabled():
@@ -48,43 +103,56 @@ def kill_confidence(analysis):
 
 
 def build_plan(notation, analysis, pv_line, executed_ucci, board=None):
-    """Build the post-move route to play inside JJ's real sandbox."""
-    big_capture = any(f"吃{piece}" in str(notation) for piece in "车马炮")
-    confidence = kill_confidence(analysis or {})
-    route = []
-    for ucci, text in list(pv_line or [])[:6]:
-        if re.fullmatch(r"[a-i][0-9][a-i][0-9]", str(ucci)) and text:
-            route.append({"ucci": str(ucci), "notation": str(text)})
-    if route and route[0]["ucci"] == executed_ucci:
-        route.pop(0)
-    route = route[:3]
-    if len(route) < 3 or not (big_capture or confidence >= 80):
+    """Verify a tactical PV; complete mate demos run before the real move."""
+    if board is None:
         return None
-    # After the real move, the next own move is the second sandbox ply.
-    # Only demonstrate a PV that actually reaches an own tactical action.
-    target = route[1]
-    own_big_capture = any(
-        f"吃{piece}" in target["notation"] for piece in "车马炮")
-    own_check = False
-    if board is not None:
+    probe, route, facts = board.copy(), [], []
+    own = board.turn
+    for ucci, _ in list(pv_line or [])[:MAX_MATE_PLIES]:
         try:
-            probe = board.copy()
-            probe.apply(Board.from_ucci(executed_ucci))
-            for item in route[:2]:
-                probe.apply(Board.from_ucci(item["ucci"]))
-            own_check = probe.in_check(probe.turn)
-        except (ValueError, KeyError, TypeError):
-            own_check = False
-    if not (own_big_capture or own_check):
+            move = Board.from_ucci(ucci)
+            if move not in probe.legal_moves() or (probe.sq[move[1]] or "").upper() == "K":
+                break
+            if not route and ucci != executed_ucci:
+                return None
+            captured, side, escape = probe.sq[move[1]], probe.turn, probe.in_check(probe.turn)
+            text = move_description(probe, move)
+            probe.apply(move)
+            route.append({"ucci": ucci, "notation": text})
+            facts.append({"capture": captured, "own": side == own, "escape": escape,
+                          "check": probe.in_check(probe.turn)})
+            if not probe.legal_moves():
+                if probe.in_check(probe.turn) and side == own and len(route) < MAX_MATE_PLIES:
+                    finish = king_capture_finish(probe)
+                    if finish:
+                        from mate_patterns import identify_pattern
+                        pattern = identify_pattern(probe) or "组合将杀"
+                        return {"kind": "mate", "phase": "before_move", "reason": pattern + "绝杀推演",
+                                "route": route + [finish], "confidence": 100, "target": text,
+                                "target_kind": "将死后演示吃将", "max_seconds": 12.0,
+                                "pattern": pattern}
+                break
+        except (ValueError, TypeError, IndexError):
+            break
+    if len(route) < 4:
         return None
-    reasons = []
-    if big_capture:
-        reasons.append("吃掉大子")
-    if confidence >= 80:
-        reasons.append(f"杀势 {confidence}%")
-    return {"reason": " · ".join(reasons), "confidence": confidence,
-            "route": route, "target": target["notation"],
-            "target_kind": "吃大子" if own_big_capture else "将军"}
+    # Normal demos explain exchanges, checks and escapes at ordinary scores too.
+    future = facts[1:4]
+    own_target = next((index + 1 for index, fact in enumerate(future)
+                       if fact["own"] and (fact["capture"] or fact["check"])), 2)
+    big_capture = bool(facts[0]["capture"] and facts[0]["capture"].upper() in "RNC")
+    future_big = any(fact["own"] and fact["capture"] and fact["capture"].upper() in "RNC" for fact in future)
+    exchange = bool(facts[1]["capture"] and facts[2]["capture"])
+    check = any(fact["own"] and fact["check"] for fact in facts[:4])
+    escape = facts[0]["escape"]
+    if not (big_capture or future_big or exchange or check or escape):
+        return None
+    reason = ("关键交换" if exchange else "吃大子后的接法" if big_capture else
+              "后续吃大子" if future_big else "将军与应将" if check else "解将后的衔接")
+    return {"kind": "tactic", "phase": "after_move", "reason": reason,
+            "confidence": kill_confidence(analysis or {}), "route": route[1:4],
+            "target": route[own_target]["notation"],
+            "target_kind": "吃大子" if future_big else "关键接法", "max_seconds": 8.0}
 
 
 def build_deferred_plan(reason, pv_line):
@@ -341,23 +409,12 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
     copied board still matches the trusted live position.
     """
     stop_requested = stop_requested or (lambda: False)
-    # Three plies are enough to show the tactical point and keep the whole
-    # overlay comfortably inside the opponent's thinking window.
-    route = list((plan or {}).get("route") or [])[:3]
-    sandbox_board = live_board.copy()
-    legal_route = []
-    for item in route:
-        try:
-            move = Board.from_ucci(item["ucci"])
-        except (KeyError, TypeError, ValueError):
-            break
-        if move not in sandbox_board.legal_moves():
-            break
-        legal_route.append((item, move))
-        sandbox_board.apply(move)
-    if len(legal_route) < 3 or stop_requested():
+    mate = (plan or {}).get("kind") == "mate"
+    route = list((plan or {}).get("route") or [])
+    legal_route = validated_route(live_board, route, mate=mate)
+    if len(legal_route) < (2 if mate else 3) or stop_requested():
         return {"entered": False, "safe_exit": True,
-                "reason": "推演路线不足三步"}
+                "reason": "绝杀路线未包含已核实的吃将收尾" if mate else "推演路线不足三步或不合法"}
 
     observed_reply = None
     # Open the sandbox immediately after our confirmed live move.  This is
@@ -369,8 +426,8 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
     if before is None:
         failure_image = screenshot(device)
         probe = _position_probe(live_board, failure_image, orientation)
-        advanced = _advance_after_observed_reply(
-            live_board, legal_route, probe)
+        advanced = (_advance_after_observed_reply(live_board, legal_route, probe)
+                    if (plan or {}).get("phase") != "before_move" else None)
         if advanced is not None:
             # JJ answered during our gate check.  The first PV ply is already
             # real, so copy that position and demonstrate the remaining three
@@ -445,6 +502,14 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
         if time.monotonic() >= hard_deadline:
             timed_out = True
             break
+        if item.get("illustration"):
+            # A platform may close its sandbox at checkmate. Never send the
+            # illustrative king capture unless this SAME frame proves the
+            # terminal sandbox position and its exit control are still there.
+            if (_detect_sandbox_exit(last_sandbox_frame) is None or
+                    not _position_matches(sandbox_board, last_sandbox_frame, orientation)):
+                failed_step = number
+                break
         fx, fy = pt(move[0], orientation)
         tx, ty = pt(move[1], orientation)
         tap(fx, fy, device=device)
@@ -454,6 +519,11 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
         frame = screenshot(device)
         last_sandbox_frame = frame
         if not _endpoint_confirmed(sandbox_board, move, frame, orientation):
+            if item.get("illustration"):
+                # A king-capture animation can close the mode; do not retry
+                # board input on what could now be the live game.
+                failed_step = number
+                break
             resumed = _dismiss_interruption(device, frame)
             if resumed is not None:
                 frame = resumed
@@ -506,10 +576,13 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
             "failed_step": locals().get("failed_step"),
             "observed_reply": observed_reply,
             "timed_out": timed_out,
+            "king_captured": bool(mate and completed == len(legal_route)),
             # Opponent activity is intentionally not an exit condition.  On
             # return, _return_to_live accepts a legal one-ply real reply and
             # the normal player loop consumes it from the live board.
             "opponent_move_interrupts": False,
-            "reason": ("演示完成" if completed == len(legal_route)
+            "reason": ("吃将收尾演示完成" if mate and completed == len(legal_route)
+                       else "绝杀演示未完成吃将收尾" if mate
+                       else "演示完成" if completed == len(legal_route)
                        else "达到安全时限，已结束演示" if timed_out
                        else "路线演示提前结束")}

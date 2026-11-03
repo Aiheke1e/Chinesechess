@@ -10,6 +10,46 @@ from notation import move_description
 
 
 class GameSandboxTests(unittest.TestCase):
+    def test_low_score_exchange_is_still_a_useful_sandbox(self):
+        board = Board.from_fen("1rbakab1r/9/2n6/p3p3p/2p1cNp2/1C7/P1P1N3P/4C4/4A2n1/1RBAK1c2 b - - 0 1")
+        line, probe = [], board.copy()
+        for ucci in ("i9h9", "e2e5", "e6e5", "b0b2"):
+            move = Board.from_ucci(ucci)
+            line.append((ucci, move_description(probe, move)))
+            probe.apply(move)
+        plan = game_sandbox.build_plan(line[0][1], {"score_type": "cp", "score": 0}, line, line[0][0], board)
+        self.assertEqual(plan["kind"], "tactic")
+        self.assertEqual(plan["reason"], "关键交换")
+        self.assertEqual(plan["phase"], "after_move")
+        self.assertEqual(len(plan["route"]), 3)
+
+    def test_escape_from_check_can_be_demonstrated_without_a_winning_score(self):
+        board = Board()
+        for index, piece in ((4, "k"), (85, "K"), (76, "r"), (81, "R")):
+            board.sq[index] = piece
+        self.assertTrue(board.in_check("r"))
+        line, probe = [], board.copy()
+        moves = [Board.from_ucci("e0d0")]
+        for index in range(4):
+            move = moves[0] if index == 0 else probe.legal_moves()[0]
+            line.append((Board.ucci(move), move_description(probe, move)))
+            probe.apply(move)
+        plan = game_sandbox.build_plan(line[0][1], {}, line, line[0][0], board)
+        self.assertIsNotNone(plan)
+        self.assertIn("解将", plan["reason"])
+
+    def test_normal_sandbox_has_cooldown_but_mate_does_not_wait_for_it(self):
+        now = [100.0]
+        cadence = game_sandbox.SandboxCadence(clock=lambda: now[0])
+        self.assertTrue(cadence.allowed({"kind": "tactic"}, 1))
+        cadence.record(1)
+        now[0] += 10
+        self.assertFalse(cadence.allowed({"kind": "tactic"}, 4))
+        self.assertTrue(cadence.allowed({"kind": "mate"}, 2))
+        now[0] += 16
+        self.assertFalse(cadence.allowed({"kind": "tactic"}, 2))
+        self.assertTrue(cadence.allowed({"kind": "tactic"}, 4))
+
     def test_exact_coloured_occupancy_survives_piece_template_glow(self):
         board = Board.from_fen(START_FEN)
         observed = [None if piece is None else

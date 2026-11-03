@@ -431,6 +431,38 @@ def engine_commentary(board, analysis, max_pv_plies=6):
             break
     return "，".join(details), list(zip(pv_ucci, pv_text))
 
+
+def run_game_sandbox(device, board, orientation, plan, token, number, events, cancelled):
+    """Run an optional demo against a private board, always verify the return."""
+    from game_sandbox import enabled, play_plan
+    if not enabled() or cancelled():
+        result = {"entered": False, "safe_exit": True, "reason": "沙盘未开启",
+                  "speech_deadline": time.monotonic() + 15.0}
+        events.emit("game_sandbox", action="end", phase=plan.get("phase"), speech_token=token, **result)
+        return result
+    route = plan["route"]
+    events.emit("game_sandbox", action="start", reason=plan["reason"], route=route,
+                phase=plan.get("phase"), kind=plan.get("kind"), fen=board.to_fen(), speech_token=token)
+    write_runtime_status("sandbox_demo", "正在演示关键路线",
+                         details={"own_moves": number, "steps": len(route)})
+    def step(index, item):
+        print(f"[游戏沙盘] {index}. {item['notation']}", flush=True)
+        events.emit("game_sandbox", action="step", number=index,
+                    notation=item["notation"], ucci=item["ucci"], illustration=item.get("illustration"))
+    def entered():
+        events.emit("game_sandbox", action="entered", reason=plan["reason"], route=route,
+                    phase=plan.get("phase"), kind=plan.get("kind"), speech_token=token, fen=board.to_fen())
+    try:
+        result = play_plan(device, board.copy(), orientation, plan, stop_requested=cancelled,
+                           on_step=step, on_enter=entered, max_seconds=plan.get("max_seconds", 8.0))
+    except Exception as error:
+        result = {"entered": False, "safe_exit": False, "reason": "沙盘异常，未确认返回实战"}
+        capture_diagnostic(device, "sandbox_demo_error", extra={"error": str(error), "fen": board.to_fen()})
+    result["speech_deadline"] = time.monotonic() + 15.0
+    events.emit("game_sandbox", action="end", phase=plan.get("phase"), speech_token=token, **result)
+    print(f"[游戏沙盘] {result.get('reason', '演示结束')}", flush=True)
+    return result
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true")
@@ -538,6 +570,8 @@ def main():
 
     n = 0
     result = "stopped"
+    from game_sandbox import SandboxCadence
+    sandbox_cadence = SandboxCadence()
     # JJ 会给移动后的棋子换字形。这里保存这些可信占位，只放宽字形，
     # 仍严格检查颜色、空格和合法的一步转移。
     try:
@@ -738,7 +772,7 @@ def main():
             u = Board.ucci(mv)
             d = move_description(b, mv)
             analysis = dict(getattr(pf, "last_analysis", {}) or {})
-            analysis_summary, pv_line = engine_commentary(b, analysis)
+            analysis_summary, pv_line = engine_commentary(b, analysis, max_pv_plies=8)
             candidate_analyses = list(
                 getattr(pf, "last_candidates", [])[:3])
             candidate_plans = []
@@ -769,6 +803,8 @@ def main():
                 from game_sandbox import build_plan as build_sandbox_plan
                 sandbox_plan = build_sandbox_plan(
                     d, analysis, pv_line, u, board=b)
+                if sandbox_plan and not sandbox_cadence.allowed(sandbox_plan, n + 1):
+                    sandbox_plan = None
             except Exception:
                 sandbox_plan = None
 
@@ -787,6 +823,7 @@ def main():
                         summary=analysis_summary, analysis=analysis,
                         candidates=candidate_plans,
                         queen_evidence=queen_evidence,
+                        sandbox_plan=sandbox_plan,
                         speech_token=speech_token,
                         pv=[{"ucci": move_ucci, "notation": text}
                             for move_ucci, text in pv_line])
@@ -797,6 +834,15 @@ def main():
                         from_screen=from_xy, to_screen=to_xy,
                         orientation=orientation)
             if not cfg["dry_run"]:
+                if sandbox_plan and sandbox_plan.get("phase") == "before_move":
+                    demo = run_game_sandbox(device, b, orientation, sandbox_plan, speech_token,
+                                            n + 1, events, stop_requested)
+                    speech_deadline = demo.get("speech_deadline", time.monotonic() + 15.0)
+                    if demo.get("entered"):
+                        sandbox_cadence.record(n + 1)
+                    if not demo.get("safe_exit"):
+                        result = "recognition_pause"
+                        break
                 write_runtime_status("speech_waiting", "等待本手播报确认",
                                      details={"own_moves": n + 1, "ucci": u})
                 try:
@@ -915,68 +961,15 @@ def main():
                             fen=b.to_fen())
                 break
             if (not cfg["dry_run"] and sandbox_plan and
+                    sandbox_plan.get("phase", "after_move") == "after_move" and
                     fast_reply is None and not stop_requested()):
-                try:
-                    from game_sandbox import enabled as sandbox_enabled
-                    from game_sandbox import play_plan as play_sandbox_plan
-                    if sandbox_enabled():
-                        route = sandbox_plan["route"]
-                        print(f"[游戏沙盘] 我方落子已确认；等待对方期间演示"
-                              f"{len(route)}步路线。", flush=True)
-                        events.emit(
-                            "game_sandbox", action="start",
-                            reason=sandbox_plan["reason"], route=route,
-                            deferred=False, fen=b.to_fen(),
-                            speech_token=speech_token)
-                        write_runtime_status(
-                            "sandbox_demo", "等待对方期间演示关键路线",
-                            details={"own_moves": n, "steps": len(route),
-                                     "opponent_interrupts": False})
-
-                        def report_sandbox_step(number, item):
-                            print(f"[游戏沙盘] {number}. {item['notation']}",
-                                  flush=True)
-                            events.emit(
-                                "game_sandbox", action="step", number=number,
-                                notation=item["notation"], ucci=item["ucci"])
-
-                        def report_sandbox_entered():
-                            events.emit(
-                                "game_sandbox", action="entered",
-                                reason=sandbox_plan["reason"], route=route,
-                                speech_token=speech_token, fen=b.to_fen())
-
-                        sandbox_result = play_sandbox_plan(
-                            device, b, orientation, sandbox_plan,
-                            stop_requested=stop_requested,
-                            on_step=report_sandbox_step,
-                            on_enter=report_sandbox_entered,
-                            max_seconds=8.0)
-                        events.emit(
-                            "game_sandbox", action="end",
-                            speech_token=speech_token, **sandbox_result)
-                        if sandbox_result.get("entered"):
-                            print(f"[游戏沙盘] {sandbox_result.get('reason')}；"
-                                  f"已演示{sandbox_result.get('completed', 0)}步。"
-                                  " 对方实战落子不会中断沙盘。", flush=True)
-                        else:
-                            print("[游戏沙盘] 本次未进入：" +
-                                  str(sandbox_result.get(
-                                      "reason", "界面未确认")), flush=True)
-                        if not sandbox_result.get("safe_exit", True):
-                            result = "recognition_pause"
-                            print("[游戏沙盘] 无法确认已返回实战，为防止误点已暂停。",
-                                  flush=True)
-                            capture_diagnostic(
-                                device, "sandbox_exit_unconfirmed",
-                                extra={"fen": b.to_fen(),
-                                       "sandbox_result": sandbox_result})
-                            break
-                except Exception as error:
-                    print(f"[游戏沙盘] 演示异常，已跳过：{error}", flush=True)
-                    capture_diagnostic(
-                        device, "sandbox_demo_error",
-                        extra={"error": str(error), "fen": b.to_fen()})
+                demo = run_game_sandbox(device, b, orientation, sandbox_plan, speech_token,
+                                        n, events, stop_requested)
+                if demo.get("entered"):
+                    sandbox_cadence.record(n)
+                if not demo.get("safe_exit"):
+                    result = "recognition_pause"
+                    break
             if fast_reply is not None:
                 b.apply(fast_reply)
                 tolerant_indices.discard(fast_reply[0])
