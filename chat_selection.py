@@ -95,7 +95,7 @@ class ChatSelector:
             self.recent_text[normalized] = now
             if len(self.recent_text) > 300:
                 self.recent_text.pop(next(iter(self.recent_text)))
-            user = str(event.get("user") or "观众")[:30]
+            user = str(event.get("user") or "观众")[:256]
             key = viewer_key({**event, "user": user})
             self.pending.pop(key, None)
             self.pending[key] = {"user": user, "user_id": key, "text": text,

@@ -8,7 +8,7 @@ def viewer_address(user):
     masked = "*" in name
     if masked:
         name = name.split("*", 1)[0]
-    name = re.sub(r"[^\w\u4e00-\u9fff]", "", name).strip("_")[:24]
+    name = re.sub(r"[^\w\u4e00-\u9fff]", "", name).strip("_")
     if not name or name in ("观众", "匿名用户", "用户"):
         return ""
     return name + "棋友" if masked and not name.endswith("棋友") else name
@@ -54,7 +54,9 @@ def spoken_reply(text, limit=55, payload=None):
         text = re.sub(r"^" + re.escape(name) + r"(?:[，,:：、！!\s]+|$)", "", text, count=1)
         text = re.sub(r"^(?:这位棋友|这位朋友|这位观众|棋友|朋友)[，,:：、！!\s]+", "", text)
         address = name + "，"
-    budget = max(1, limit - len(address))
+    # Keep the actual readable nickname. Exceptionally long names still leave
+    # room for a short answer instead of producing just a name and full stop.
+    budget = max(18, limit - len(address))
     sentences = re.findall(r"[^。！？!?]+[。！？!?]?", text)
     result = ""
     for sentence in sentences:

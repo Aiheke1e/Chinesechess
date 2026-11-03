@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 
 from commentary_style import CommentaryStyle, DEFAULT_PERSONA, LEGACY_PERSONAS
 from live_host import LiveController, LiveSettings, SpeechPipeline, load_settings
-from interaction_text import gift_reply, spoken_reply
+from interaction_text import gift_reply, spoken_reply, welcome_line
 
 
 class CommentaryStyleTests(unittest.TestCase):
@@ -132,6 +132,12 @@ class CommentaryStyleTests(unittest.TestCase):
             for promise in ("下次", "照顾你", "再刷", "赢棋"):
                 self.assertNotIn(promise, text)
 
+    def test_long_readable_name_is_not_replaced_or_cut_in_welcome_and_gift_thanks(self):
+        nickname = "来自直播间的完整观众昵称" * 3
+        self.assertEqual(welcome_line(nickname), f"欢迎{nickname}进入直播间。")
+        self.assertIn(nickname, gift_reply("谢谢礼物", {"观众": nickname, "礼物": "小心心"}))
+        self.assertTrue(spoken_reply("晚上好。", payload={"观众": nickname}).startswith(nickname + "，"))
+
     def test_interaction_style_hints_carry_topics_without_other_viewers_messages(self):
         heard = threading.Event()
         llm = Mock(return_value="晚上好。")
@@ -146,6 +152,21 @@ class CommentaryStyleTests(unittest.TestCase):
                 self.assertIn("财务", sent["最近用过的比喻"])
                 self.assertNotIn("别的观众", str(sent))
                 self.assertEqual(llm.call_args.args[2], [])
+            finally:
+                pipeline.close()
+
+    def test_explicit_test_input_never_plays_audio_even_when_voice_is_enabled(self):
+        heard = threading.Event()
+        tts = Mock(return_value="should-not-play.wav")
+        with patch.object(SpeechPipeline, "_write_speech_marker"), patch("live_host.winsound.PlaySound") as play:
+            pipeline = SpeechPipeline(LiveSettings(speech_enabled=True, cooldown=0),
+                lambda kind, text, data: heard.set() if kind == "reply" else None,
+                llm=lambda *args, **kwargs: "这是一条测试回复。", tts=tts)
+            try:
+                pipeline.submit(3, "弹幕回复", {"观众": "测试昵称", "弹幕": "你好", "测试输入": True})
+                self.assertTrue(heard.wait(1))
+                tts.assert_not_called()
+                play.assert_not_called()
             finally:
                 pipeline.close()
 

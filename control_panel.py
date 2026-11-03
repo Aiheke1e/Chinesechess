@@ -1077,6 +1077,8 @@ class ControlPanel:
         if not text:
             return None
         data = record.get("data") or {}
+        if data.get("测试输入"):
+            return None
         kind = data.get("kind", "")
         label = {
             "弹幕回复": "回复观众", "礼物答谢": "礼物答谢",
@@ -2142,6 +2144,8 @@ class ControlPanel:
                     record = item[1]
                     kind = record.get("kind", "status")
                     data = record.get("data") or {}
+                    if data.get("测试输入"):
+                        continue
                     if self.task_cancel.is_set() and (
                             kind in ("chess", "sandtable") or (
                                 kind in ("reply", "speech_status", "queued", "error") and (

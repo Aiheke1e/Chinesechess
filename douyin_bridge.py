@@ -139,7 +139,7 @@ def create_fetcher(room, sink=emit):
                     parsed = message_class().parse(item.payload)
                     event = {"type": kind,
                              "id": str(parsed.common.msg_id or ""),
-                             "user": (parsed.user.nick_name or "观众")[:50],
+                             "user": (parsed.user.nick_name or "观众")[:256],
                              "user_id": str(parsed.user.id or "")}
                     if kind == "chat":
                         event["text"] = (parsed.default_content if item.method == "WebcastEmojiChatMessage"

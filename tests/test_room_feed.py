@@ -54,6 +54,20 @@ class RoomFeedTests(unittest.TestCase):
             "gift": "小心心", "count": 6}})[-1], "送出 小心心 × 6")
         self.assertIsNone(room_message_entry({"data": {"type": "audience", "online": 100}}))
 
+    def test_long_real_nickname_survives_the_feed_and_selected_reply(self):
+        controller = self.controller()
+        controller.enabled = True
+        controller.chat_selector.clock = lambda: 100
+        controller.chat_stats_at = 0
+        nickname = "这个昵称来自直播间并且需要完整保留" * 3
+        event = {"type": "chat", "id": "real-chat", "user": nickname,
+                 "user_id": "12345", "text": "主播晚上好", "connector_epoch": 2}
+        controller.receive(event)
+        self.assertEqual(controller._notify.call_args.args[2]["user"], nickname)
+        controller.chat_selector.clock = lambda: 102
+        controller._select_chat()
+        self.assertEqual(controller.pipeline.submit.call_args.args[2]["观众"], nickname)
+
     def test_busy_room_uses_bounded_queue_without_blocking_control_events(self):
         panel = object.__new__(ControlPanel)
         panel.output = queue.Queue()
@@ -346,6 +360,17 @@ class RoomFeedUITests(unittest.TestCase):
         text = self.panel.room_log.get("1.0", "end")
         self.assertNotIn("旧房间消息", text)
         self.assertIn("新房间消息", text)
+
+    def test_test_input_cannot_replace_a_real_comment_or_enter_the_spoken_log(self):
+        for user, message, is_test in (("真实昵称", "主播晚上好", False), ("模拟观众", "测试台词", True)):
+            self.panel._receive_live_event({"kind": "reply", "text": message, "data": {
+                "kind": "弹幕回复", "观众": user, "弹幕": message,
+                "测试输入": is_test, "互动标识": user}})
+        self.panel._poll()
+        self.assertEqual(self.panel.interaction_user.get(), "真实昵称")
+        self.assertEqual(self.panel.interaction_message.get(), "主播晚上好")
+        self.assertNotIn("模拟观众", self.panel.live_log.get("1.0", "end"))
+        self.assertIsNone(self.panel._speech_log_entry({"kind": "reply", "text": "测试", "data": {"测试输入": True}}))
 
 
 if __name__ == "__main__":

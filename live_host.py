@@ -963,7 +963,7 @@ class SpeechPipeline:
                 return
             if not self._state_live(state) or not self._chat_valid(kind, payload):
                 return
-            if self.settings.speech_enabled:
+            if self.settings.speech_enabled and not payload.get("测试输入"):
                 self.notify("speech_status", "正在生成百炼语音", payload)
                 audio = self.tts(text, self.settings.voice)
                 mode = "low" if kind in CHESS_SPEECH_KINDS else "interaction"
@@ -2029,7 +2029,7 @@ class LiveController:
             return
         if getattr(self, "suspended", False) and force:
             return
-        user = str(event.get("user") or "观众")[:30]
+        user = str(event.get("user") or "观众")[:256]
         text = str(event.get("text") or "").strip()[:300]
         now = time.monotonic()
         key = str(event.get("id") or f"{kind}:{user}:{text}")
@@ -2062,6 +2062,7 @@ class LiveController:
                              event.get("count", 1), force=force)
         elif kind == "chat":
             self.pipeline.submit(1, "弹幕回复", {"观众": user, "弹幕": text,
+                                 "测试输入": bool(force),
                                  "互动标识": f"test-{time.time_ns()}"})
         elif (kind == "member" and self.settings.welcome_enabled and
               viewer_key(event) not in self.welcomed and
@@ -2069,6 +2070,7 @@ class LiveController:
             self.welcomed.add(viewer_key(event))
             self.last_welcome = now
             self.pipeline.submit(4, "欢迎观众", {"观众": user,
+                                 "测试输入": bool(force),
                                  "_expires_at": now + 10}, direct_text=welcome_line(user))
 
     def _publish_chat_stats(self, force=False):
@@ -2136,7 +2138,7 @@ class LiveController:
         count, force = pending
         if self.enabled or force:
             self.pipeline.submit(0, "礼物答谢", {
-                "观众": key[0], "礼物": key[1], "数量": count})
+                "观众": key[0], "礼物": key[1], "数量": count, "测试输入": bool(force)})
 
     def test_chat(self, user, text):
         self.receive({"type": "chat", "id": f"test-{time.time_ns()}",
