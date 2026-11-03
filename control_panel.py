@@ -18,6 +18,7 @@ from board import Board, START_FEN
 from broadcast_view import BroadcastView
 from borderless_window import BorderlessControls
 from avatar_picker import AvatarPicker, avatar_caption, import_avatar
+from workspace_image import WorkspaceImage
 from broadcast_layout import chess_window_bounds, popup_position
 from monitoring import MonitorIssues, player_view, speech_view, live_view
 from diagnostics import DIAGNOSTIC_DIR, capture_diagnostic
@@ -574,7 +575,7 @@ class ControlPanel:
         self.live_panel = self._ui_card(self.body)
         self.room_panel = self._ui_card(self.body)
         self.log_panels = {"chess": self.chess_panel, "live": self.live_panel, "room": self.room_panel}
-        self.logs_empty = ttk.Frame(parent, style="App.TFrame")
+        self.logs_empty = WorkspaceImage(parent, background=THEME["bg"])
         self._log_layout_job = None
         self._layout_logs()
         for key, panel, title, follow in (

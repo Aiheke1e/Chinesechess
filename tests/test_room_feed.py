@@ -128,8 +128,12 @@ class RoomFeedUITests(unittest.TestCase):
         self.panel.toggle_log("chess")
         self.panel.toggle_log("live")
         self.assertEqual(len(self.panel.body.panes()), 0)
+        self.assertEqual(self.panel.logs_empty.winfo_manager(), "pack")
+        from workspace_image import WorkspaceImage
+        self.assertIsInstance(self.panel.logs_empty, WorkspaceImage)
         self.panel.toggle_log("chess")
         self.assertEqual(len(self.panel.body.panes()), 1)
+        self.assertEqual(self.panel.logs_empty.winfo_manager(), "")
         self.assertIn("本手记录", self.panel.log.get("1.0", "end"))
 
     def test_room_feed_and_all_spoken_replies_stay_in_their_own_logs(self):

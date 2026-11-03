@@ -36,6 +36,7 @@ data/opening_book*.json.gz
 !assets/doubao-chess-papercut-v4.png
 !assets/doubao-chess-pixel-v4.png
 !assets/doubao-chess-headset-v4.png
+!assets/grassland-portrait-hd-v1.png
 
 # Pikafish runtime files are downloaded separately; keep only its licenses/docs.
 engine_bin/*.7z
