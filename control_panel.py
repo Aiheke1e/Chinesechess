@@ -16,6 +16,7 @@ from adb_bridge import (adb, current_package, list_devices, resolution,
                         screenshot, tap, cancellable_adb, TaskCancelled)
 from board import Board, START_FEN
 from broadcast_view import BroadcastView
+from borderless_window import BorderlessControls
 from avatar_picker import AvatarPicker, avatar_caption, import_avatar
 from broadcast_layout import chess_window_bounds, popup_position
 from monitoring import MonitorIssues, player_view, speech_view, live_view
@@ -282,8 +283,7 @@ class ControlPanel:
 
         self.broadcast_view = BroadcastView(
             self.root, self.interaction_user, self.interaction_message, THEME,
-            on_popout=self.open_broadcast_window, avatar_path=self.area_a_avatar_path,
-            on_avatar_change=self.open_avatar_picker)
+            on_popout=self.open_broadcast_window, avatar_path=self.area_a_avatar_path)
         self.broadcast_view.configure(width=round(int(self.broadcast_width.get()) * ui_scale(self.root)))
         if self.preview_visible:
             self.broadcast_view.pack(anchor="center", padx=16, pady=(12, 10))
@@ -368,6 +368,8 @@ class ControlPanel:
             existing.lift()
             return
         window = self.broadcast_window = tk.Toplevel(self.root)
+        window.withdraw()
+        window.overrideredirect(True)
         window.title(AREA_A_TITLE)
         scale = ui_scale(self.root)
         if not hasattr(self, "broadcast_width"):
@@ -378,29 +380,23 @@ class ControlPanel:
             self.broadcast_width.set(str(round((game["viewport"][2] - game["viewport"][0]) / scale)))
         width, height = self._broadcast_dimensions()
         width, height = round(width * scale), round(height * scale)
-        x, y = popup_position((width + round(16 * scale), height + round(40 * scale)),
+        x, y = popup_position((width, height),
             (0, round(38 * scale), self.root.winfo_screenwidth(), self.root.winfo_screenheight() - round(48 * scale)),
             game["outer"] if game else None, margin=round(12 * scale))
         window.geometry(f"{width}x{height}{x:+d}{y:+d}")
         window.minsize(round(260 * scale), round(110 * scale))
+        window.maxsize(min(round(1600 * scale), self.root.winfo_screenwidth() - round(24 * scale)),
+            min(round(600 * scale), self.root.winfo_screenheight() - round(110 * scale)))
         window.resizable(True, True)
         window.configure(bg="#101d34")
         window.attributes("-alpha", 1.0)
         view = BroadcastView(window, self.interaction_user, self.interaction_message, THEME,
-            avatar_path=getattr(self, "area_a_avatar_path", ""), on_avatar_change=self.open_avatar_picker)
+            avatar_path=getattr(self, "area_a_avatar_path", ""))
         view.pack(fill="both", expand=True)
-        menu = tk.Menu(window, tearoff=False)
-        menu.add_command(label="对齐象棋宽度", command=self.align_broadcast_width)
-        menu.add_command(label="调整A区尺寸…", command=self._focus_broadcast_size)
-        menu.add_command(label="选择默认头像…", command=self.open_avatar_picker)
-        menu.add_command(label="上传图片…", command=self.choose_area_a_avatar)
-        menu.add_command(label="恢复默认形象", command=self.reset_area_a_avatar)
-        menu.add_separator()
-        menu.add_command(label="关闭A区", command=self.close_broadcast_window)
-        for widget in self._walk_widgets(view):
-            widget.bind("<Button-3>", lambda event: menu.tk_popup(event.x_root, event.y_root))
+        window.capture_controls = BorderlessControls(window, view)
         window.bind("<Configure>", self._remember_broadcast_size)
-        window.protocol("WM_DELETE_WINDOW", self.close_broadcast_window)
+        window.protocol("WM_DELETE_WINDOW", self.hide_broadcast_window)
+        window.deiconify()
 
     def _set_area_a_avatar(self, path):
         if not self.broadcast_view.set_avatar(path, strict=True):
@@ -425,9 +421,7 @@ class ControlPanel:
             picker.deiconify()
             picker.lift()
             return
-        window = getattr(self, "broadcast_window", None)
-        parent = window if window is not None and window.winfo_exists() and window.winfo_viewable() else self.root
-        self.avatar_picker_window = AvatarPicker(parent,
+        self.avatar_picker_window = AvatarPicker(self.root,
             getattr(self, "area_a_avatar_path", ""), self._set_area_a_avatar,
             self.choose_area_a_avatar, dict(THEME))
 
@@ -469,7 +463,10 @@ class ControlPanel:
             view.configure(width=round(width * scale))
         window = getattr(self, "broadcast_window", None)
         if window is not None and window.winfo_exists():
-            window.geometry(f"{round(width * scale)}x{round(height * scale)}")
+            pixels_w, pixels_h = round(width * scale), round(height * scale)
+            x = max(0, min(window.winfo_x(), self.root.winfo_screenwidth() - pixels_w))
+            y = max(0, min(window.winfo_y(), self.root.winfo_screenheight() - pixels_h))
+            window.geometry(f"{pixels_w}x{pixels_h}{x:+d}{y:+d}")
         self._schedule_ui_save()
 
     def align_broadcast_width(self):
@@ -505,11 +502,18 @@ class ControlPanel:
         if hasattr(self, "broadcast_visible"):
             self.broadcast_visible.set(False)
 
+    def hide_broadcast_window(self):
+        window = getattr(self, "broadcast_window", None)
+        if window is not None and window.winfo_exists():
+            window.withdraw()
+        if hasattr(self, "broadcast_visible"):
+            self.broadcast_visible.set(False)
+
     def toggle_broadcast_window(self):
         if self.broadcast_visible.get():
             self.open_broadcast_window()
         else:
-            self.close_broadcast_window()
+            self.hide_broadcast_window()
 
     def toggle_preview(self):
         self.preview_visible = not self.preview_visible

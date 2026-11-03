@@ -54,6 +54,7 @@ class BroadcastView(SoftCard):
             self.comment_text.bind("<Double-Button-1>", lambda event: on_popout())
         self.comment_text.bind("<Configure>", self._schedule_layout)
         self.content.bind("<Configure>", self._schedule_layout)
+        self.bind("<Map>", self._schedule_layout, add="+")
         self.bind("<Destroy>", self._cleanup, add="+")
         self.set_avatar(avatar_path)
 
@@ -159,3 +160,5 @@ class BroadcastView(SoftCard):
             self.after_cancel(self._layout_job)
         for variable, trace in zip(self._variables, self._traces):
             variable.trace_remove("write", trace)
+        self._variables = ()
+        self._traces.clear()

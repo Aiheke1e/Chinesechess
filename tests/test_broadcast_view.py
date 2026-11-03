@@ -52,7 +52,7 @@ class BroadcastViewTests(unittest.TestCase):
             with patch.object(window, "deiconify"), patch.object(window, "lift"):
                 panel.open_broadcast_window()
             self.assertIs(panel.broadcast_window, window)
-            self.root.tk.call(window.protocol("WM_DELETE_WINDOW"))
+            panel.close_broadcast_window()
             self.assertIsNone(panel.broadcast_window)
             self.assertEqual(self.message.trace_info(), [])
 
@@ -98,7 +98,7 @@ class BroadcastViewTests(unittest.TestCase):
         self.assertEqual(capture.comment_text.get("1.0", "end-1c"), self.user.get() + "：" + self.message.get())
         panel.toggle_preview()
         self.assertEqual(panel.broadcast_view.winfo_manager(), "pack")
-        self.root.tk.call(window.protocol("WM_DELETE_WINDOW"))
+        panel.close_broadcast_window()
 
     def test_popout_uses_saved_size_and_updates_both_views_from_the_same_real_comment(self):
         panel = object.__new__(ControlPanel)
@@ -114,6 +114,7 @@ class BroadcastViewTests(unittest.TestCase):
         self.root.update_idletasks()
         window = panel.broadcast_window
         capture = window.winfo_children()[0]
+        self.assertTrue(window.overrideredirect())
         self.assertEqual(tuple(map(int, window.resizable())), (1, 1))
         self.assertEqual(capture.comment_text.cget("background"), BROADCAST_PALETTE["panel"])
         self.assertFalse(hasattr(capture, "popout_button"))
@@ -131,6 +132,37 @@ class BroadcastViewTests(unittest.TestCase):
         self.root.update_idletasks()
         self.assertEqual(panel._broadcast_dimensions(), (620, 220))
         panel.close_broadcast_window()
+
+    def test_settings_hide_and_reopen_preserve_the_capture_window_and_current_comment(self):
+        panel = object.__new__(ControlPanel)
+        panel.root = self.root
+        panel.interaction_user, panel.interaction_message = self.user, self.message
+        panel.broadcast_window = None
+        panel.broadcast_visible = tk.BooleanVar(master=self.root, value=False)
+        panel.open_broadcast_window()
+        window = panel.broadcast_window
+        self.root.update()
+        window.geometry("510x180+30+40")
+        self.root.update_idletasks()
+        geometry = window.geometry()
+        self.assertTrue(panel.broadcast_visible.get())
+        panel.broadcast_visible.set(False)
+        panel.toggle_broadcast_window()
+        self.assertEqual(window.state(), "withdrawn")
+        self.assertIs(panel.broadcast_window, window)
+        self.assertEqual(len(self.message.trace_info()), 1)
+        self.user.set("真实观众")
+        self.message.set("收起期间的新弹幕")
+        panel.broadcast_visible.set(True)
+        panel.toggle_broadcast_window()
+        self.root.update()
+        self.assertIs(panel.broadcast_window, window)
+        self.assertTrue(window.overrideredirect())
+        self.assertEqual(window.geometry(), geometry)
+        self.assertEqual(window.winfo_children()[0].comment_text.get("1.0", "end-1c"),
+                         "真实观众：收起期间的新弹幕")
+        panel.close_broadcast_window()
+        self.assertEqual(self.message.trace_info(), [])
 
     def test_comment_keeps_unicode_nickname_and_empty_state_without_placeholder(self):
         self.user.set("🍊老张")
