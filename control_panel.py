@@ -242,9 +242,6 @@ class ControlPanel:
         try:
             self.live_controller = LiveController(self._receive_live_event)
             self.append_live("系统", "就绪")
-            if self.live_speech.get():
-                self.live_controller.enable()
-                self.interaction_state.set("自动抽选中")
             self._sync_interaction_button()
         except Exception as error:
             self._note_issue("后台", "直播互动模块初始化失败：" + str(error))
@@ -281,10 +278,10 @@ class ControlPanel:
         control_row.pack(fill="x")
         actions = self.actionbar = ttk.Frame(control_row, style="Card.TFrame", padding=(4, 6))
         actions.pack(side="left")
-        self.start_button = ttk.Button(actions, text="▶ 开始", width=11,
+        self.start_button = ttk.Button(actions, text="▶ 开始下棋", width=11,
             style="Action.Primary.TButton", command=self.prepare_and_wait)
         self.start_button.pack(side="left")
-        self.stop_button = ttk.Button(actions, text="Ⅱ 暂停 F8", width=11,
+        self.stop_button = ttk.Button(actions, text="Ⅱ 暂停下棋 F8", width=11,
             style="Action.Danger.TButton", command=self.stop)
         self.stop_button.pack(side="left", padx=(4, 12))
         indicators = tk.Frame(control_row, bg=THEME["panel"])
@@ -553,7 +550,7 @@ class ControlPanel:
         self.live_connect_button = ttk.Button(actions, text="连接直播间", width=10,
             style="Primary.TButton", command=self.toggle_live_connection)
         self.live_connect_button.pack(side="left")
-        self.interaction_button = ttk.Button(actions, text="开启互动", width=8, command=self.toggle_interaction)
+        self.interaction_button = ttk.Button(actions, text="开启弹幕互动", width=12, command=self.toggle_interaction)
         self.interaction_button.pack(side="left", padx=(6, 4))
         row = ttk.Frame(form, style="Card.TFrame")
         row.grid(row=1, column=1, columnspan=5, sticky="ew", pady=(6, 18))
@@ -880,7 +877,7 @@ class ControlPanel:
                            self.process and self.process.poll() is None)
             busy = self.waiting_for_board or running
             self.start_button.configure(
-                text="等待棋盘…" if self.waiting_for_board else "运行中" if running else "▶ 开始")
+                text="等待棋盘…" if self.waiting_for_board else "下棋中" if running else "▶ 开始下棋")
             self.start_button.state(["disabled"] if busy else ["!disabled"])
             if hasattr(self, "tools_menu"):
                 self.tools_menu.entryconfigure("预览一手", state="disabled" if busy else "normal")
@@ -1336,24 +1333,20 @@ class ControlPanel:
 
     def enable_live(self):
         if self.save_live_settings(quiet=True):
-            if self.task_cancel.is_set():
-                # Start a new UI session without reviving canceled board workers.
-                self.task_cancel = threading.Event()
             self.live_controller.enable()
             self.interaction_state.set("自动抽选中")
             self._sync_interaction_button()
 
     def toggle_interaction(self):
-        if self.live_controller and self.live_controller.enabled and not self.live_controller.suspended:
+        if self.live_controller and self.live_controller.enabled:
             self.pause_live()
         else:
             self.enable_live()
 
     def _sync_interaction_button(self):
         if hasattr(self, "interaction_button"):
-            active = (self.live_controller and self.live_controller.enabled
-                      and not self.live_controller.suspended)
-            self.interaction_button.configure(text="暂停互动" if active else "开启互动",
+            active = self.live_controller and self.live_controller.enabled
+            self.interaction_button.configure(text="暂停弹幕互动" if active else "开启弹幕互动",
                 style="LogToggle.TButton" if active else "TButton")
 
     def pause_live(self):
@@ -1373,11 +1366,6 @@ class ControlPanel:
         if not self.save_live_settings(quiet=True):
             return
         if self.live_speech.get():
-            if self.task_cancel.is_set():
-                self.task_cancel = threading.Event()
-            self.live_controller.enable()
-            self.interaction_state.set("自动抽选中")
-            self._sync_interaction_button()
             self.speech_status.set("语音已开启")
             self.append_live("语音", "开播语音已开启，后续内容会调用百炼 TTS。")
         else:
@@ -1390,7 +1378,7 @@ class ControlPanel:
         if self.live_commentary.get():
             self.append_live("系统", "直播解说已开启，只讲关键棋和等棋空档。")
         else:
-            self.live_controller.pipeline.clear(stop_audio=False)
+            self.live_controller.pipeline.invalidate_chess()
             self.append_live("系统", "直播解说已关闭，只自动下棋，不调用棋局语言模型和 TTS。")
 
     def toggle_live_connection(self):
@@ -1691,7 +1679,7 @@ class ControlPanel:
         self.task_cancel.set()
         self.task_cancel = threading.Event()
         if self.live_controller:
-            self.live_controller.resume_tasks()
+            self.live_controller.resume_chess_tasks()
         self.auto_retry = bool(self.continuous.get())
         self.dry.set(False)
         self.status.set("一键助手启动中…")
@@ -1923,7 +1911,7 @@ class ControlPanel:
         self.task_cancel.set()
         self.task_cancel = threading.Event()
         if self.live_controller:
-            self.live_controller.resume_tasks()
+            self.live_controller.resume_chess_tasks()
         os.makedirs(os.path.dirname(STOP_FILE), exist_ok=True)
         try:
             os.remove(STOP_FILE)
@@ -1994,14 +1982,10 @@ class ControlPanel:
         self.task_cancel.set()
         self.waiting_for_board = False
         self.auto_retry = False
-        if hasattr(self, "interaction_state"):
-            self.interaction_state.set("互动已停止")
-        self._reset_interaction_display()
         self._cancel_sandtable_jobs()
         self._close_sandtable_ui()
         if self.live_controller:
-            self.live_controller.stop_tasks()
-        self._sync_interaction_button()
+            self.live_controller.stop_chess_tasks()
         os.makedirs(os.path.dirname(STOP_FILE), exist_ok=True)
         with open(STOP_FILE, "w", encoding="utf-8") as stream:
             stream.write("stop\n")
@@ -2011,8 +1995,8 @@ class ControlPanel:
             # Pikafish.  Do not wait for another recognition/postgame cycle.
             self._terminate_task(process)
         self.board_state.set("已停止")
-        self.status.set("已停止：识别、对弈和播报已取消")
-        self.append("[控制指令] 已立即停止识别、对弈和播报\n")
+        self.status.set("下棋已暂停：识别、落子和棋局解说已取消")
+        self.append("[控制指令] 已暂停下棋；弹幕互动保持原状态\n")
 
     @staticmethod
     def _terminate_task(process):
@@ -2069,7 +2053,7 @@ class ControlPanel:
                         self.auto_retry = False
                         self.waiting_for_board = False
                         if self.live_controller:
-                            self.live_controller.stop_tasks()
+                            self.live_controller.stop_chess_tasks()
                         self.status.set("本手语音未启动，已暂停；未发送落子")
                         self.append("[语音同步] 已取消待播台词。检查语音后重新开始，程序会核对原局面。\n")
                     elif item[1] == 12:
@@ -2157,8 +2141,11 @@ class ControlPanel:
                 elif isinstance(item, tuple) and item[0] == "live_event":
                     record = item[1]
                     kind = record.get("kind", "status")
-                    if self.task_cancel.is_set() and kind in (
-                            "reply", "speech_status", "queued", "chess", "sandtable", "interaction_done"):
+                    data = record.get("data") or {}
+                    if self.task_cancel.is_set() and (
+                            kind in ("chess", "sandtable") or (
+                                kind in ("reply", "speech_status", "queued", "error") and (
+                                    data.get("kind") in CHESS_SPEECH_KINDS or data.get("speech_token")))):
                         continue
                     text = record.get("text", "")
                     if kind == "sandtable":
@@ -2214,7 +2201,9 @@ class ControlPanel:
                     elif kind == "reply":
                         self._clear_issue("播报")
                         data = record.get("data") or {}
-                        if data.get("kind") == "弹幕回复":
+                        current_interaction = ("_chat_epoch" not in data or
+                            data["_chat_epoch"] == self.live_controller.pipeline.chat_epoch)
+                        if data.get("kind") == "弹幕回复" and current_interaction:
                             self.interaction_id = data.get("互动标识")
                             self.interaction_state.set("正在互动")
                             self.interaction_user.set(str(data.get("观众") or "观众"))

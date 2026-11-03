@@ -62,7 +62,10 @@ def main():
         show_message("JJ 象棋助手", "助手已经在运行，请查看任务栏中的控制面板。")
         return 0
     try:
-        sys.argv = [os.path.join(HERE, "control_panel.py"), "--autostart"]
+        autostart = "--autostart" in sys.argv[1:]
+        sys.argv = [os.path.join(HERE, "control_panel.py")]
+        if autostart:
+            sys.argv.append("--autostart")
         import control_panel
         control_panel.main()
         write_log("控制面板正常退出")

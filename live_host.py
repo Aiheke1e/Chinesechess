@@ -41,6 +41,7 @@ CHESS_SPEECH_KINDS = {
     "开局定式解说", "绝杀长解说",
     "沙盘推演解说", "QUEEN式等待期解说", "收官解说", "获胜收官", "结算收官",
 }
+INTERACTION_SPEECH_KINDS = {"弹幕回复", "欢迎观众", "礼物答谢"}
 OWN_SPEECH_KINDS = {
     "我方走棋播报", "关键走棋解说", "沙盘推演解说",
     "获胜收官", "结算收官", "绝杀长解说",
@@ -216,6 +217,9 @@ class SpeechPipeline:
         self.settings, self.notify = settings, notify
         self.llm, self.tts = llm, tts
         self.closed = threading.Event()
+        self.suspended = False
+        self.chess_suspended = False
+        self.interactions_suspended = False
         self.condition = threading.Condition()
         self.worker_lock = threading.Lock()
         self.jobs = []
@@ -263,12 +267,15 @@ class SpeechPipeline:
         if kind == "欢迎观众":
             direct_text = welcome_line(payload.get("观众"))
         with self.condition:
-            if self.closed.is_set() or getattr(self, "suspended", False):
+            if (self.closed.is_set() or getattr(self, "suspended", False)
+                    or (kind in CHESS_SPEECH_KINDS and getattr(self, "chess_suspended", False))
+                    or (kind in INTERACTION_SPEECH_KINDS and getattr(self, "interactions_suspended", False))):
                 return False
+            if kind in INTERACTION_SPEECH_KINDS:
+                payload = {**payload, "_chat_epoch": self.chat_epoch}
             if kind == "弹幕回复":
                 if self.active_chat or any(job[4] == kind for job in self.jobs):
                     return False
-                payload = {**payload, "_chat_epoch": self.chat_epoch}
                 self.active_chat = True
                 self.active_chat_payload = payload
                 self.active_chat_cancel_epoch = self.cancel_epoch
@@ -305,6 +312,7 @@ class SpeechPipeline:
     def can_reply_chat(self):
         with self.condition:
             available = (not self.closed.is_set() and not getattr(self, "suspended", False)
+                         and not getattr(self, "interactions_suspended", False)
                          and not self.active_chat)
         return available and not self._mate_busy()
 
@@ -313,9 +321,14 @@ class SpeechPipeline:
         return kind == "绝杀长解说" or bool((payload or {}).get("绝杀长播报"))
 
     def _mate_busy(self):
+        if getattr(self, "chess_suspended", False):
+            return False
         with self.condition:
-            queued = (self.high_mates or self._is_mate(getattr(self, "active_kind", None))
-                      or self._is_mate(getattr(self, "current_kind", None))
+            queued = (self.high_mates or (
+                        getattr(self, "active_chess_epoch", None) == self.chess_epoch
+                        and self._is_mate(getattr(self, "active_kind", None)))
+                      or (getattr(self, "current_chess_epoch", None) == self.chess_epoch
+                          and self._is_mate(getattr(self, "current_kind", None)))
                       or any(self._is_mate(job[4], job[5]) for job in self.jobs))
         with self.prepared_lock:
             prepared = any(self._is_mate(state.get("kind")) for state in self.prepared.values())
@@ -335,6 +348,7 @@ class SpeechPipeline:
         return (state.get("approved", True) is not False and state["epoch"] == self.cancel_epoch
                 and not self.closed.is_set() and not getattr(self, "suspended", False)
                 and not (state.get("cancel") and state["cancel"].is_set())
+                and not ("chess_epoch" in state and getattr(self, "chess_suspended", False))
                 and state.get("chess_epoch", self.chess_epoch) == self.chess_epoch)
 
     def _wait_turn(self, kind, payload, state):
@@ -369,6 +383,7 @@ class SpeechPipeline:
                     continue
                 with self.playback_state_lock:
                     self.current_playback, self.current_kind = mode, kind
+                    self.current_chess_epoch = state.get("chess_epoch")
                 try:
                     played = self._play_synced_audio(audio, payload, state, text, kind, acknowledge)
                     if played or state.get("audio_started") or not self._state_live(state):
@@ -400,9 +415,10 @@ class SpeechPipeline:
             self._run_job(job)
         finally:
             with self.condition:
-                self._finish_chat_priority()
-                self.active_chat = False
-                self.active_chat_payload = None
+                if self.active_chat_payload is job[5]:
+                    self._finish_chat_priority()
+                    self.active_chat = False
+                    self.active_chat_payload = None
                 self.condition.notify_all()
 
     def activity_snapshot(self):
@@ -417,15 +433,37 @@ class SpeechPipeline:
                 "playing": playing, "suspended": bool(getattr(self, "suspended", False))}
 
     def cancel_chats(self):
+        """Cancel room speech only, including welcomes and gift thanks."""
         with self.condition:
             self.chat_epoch += 1
-            self.jobs = [job for job in self.jobs if job[4] != "弹幕回复"]
+            self.jobs = [job for job in self.jobs if job[4] not in INTERACTION_SPEECH_KINDS]
             heapq.heapify(self.jobs)
             self._finish_chat_priority()
+            self.active_chat = False
+            self.active_chat_payload = None
+            self.condition.notify_all()
+
+    def pause_interactions(self):
+        with self.condition:
+            self.interactions_suspended = True
+            self.cancel_chats()
+
+    def resume_interactions(self):
+        with self.condition:
+            self.interactions_suspended = False
+
+    def pause_chess(self):
+        self.chess_suspended = True
+        self.invalidate_chess()
+
+    def resume_chess(self):
+        self.chess_suspended = False
 
     def _chat_valid(self, kind, payload):
         return (time.monotonic() <= payload.get("_expires_at", float("inf"))
-                and (kind != "弹幕回复" or payload.get("_chat_epoch", self.chat_epoch) == self.chat_epoch))
+                and (kind not in INTERACTION_SPEECH_KINDS or (
+                    not getattr(self, "interactions_suspended", False)
+                    and payload.get("_chat_epoch", self.chat_epoch) == self.chat_epoch)))
 
     def clear(self, stop_audio=False):
         self.cancel_idle()
@@ -448,12 +486,12 @@ class SpeechPipeline:
             newest = max(
                 (job for job in self.jobs if job[4] in CHESS_SPEECH_KINDS),
                 key=lambda job: job[1], default=None)
-            self.jobs.clear()
+            self.jobs = [job for job in self.jobs if job[4] not in CHESS_SPEECH_KINDS]
             if newest is not None:
                 priority, sequence, _, epoch, kind, payload, direct = newest
                 self.jobs.append((priority, sequence, time.monotonic(),
                                   epoch, kind, payload, direct))
-                heapq.heapify(self.jobs)
+            heapq.heapify(self.jobs)
             self.condition.notify_all()
         self.notify("speech_status", "已清除排队旧讲解；当前句说完后跳到最新", {})
 
@@ -506,6 +544,7 @@ class SpeechPipeline:
         self.chess_epoch += 1
         self.cancel_idle()
         with self.condition:
+            self.high_mates = 0
             self.jobs = [job for job in self.jobs if job[4] not in CHESS_SPEECH_KINDS]
             heapq.heapify(self.jobs)
         with self.prepared_lock:
@@ -528,13 +567,9 @@ class SpeechPipeline:
     def _play_synced_audio(self, audio, payload, state, text, kind, acknowledge=True):
         # Caller owns the playback lock.  Publish the acknowledgement only
         # AFTER Windows accepts playback; never before waiting for the lock.
-        valid = lambda: (state.get("approved", True) and state["epoch"] == self.cancel_epoch
-                         and not self.closed.is_set() and not getattr(self, "suspended", False)
+        valid = lambda: (self._state_live(state)
                          and self.settings.speech_enabled
-                         and not (state.get("cancel") and state["cancel"].is_set())
-                         and state.get("chess_epoch", self.chess_epoch) == self.chess_epoch
-                         and (kind != "弹幕回复" or
-                              payload.get("_chat_epoch", self.chat_epoch) == self.chat_epoch)
+                         and self._chat_valid(kind, payload)
                          and self._has_turn(kind, payload))
         if (not valid() or not self._chat_valid(kind, payload)
                 or time.monotonic() >= state.get("deadline", float("inf"))):
@@ -633,7 +668,8 @@ class SpeechPipeline:
         state = {"decision": threading.Event(), "approved": None,
                  "epoch": self.cancel_epoch, "chess_epoch": self.chess_epoch, "kind": kind}
         with self.prepared_lock:
-            if self.closed.is_set() or getattr(self, "suspended", False):
+            if (self.closed.is_set() or getattr(self, "suspended", False)
+                    or getattr(self, "chess_suspended", False)):
                 return False
             older = list(self.prepared.values()) if replace_older else []
             if replace_older:
@@ -725,7 +761,8 @@ class SpeechPipeline:
     def play_high(self, kind, payload, direct_text):
         """Play a mandatory short move call without waiting for the LLM."""
         text = self._short_chess_text(direct_text)
-        if not text or self.closed.is_set() or getattr(self, "suspended", False):
+        if (not text or self.closed.is_set() or getattr(self, "suspended", False)
+                or getattr(self, "chess_suspended", False)):
             return False
         if not self._chess_line_valid(text, kind, payload):
             return False
@@ -762,16 +799,19 @@ class SpeechPipeline:
                 return
             self._prune_audio(Path(audio).parent)
         except Exception as error:
-            self.notify("error", str(error)[:200], {"kind": kind})
+            if self._state_live(state):
+                self.notify("error", str(error)[:200], {"kind": kind})
         finally:
             if self._is_mate(kind, payload):
                 with self.condition:
-                    self.high_mates = max(0, self.high_mates - 1)
+                    if payload.get("_chess_epoch") == self.chess_epoch:
+                        self.high_mates = max(0, self.high_mates - 1)
             self.notify("speech_status", "等待下一条内容", payload)
 
     def prepare_idle(self, payload, kind="等待期长讲解", direct_text=None):
         """Pre-generate low-priority speech; play only in a wait window."""
-        if self.closed.is_set() or getattr(self, "suspended", False):
+        if (self.closed.is_set() or getattr(self, "suspended", False)
+                or getattr(self, "chess_suspended", False)):
             return False
         self.cancel_idle()
         state = {
@@ -781,7 +821,8 @@ class SpeechPipeline:
             "kind": str(kind), "direct_text": direct_text,
         }
         with self.idle_lock:
-            if self.closed.is_set() or getattr(self, "suspended", False):
+            if (self.closed.is_set() or getattr(self, "suspended", False)
+                    or getattr(self, "chess_suspended", False)):
                 return False
             self.idle_state = state
         threading.Thread(
@@ -855,10 +896,8 @@ class SpeechPipeline:
         if state is not None:
             state["cancel"].set()
             state["window"].set()
-        with self.playback_state_lock:
-            playing_low = self.current_playback == "low"
-        if playing_low:
-            winsound.PlaySound(None, winsound.SND_PURGE)
+        # The playback owner stops its own cancelled clip while holding the
+        # playback lock. A global purge here could cut a new audience reply.
         return state is not None
 
     def _worker_entry(self):
@@ -883,6 +922,7 @@ class SpeechPipeline:
                     continue
                 job = heapq.heappop(self.jobs)
                 self.active_kind = job[4]
+                self.active_chess_epoch = job[5].get("_chess_epoch")
             try:
                 self._run_job(job)
             finally:
@@ -932,7 +972,8 @@ class SpeechPipeline:
             self.notify("speech_status", "等待下一条内容", payload)
             self.closed.wait(max(0.0, float(self.settings.cooldown)))
         except Exception as error:
-            self.notify("error", str(error)[:200], {"kind": kind})
+            if self._state_live(state) and self._chat_valid(kind, payload):
+                self.notify("error", str(error)[:200], {"kind": kind})
         finally:
             if kind == "弹幕回复":
                 self.notify("interaction_done", "本条弹幕互动结束", {**payload, "completed": completed})
@@ -965,6 +1006,8 @@ class LiveController:
         self.notify = notify
         self.settings = load_settings()
         self.enabled = False
+        self.suspended = False
+        self.chess_suspended = False
         self.connector = None
         self.connector_epoch = 0
         self.connector_lock = threading.RLock()
@@ -1045,40 +1088,38 @@ class LiveController:
         self._notify("status", "互动设置已保存")
 
     def enable(self):
-        self.resume_tasks()
+        self.pipeline.resume_interactions()
         self.enabled = True
-        self._notify("status", "弹幕互动已开启；棋局讲解会始终生成")
+        self._notify("status", "弹幕互动已开启")
 
     def pause(self):
         self.enabled = False
         self.chat_selector.clear()
-        self.pipeline.clear(stop_audio=True)
-        self._notify("status", "弹幕互动已暂停；后续棋局台词仍会生成")
-
-    def stop_tasks(self):
-        self.suspended = True
-        self.commentary_analyses = {}
-        self.last_confirmed_analysis = None
-        self.last_commentary_reply = None
-        self.pipeline.suspended = True
-        self.pipeline.clear(stop_audio=True)
-        if hasattr(self, "chat_selector"):
-            self.chat_selector.clear()
-        self.pending_move_events.clear()
-        self.pending_prediction = None
-        self.reply_context = None
-        self.sandbox_speech_tokens.clear()
-        self.sandbox_speech_by_move.clear()
-        self._close_sandtable("已停止")
+        self.pipeline.pause_interactions()
         with self.gift_lock:
             for timer in self.gift_timers.values():
                 timer.cancel()
             self.gift_timers.clear()
             self.pending_gifts.clear()
+        self._notify("status", "弹幕互动已暂停")
 
-    def resume_tasks(self):
-        self.suspended = False
-        self.pipeline.suspended = False
+    def stop_chess_tasks(self):
+        """Stop board narration without changing room connection or interaction."""
+        self.chess_suspended = True
+        self.pipeline.pause_chess()
+        self.commentary_analyses = {}
+        self.last_confirmed_analysis = None
+        self.last_commentary_reply = None
+        self.pending_move_events.clear()
+        self.pending_prediction = None
+        self.reply_context = None
+        self.sandbox_speech_tokens.clear()
+        self.sandbox_speech_by_move.clear()
+        self._close_sandtable("下棋已暂停")
+
+    def resume_chess_tasks(self):
+        self.chess_suspended = False
+        self.pipeline.resume_chess()
 
     def jump_to_latest(self):
         self.pipeline.jump_to_latest()
@@ -1586,7 +1627,7 @@ class LiveController:
         return variants[(self.victory_count - 1) % len(variants)]
 
     def submit_chess(self, event):
-        if getattr(self, "suspended", False):
+        if getattr(self, "suspended", False) or getattr(self, "chess_suspended", False):
             return
         if not getattr(getattr(self, "settings", None),
                        "commentary_enabled", True):
@@ -2232,6 +2273,7 @@ class LiveController:
                 process.wait()
 
     def close(self):
+        self.suspended = True
         self.chat_closed.set()
         self._close_sandtable("程序关闭")
         self.disconnect(silent=True)

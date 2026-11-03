@@ -44,7 +44,8 @@ class StopTests(unittest.TestCase):
         self.assertFalse(panel.waiting_for_board)
         self.assertFalse(panel.auto_retry)
         panel._terminate_task.assert_called_once_with(panel.process)
-        panel.live_controller.stop_tasks.assert_called_once()
+        panel.live_controller.stop_chess_tasks.assert_called_once()
+        panel.live_controller.stop_tasks.assert_not_called()
         panel.prepare_and_wait.assert_not_called()
 
     def test_cancelled_queue_cannot_start_a_game_or_overwrite_stopped_status(self):

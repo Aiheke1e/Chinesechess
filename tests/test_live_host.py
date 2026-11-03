@@ -18,6 +18,7 @@ class LiveHostTests(unittest.TestCase):
         pipeline.jobs = []
         pipeline.sequence = 0
         pipeline.cancel_epoch = 0
+        pipeline.chat_epoch = 0
         pipeline._ensure_worker = lambda: True
         return pipeline
 
@@ -28,14 +29,15 @@ class LiveHostTests(unittest.TestCase):
         self.assertEqual(len(pipeline.jobs), 1)
         self.assertEqual(pipeline.jobs[0][4], "我方走棋播报")
 
-    def test_jump_to_latest_keeps_only_newest_chess_job(self):
+    def test_jump_to_latest_keeps_newest_chess_job_and_room_messages(self):
         pipeline = self._idle_pipeline()
         pipeline.submit(1, "我方走棋播报", {"走法": "马二进三"}, "旧落子")
         pipeline.submit(2, "对手走棋播报", {"走法": "马8进7"}, "最新应手")
+        pipeline.submit(4, "礼物答谢", {"观众": "小王"}, "谢谢小王。")
+        pipeline.submit(4, "欢迎观众", {"观众": "小李"})
         with patch("live_host.winsound.PlaySound") as play_mock:
             pipeline.jump_to_latest()
-        self.assertEqual(len(pipeline.jobs), 1)
-        self.assertEqual(pipeline.jobs[0][4], "对手走棋播报")
+        self.assertEqual({job[4] for job in pipeline.jobs}, {"对手走棋播报", "礼物答谢", "欢迎观众"})
         play_mock.assert_not_called()
 
     def test_move_selected_waits_for_importance_analysis(self):

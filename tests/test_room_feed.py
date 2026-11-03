@@ -1,8 +1,10 @@
 from collections import deque
 import queue
 import threading
+import tempfile
 import tkinter as tk
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from chat_selection import ChatSelector
@@ -223,9 +225,9 @@ class RoomFeedUITests(unittest.TestCase):
         with patch.object(self.panel, "save_live_settings", return_value=True), patch.object(
                 self.panel, "prepare_and_wait") as start_board:
             self.panel.interaction_button.invoke()
-            self.assertEqual(self.panel.interaction_button.cget("text"), "开启互动")
+            self.assertEqual(self.panel.interaction_button.cget("text"), "开启弹幕互动")
             self.panel.interaction_button.invoke()
-            self.assertEqual(self.panel.interaction_button.cget("text"), "暂停互动")
+            self.assertEqual(self.panel.interaction_button.cget("text"), "暂停弹幕互动")
         start_board.assert_not_called()
         self.assertIs(self.panel.interaction_button.master, self.panel.live_connect_button.master)
         self.assertIsNot(self.panel.start_button.master, self.panel.live_connect_button.master)
@@ -234,6 +236,7 @@ class RoomFeedUITests(unittest.TestCase):
         top_buttons = {widget for widget in self.panel._walk_widgets(self.panel.controls)
                        if isinstance(widget, (tk.ttk.Button, tk.ttk.Menubutton))}
         self.assertEqual(top_buttons, {self.panel.start_button, self.panel.stop_button})
+        self.assertIn("开始下棋", self.panel.start_button.cget("text"))
         self.assertIn("暂停", self.panel.stop_button.cget("text"))
         self.assertEqual([self.panel.pages.tab(tab, "text").strip() for tab in self.panel.pages.tabs()],
                          ["工作台", "设置"])
@@ -261,14 +264,77 @@ class RoomFeedUITests(unittest.TestCase):
                 self.panel, "prepare_and_wait") as start_board:
             self.panel.enable_live()
         self.assertTrue(canceled.is_set())
-        self.assertIsNot(self.panel.task_cancel, canceled)
-        self.assertFalse(self.panel.task_cancel.is_set())
+        self.assertIs(self.panel.task_cancel, canceled)
+        self.assertTrue(self.panel.task_cancel.is_set())
         start_board.assert_not_called()
         self.panel._receive_live_event({"kind": "reply", "text": "小王，晚上好。", "data": {
             "kind": "弹幕回复", "观众": "小王", "弹幕": "主播晚上好", "互动标识": "resumed"}})
         self.panel._poll()
         self.assertIn("小王，晚上好。", self.panel.live_log.get("1.0", "end"))
         self.assertEqual(self.panel.interaction_user.get(), "小王")
+
+    def test_pausing_chess_keeps_interaction_and_current_display(self):
+        self.controller.enabled = True
+        self.panel.interaction_user.set("小王")
+        self.panel.interaction_message.set("主播晚上好")
+        self.panel._sync_interaction_button()
+        with tempfile.TemporaryDirectory() as folder, patch(
+                "control_panel.STOP_FILE", str(Path(folder) / "stop.request")):
+            self.panel.stop_button.invoke()
+        self.controller.stop_chess_tasks.assert_called_once()
+        self.controller.pause.assert_not_called()
+        self.controller.disconnect.assert_not_called()
+        self.assertEqual(self.panel.interaction_button.cget("text"), "暂停弹幕互动")
+        self.assertEqual(self.panel.interaction_user.get(), "小王")
+        self.assertEqual(self.panel.interaction_message.get(), "主播晚上好")
+        self.assertTrue(self.panel.task_cancel.is_set())
+
+    def test_voice_switch_does_not_start_interaction_or_clear_board_pause(self):
+        self.panel.task_cancel.set()
+        canceled = self.panel.task_cancel
+        self.controller.reset_mock()
+        with patch.object(self.panel, "save_live_settings", return_value=True):
+            self.panel.live_speech.set(True)
+            self.panel.toggle_live_speech()
+        self.assertIs(self.panel.task_cancel, canceled)
+        self.assertTrue(canceled.is_set())
+        self.controller.enable.assert_not_called()
+        self.controller.resume_chess_tasks.assert_not_called()
+
+    def test_pausing_interaction_keeps_the_active_chess_session(self):
+        process = Mock()
+        process.poll.return_value = None
+        self.panel.process = process
+        self.panel.auto_retry = True
+        self.panel.waiting_for_board = True
+        canceled = self.panel.task_cancel
+        self.panel.pause_live()
+        self.controller.pause.assert_called_once()
+        self.controller.stop_chess_tasks.assert_not_called()
+        self.assertIs(self.panel.process, process)
+        self.assertIs(self.panel.task_cancel, canceled)
+        self.assertFalse(canceled.is_set())
+        self.assertTrue(self.panel.auto_retry)
+        self.assertTrue(self.panel.waiting_for_board)
+
+    def test_starting_chess_does_not_enable_interaction(self):
+        self.controller.enabled = False
+        self.controller.reset_mock()
+        with patch("control_panel.threading.Thread"):
+            self.panel.prepare_and_wait()
+        self.controller.resume_chess_tasks.assert_called_once()
+        self.controller.enable.assert_not_called()
+        self.assertFalse(self.controller.enabled)
+
+    def test_late_spoken_event_does_not_restore_the_display_after_pausing_interaction(self):
+        self.controller.pipeline.chat_epoch = 2
+        self.panel.pause_live()
+        self.panel._receive_live_event({"kind": "reply", "text": "小王，晚上好。", "data": {
+            "kind": "弹幕回复", "观众": "小王", "弹幕": "晚上好", "互动标识": "old", "_chat_epoch": 1}})
+        self.panel._poll()
+        self.assertEqual(self.panel.interaction_user.get(), "")
+        self.assertEqual(self.panel.interaction_message.get(), "")
+        self.assertIn("小王，晚上好。", self.panel.live_log.get("1.0", "end"))
 
     def test_previous_room_messages_never_leak_into_the_current_room(self):
         self.connection(2)
