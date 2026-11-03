@@ -298,7 +298,7 @@ class ControlPanel:
         self.start_button = ttk.Button(actions, text="▶ 开始下棋", width=11,
             style="Action.Primary.TButton", command=self.prepare_and_wait)
         self.start_button.pack(side="left")
-        self.stop_button = ttk.Button(actions, text="Ⅱ 暂停下棋 F8", width=11,
+        self.stop_button = ttk.Button(actions, text="暂停下棋", width=11,
             style="Action.Danger.TButton", command=self.stop)
         self.stop_button.pack(side="left", padx=(4, 12))
         indicators = tk.Frame(control_row, bg=THEME["panel"])
@@ -349,16 +349,7 @@ class ControlPanel:
         self.live_settings_page = self._scroll_page("  设置  ")
         self._build_workspace(workspace)
         self._build_live_settings(self.live_settings_page)
-        self.workspace_display_controls = ttk.Frame(self.pages, style="App.TFrame")
-        ttk.Label(self.workspace_display_controls, text="互动展示", style="Page.TLabel").pack(side="left", padx=(0, 12))
-        self.workspace_preview_toggle = ttk.Checkbutton(self.workspace_display_controls,
-            text="顶部预览", variable=self.preview_enabled, command=self.toggle_preview, style="Page.TCheckbutton")
-        self.workspace_preview_toggle.pack(side="left", padx=(0, 16))
-        self.workspace_popup_toggle = ttk.Checkbutton(self.workspace_display_controls,
-            text="独立窗口", variable=self.broadcast_visible, command=self.toggle_broadcast_window, style="Page.TCheckbutton")
-        self.workspace_popup_toggle.pack(side="left")
-        self.pages.bind("<<NotebookTabChanged>>", self._layout_preview_for_page, add="+")
-        self._layout_preview_for_page()
+        self._layout_preview()
         self.root.bind("<F8>", lambda event: self.stop())
         self.root.bind("<MouseWheel>", self._scroll_settings, add="+")
         self.broadcaster_open = True
@@ -527,25 +518,18 @@ class ControlPanel:
 
     def toggle_preview(self):
         self.preview_visible = not self.preview_visible
-        self._layout_preview_for_page()
+        self._layout_preview()
         if hasattr(self, "preview_enabled"):
             self.preview_enabled.set(self.preview_visible)
         self._schedule_ui_save()
 
-    def _layout_preview_for_page(self, event=None):
+    def _layout_preview(self):
         visible = self.preview_visible
         if visible:
             self.broadcast_view.pack(anchor="center", padx=16, pady=(12, 10), before=self.controls)
         else:
             self.broadcast_view.pack_forget()
         self.controls.pack_configure(pady=(0 if visible else 12, 6))
-        if hasattr(self, "workspace_display_controls"):
-            if self.pages.index(self.pages.select()) == 0:
-                self.workspace_display_controls.place(relx=1, x=-round(8 * ui_scale(self.root)),
-                    y=round(3 * ui_scale(self.root)), anchor="ne")
-                self.workspace_display_controls.lift()
-            else:
-                self.workspace_display_controls.place_forget()
 
     def _scroll_page(self, title):
         page = ttk.Frame(self.pages, style="App.TFrame")
@@ -590,7 +574,7 @@ class ControlPanel:
         self.live_panel = self._ui_card(self.body)
         self.room_panel = self._ui_card(self.body)
         self.log_panels = {"chess": self.chess_panel, "live": self.live_panel, "room": self.room_panel}
-        self.logs_empty = ttk.Label(parent, text="记录已隐藏，可在设置中重新展开。", anchor="center")
+        self.logs_empty = ttk.Frame(parent, style="App.TFrame")
         self._log_layout_job = None
         self._layout_logs()
         for key, panel, title, follow in (
@@ -973,9 +957,6 @@ class ControlPanel:
                   background=[("active", THEME["panel2"])])
         style.configure("Settings.TCheckbutton", background=THEME["panel"])
         style.map("Settings.TCheckbutton", background=[("active", THEME["panel"])])
-        style.configure("Page.TCheckbutton", background=THEME["bg"])
-        style.map("Page.TCheckbutton", background=[("active", THEME["bg"])])
-        style.configure("Page.TLabel", background=THEME["bg"], foreground=THEME["muted"])
 
     def _change_theme(self, *_):
         name = self.theme_name.get()

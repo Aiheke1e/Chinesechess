@@ -254,7 +254,7 @@ class RoomFeedUITests(unittest.TestCase):
                        if isinstance(widget, (tk.ttk.Button, tk.ttk.Menubutton))}
         self.assertEqual(top_buttons, {self.panel.start_button, self.panel.stop_button})
         self.assertIn("开始下棋", self.panel.start_button.cget("text"))
-        self.assertIn("暂停", self.panel.stop_button.cget("text"))
+        self.assertEqual(self.panel.stop_button.cget("text"), "暂停下棋")
         self.assertEqual([self.panel.pages.tab(tab, "text").strip() for tab in self.panel.pages.tabs()],
                          ["工作台", "设置"])
         settings = set(self.panel._walk_widgets(self.panel.live_settings_page))
@@ -274,8 +274,8 @@ class RoomFeedUITests(unittest.TestCase):
         self.root.update_idletasks()
         self.assertFalse(errors)
 
-    def test_both_pages_can_hide_the_shared_preview_without_hiding_the_capture_window(self):
-        self.panel.workspace_preview_toggle.invoke()
+    def test_settings_control_both_pages_preview_without_hiding_the_capture_window(self):
+        self.panel.preview_toggle.invoke()
         self.panel.open_broadcast_window()
         window = self.panel.broadcast_window
         self.panel.interaction_user.set("真实观众")
@@ -292,12 +292,13 @@ class RoomFeedUITests(unittest.TestCase):
         self.panel.pages.select(0)
         self.root.update()
         self.assertEqual(self.panel.broadcast_view.winfo_manager(), "")
-        self.panel.workspace_preview_toggle.invoke()
+        self.panel.pages.select(1)
+        self.panel.preview_toggle.invoke()
         self.assertEqual(self.panel.broadcast_view.winfo_manager(), "pack")
         self.assertIs(self.panel.broadcast_window, window)
         self.assertEqual(self.panel.interaction_user.get(), "真实观众")
         self.assertEqual(self.panel.interaction_message.get(), "原始弹幕")
-        self.panel.workspace_popup_toggle.invoke()
+        self.panel.toggle_widgets["独立窗口"].invoke()
         self.assertEqual(window.state(), "withdrawn")
         self.panel.pages.select(1)
         self.panel.toggle_widgets["独立窗口"].invoke()
