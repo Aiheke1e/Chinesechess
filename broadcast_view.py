@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from PIL import Image, ImageOps, ImageTk
 from soft_ui import SoftCard, ui_scale
-from stream_brand import CHANNEL_NAME, DEFAULT_AVATAR
+from stream_brand import HOST_NAME, CHANNEL_NAME, AI_DISCLOSURE, DEFAULT_AVATAR
 
 
 BROADCAST_PALETTE = {
@@ -36,7 +36,7 @@ class BroadcastView(SoftCard):
         self.display_message = tk.StringVar(master=self, value=message.get())
         self.avatar_column = tk.Frame(self.content, bg=palette["panel"])
         self.avatar_column.pack(side="left", fill="y", padx=(0, 12))
-        self.avatar_label = tk.Label(self.avatar_column, text="豆", bg=palette["panel"],
+        self.avatar_label = tk.Label(self.avatar_column, text=HOST_NAME[:1], bg=palette["panel"],
             fg=palette["jade"], bd=0, font=("Microsoft YaHei UI", 22, "bold"))
         self.avatar_label.pack(expand=True)
         self.brand_label = tk.Label(self.avatar_column, text=CHANNEL_NAME, bg=palette["panel"],
@@ -52,6 +52,9 @@ class BroadcastView(SoftCard):
         content.pack(side="left", fill="both", expand=True, padx=(0, 8), pady=5)
         self.header = tk.Frame(content, bg=palette["panel"])
         self.header.pack(fill="x")
+        self.ai_label = tk.Label(self.header, text=AI_DISCLOSURE, bg=palette["panel"],
+            fg=palette["jade"], font=("Microsoft YaHei UI", 9), bd=0)
+        self.ai_label.pack(side="right", padx=(8, 0))
         if on_popout:
             self.popout_button = tk.Button(self.header, text="弹出A区 ↗", command=on_popout,
                 bg=palette["panel"], fg=palette["jade"], activebackground="#243c60",
@@ -173,7 +176,7 @@ class BroadcastView(SoftCard):
         # The viewer-facing blue/gold theme is independent of operator themes.
         super().set_palette(BROADCAST_PALETTE)
         for widget in (self.inner, self.header, self.user_label, self.message_label,
-                       self.avatar_column, self.avatar_label, self.brand_label):
+                       self.avatar_column, self.avatar_label, self.brand_label, self.ai_label):
             widget.configure(bg=BROADCAST_PALETTE["panel"])
         self.user_label.configure(fg=BROADCAST_PALETTE["jade"])
         self.message_label.configure(fg=BROADCAST_PALETTE["text"])

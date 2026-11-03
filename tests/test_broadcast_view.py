@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 
 from broadcast_view import BroadcastView, BROADCAST_PALETTE
 from control_panel import ControlPanel, THEME
-from stream_brand import DEFAULT_AVATAR, CHANNEL_NAME
+from stream_brand import DEFAULT_AVATAR, CHANNEL_NAME, AI_DISCLOSURE
 
 
 class BroadcastViewTests(unittest.TestCase):
@@ -56,15 +56,19 @@ class BroadcastViewTests(unittest.TestCase):
             self.assertIsNone(panel.broadcast_window)
             self.assertEqual(self.message.trace_info(), [])
 
-    def test_area_a_has_a_real_transparent_avatar_separate_from_the_viewer_identity(self):
+    def test_area_a_has_a_real_profile_avatar_separate_from_the_viewer_identity(self):
         from PIL import Image
         with Image.open(DEFAULT_AVATAR) as asset:
             self.assertEqual(asset.format, "PNG")
-            self.assertIn("A", asset.getbands())
-            self.assertEqual(asset.getchannel("A").getextrema(), (0, 255))
+            self.assertEqual(asset.width, asset.height)
+            self.assertGreaterEqual(asset.width, 512)
+            asset.verify()
         view = BroadcastView(self.root, self.user, self.message, THEME)
         self.assertIsNotNone(view._avatar_source_image)
         self.assertEqual(view.brand_label.cget("text"), CHANNEL_NAME)
+        self.assertEqual(view.ai_label.cget("text"), AI_DISCLOSURE)
+        view.set_palette(THEME)
+        self.assertEqual(view.ai_label.cget("fg"), BROADCAST_PALETTE["jade"])
         self.assertEqual(self.user.get(), "棋友老张")
         self.assertEqual(self.message.get(), "这匹马能跳过去吗？")
         original = view._avatar_source_image

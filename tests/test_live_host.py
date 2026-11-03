@@ -118,10 +118,14 @@ class LiveHostTests(unittest.TestCase):
             "这是一句明显超过二十个汉字而且非常像机器报告的解说。第二句也很长很长。")
 
     def test_chess_speech_is_rewritten_to_first_person(self):
+        from stream_brand import HOST_NAME, CHANNEL_NAME
         text = SpeechPipeline._first_person_text(
             "棋小雅：黑方这车一压，红方马得退。",
             {"主播执棋": "黑方"})
         self.assertEqual(text, "咱们这车一压，对面马得退。")
+        for label in (HOST_NAME, CHANNEL_NAME):
+            self.assertEqual(SpeechPipeline._first_person_text(
+                f"{label}：黑方这车一压，红方马得退。", {"主播执棋": "黑方"}), text)
         for forbidden in ("红方", "黑方", "我方", "对方", "对手"):
             self.assertNotIn(forbidden, text)
 

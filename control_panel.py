@@ -392,7 +392,7 @@ class ControlPanel:
         menu.add_command(label="对齐象棋宽度", command=self.align_broadcast_width)
         menu.add_command(label="调整A区尺寸…", command=self._focus_broadcast_size)
         menu.add_command(label="更换A区形象…", command=self.choose_area_a_avatar)
-        menu.add_command(label="恢复豆包形象", command=self.reset_area_a_avatar)
+        menu.add_command(label="恢复默认形象", command=self.reset_area_a_avatar)
         menu.add_separator()
         menu.add_command(label="关闭A区", command=self.close_broadcast_window)
         for widget in self._walk_widgets(view):
@@ -738,7 +738,7 @@ class ControlPanel:
         self.tools_menu.add_command(label="当前异常", command=self.show_monitor_issues)
         self.tools_menu.add_command(label="对齐象棋宽度", command=self.align_broadcast_width)
         self.tools_menu.add_command(label="更换A区形象…", command=self.choose_area_a_avatar)
-        self.tools_menu.add_command(label="恢复豆包形象", command=self.reset_area_a_avatar)
+        self.tools_menu.add_command(label="恢复默认形象", command=self.reset_area_a_avatar)
         self.tools_menu.add_separator()
         self.tools_menu.add_command(label="预览一手", command=self.preview_once)
         self.tools_menu.add_separator()

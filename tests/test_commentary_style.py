@@ -6,7 +6,8 @@ from unittest.mock import Mock, patch
 from commentary_style import CommentaryStyle, DEFAULT_PERSONA, LEGACY_PERSONAS
 from live_host import LiveController, LiveSettings, SpeechPipeline, load_settings
 from interaction_text import gift_reply, spoken_reply, welcome_line
-from stream_brand import DEFAULT_INTRODUCTION, LEGACY_INTRODUCTION
+from stream_brand import (HOST_NAME, DEFAULT_INTRODUCTION, LEGACY_INTRODUCTIONS,
+                          migrate_host_identity)
 
 
 class CommentaryStyleTests(unittest.TestCase):
@@ -79,18 +80,32 @@ class CommentaryStyleTests(unittest.TestCase):
             config.read_text.return_value = json.dumps({"persona": "严肃讲棋，不讲笑话"})
             self.assertEqual(load_settings().persona, "严肃讲棋，不讲笑话")
 
-    def test_doubao_identity_migration_preserves_the_existing_tts_and_room(self):
+    def test_identity_migration_preserves_the_existing_tts_and_room(self):
+        for introduction in LEGACY_INTRODUCTIONS:
+            with self.subTest(introduction=introduction), patch("live_host.CONFIG_PATH") as config:
+                config.read_text.return_value = json.dumps({
+                    "persona": next(iter(LEGACY_PERSONAS)), "introduction": introduction,
+                    "voice": "longanyang", "room": "123456789", "speech_enabled": True})
+                settings = load_settings()
+                self.assertTrue(settings.persona.startswith(f"你叫{HOST_NAME}"))
+                self.assertEqual(settings.introduction, DEFAULT_INTRODUCTION)
+                self.assertEqual(settings.voice, "longanyang")
+                self.assertEqual(settings.room, "123456789")
+                self.assertTrue(settings.speech_enabled)
+                config.write_text.assert_not_called()
+
+    def test_custom_style_migration_does_not_rewrite_tool_or_viewer_references(self):
+        custom = "你叫豆包，严肃讲棋，不讲笑话。观众豆包爱下棋；以后考虑接豆包语音。"
+        expected = f"你叫{HOST_NAME}，严肃讲棋，不讲笑话。观众豆包爱下棋；以后考虑接豆包语音。"
         with patch("live_host.CONFIG_PATH") as config:
-            config.read_text.return_value = json.dumps({
-                "persona": next(iter(LEGACY_PERSONAS)), "introduction": LEGACY_INTRODUCTION,
-                "voice": "longanyang", "room": "123456789", "speech_enabled": True})
+            config.read_text.return_value = json.dumps({"persona": custom,
+                "introduction": "我是豆包，有问题直接聊。", "voice": "Maia"})
             settings = load_settings()
-            self.assertTrue(settings.persona.startswith("你叫豆包"))
-            self.assertEqual(settings.introduction, DEFAULT_INTRODUCTION)
-            self.assertEqual(settings.voice, "longanyang")
-            self.assertEqual(settings.room, "123456789")
-            self.assertTrue(settings.speech_enabled)
+            self.assertEqual(settings.persona, expected)
+            self.assertEqual(settings.introduction, f"我是{HOST_NAME}，有问题直接聊。")
             config.write_text.assert_not_called()
+        self.assertEqual(migrate_host_identity("我是豆包用户，称呼观众豆包棋友。"),
+                         "我是豆包用户，称呼观众豆包棋友。")
 
     def test_actual_prepared_audio_and_transcript_use_the_same_styled_move(self):
         heard, acknowledged = threading.Event(), threading.Event()
