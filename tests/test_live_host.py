@@ -671,13 +671,13 @@ class LiveHostTests(unittest.TestCase):
         self.assertNotIn("怎么应对", text)
         self.assertNotIn("有好戏", text)
 
-    def test_waiting_explanation_only_adds_a_reply_without_repeating_call_or_material(self):
+    def test_waiting_explanation_does_not_fall_back_to_a_bare_reply_prediction(self):
         text = LiveController._idle_move_text("黑方 炮2平5", {
             "选择理由": ["争夺中路", "炮横向换线"],
             "当前子力": "咱们多一点子力",
             "最可能应手": "红方 马八进七",
         })
-        self.assertEqual(text, "对手可能走马八进七。")
+        self.assertEqual(text, "")
         self.assertNotIn("多一点子力", text)
         self.assertNotIn("炮2平5", text)
         self.assertNotIn("红方", text)

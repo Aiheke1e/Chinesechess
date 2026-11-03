@@ -25,9 +25,12 @@ def complete_note(text, limit=56):
     return result
 
 
-def waiting_note(evidence):
+def waiting_note(evidence, used=()):
     """Add one new consequence, instead of explaining a capture as 'to capture'."""
     evidence = evidence or {}
+    for effect in evidence.get("本手作用") or ():
+        if effect not in used:
+            return complete_note(effect)
     route = list(evidence.get("主线参考") or [])
     reply = spoken_move(evidence.get("最可能应手"))
     if route and spoken_move(route[0]) == reply and len(route) >= 2:

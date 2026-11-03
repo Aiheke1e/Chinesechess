@@ -1498,7 +1498,7 @@ class LiveController:
 
     @classmethod
     def _synced_move_text(cls, notation, reasons=(), number=0,
-                          sandtable=False):
+                          sandtable=False, effects=()):
         """Fast factual line: exact capture or a piece-specific quiet action."""
         move = cls._spoken_notation(notation)
         captured = move.rsplit("吃", 1)[-1][:1] if "吃" in move else ""
@@ -1510,6 +1510,8 @@ class LiveController:
             if "形成将军" in reasons:
                 return f"{base_move}，吃{captured}带将。"
             return f"{base_move}，{calls[index]}。"
+        if effects and not {"先解除将军", "形成将军"}.intersection(reasons):
+            return complete_note(f"{base_move}，{effects[0]}")
         return cls._quiet_move_text(base_move, number, reasons)
 
     @staticmethod
@@ -1562,9 +1564,6 @@ class LiveController:
         note = waiting_note(evidence)
         if note:
             return note
-        reply = cls._spoken_notation(evidence.get("最可能应手"))
-        if reply:
-            return complete_note(f"对手可能走{reply}。")
         return ""
 
     @staticmethod
@@ -1844,6 +1843,7 @@ class LiveController:
         importance, reasons = self._commentary_importance(event)
         evidence = event.get("queen_evidence") or {}
         factual_reasons = list(evidence.get("选择理由") or [])
+        effects = list(evidence.get("本手作用") or [])
         current_tactic = ("，吃" in notation or
                           bool({"形成将军", "先解除将军"}.intersection(factual_reasons)) or
                           (event.get("analysis") or {}).get("score_type") == "mate")
@@ -1896,7 +1896,7 @@ class LiveController:
                 direct = continuation or self._synced_move_text(
                     notation, factual_reasons + reasons,
                     event.get("number", 0),
-                    sandtable=False)
+                    sandtable=False, effects=effects)
             if token:
                 if sandtable:
                     # The move call and sandbox explanation are independent:
@@ -1924,7 +1924,8 @@ class LiveController:
                 self.pipeline.submit(1, kind, important_payload,
                                      direct_text=direct)
             settings = getattr(self, "settings", None)
-            note = (waiting_note(evidence) if settings is not None and
+            used = [effect for effect in effects if effect.rstrip("。") in str(direct)]
+            note = (waiting_note(evidence, used=used) if settings is not None and
                     getattr(settings, "queen_commentary_enabled", True) and
                     not sandtable and evidence.get("值得展开") else "")
             if note:
@@ -1944,8 +1945,8 @@ class LiveController:
                 and not event.get("dry_run")):
             self.pipeline.prepare_move("我方走棋播报", payload,
                                        direct_text=self._synced_move_text(
-                                           notation, factual_reasons, event.get("number", 0)))
-        if reply_context:
+                                           notation, factual_reasons, event.get("number", 0), effects=effects))
+        if reply_context and not effects:
             self.pipeline.prepare_idle(self._reply_review_payload(payload, reply_context),
                 kind="QUEEN式等待期解说",
                 direct_text=self._prediction_followup(reply_context))
@@ -1954,7 +1955,7 @@ class LiveController:
         prediction_route = event.get("pv", [])
         predicted_reply = (prediction_route[1]
                            if len(prediction_route) >= 2 else None)
-        if (not sandtable and not near_win and predicted_reply and
+        if (not effects and not sandtable and not near_win and predicted_reply and
                 self._prediction_due(event.get("number"))):
             self.pending_prediction = {
                 "ucci": str(predicted_reply.get("ucci") or ""),
@@ -1972,7 +1973,8 @@ class LiveController:
         self.quiet_move_count = getattr(self, "quiet_move_count", 0) + 1
         if self._needs_silence_filler():
             idle_text = self._idle_move_text(
-                notation, event.get("queen_evidence") or {},
+                notation, {**evidence, "本手作用": effects[1:] if token and getattr(
+                    getattr(self, "settings", None), "speech_enabled", False) else effects},
                 event.get("number", 0))
             if idle_text:
                 self.pipeline.prepare_idle({

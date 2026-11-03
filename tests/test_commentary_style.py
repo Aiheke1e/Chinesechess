@@ -49,12 +49,13 @@ class CommentaryStyleTests(unittest.TestCase):
         for _ in range(25):
             text = style.decorate("关键走棋解说", "车九平二。", {"我方计划走法": "红方 车九平二"}, DEFAULT_PERSONA)
             lines.append(text)
-            if style.recent_families[-1]:
+            if text != "车九平二。" and style.recent_families[-1]:
                 families.append(style.recent_families[-1])
             style.remember(text)
         self.assertGreaterEqual(len(set(lines)), 4)
         self.assertTrue(any(text != "车九平二。" for text in lines[-5:]))
         self.assertTrue(all(a != b for a, b in zip(families, families[1:])))
+        self.assertLessEqual(sum(text != "车九平二。" for text in lines), 9)
 
     def test_serious_persona_and_unproven_followups_keep_factual_copy(self):
         style = CommentaryStyle()

@@ -2,10 +2,38 @@ import unittest
 
 from board import Board, START_FEN
 from notation import move_description
-from queen_commentary import build_queen_evidence
+from queen_commentary import build_queen_evidence, move_effects
 
 
 class QueenCommentaryTests(unittest.TestCase):
+    def position(self, pieces, side="r"):
+        board = Board()
+        for index, piece in ((85, "K"), (4, "k"), (49, "P"), *pieces):
+            board.sq[index] = piece
+        if side == "b":
+            board = Board([piece.swapcase() if piece else None for piece in reversed(board.sq)], "b")
+        return board
+
+    def test_new_attack_and_defence_are_grounded_in_the_moved_piece(self):
+        for side in ("r", "b"):
+            for target, phrase in (("r", "瞄着对面的车"), ("N", "照应咱们的马")):
+                board = self.position(((81, "R"), (75, target)), side)
+                move = (81, 72) if side == "r" else (8, 17)
+                original = board.to_fen()
+                self.assertIn(phrase, "".join(move_effects(board, move)))
+                self.assertEqual(board.to_fen(), original)
+
+    def test_cannon_cannot_claim_an_attack_without_a_screen(self):
+        board = self.position(((81, "C"), (75, "r")))
+        self.assertNotIn("瞄着", "".join(move_effects(board, (81, 72))))
+        board.sq[74] = "P"
+        self.assertIn("瞄着对面的车", "".join(move_effects(board, (81, 72))))
+
+    def test_escape_claim_requires_the_original_attack_to_disappear(self):
+        board = self.position(((72, "R"), (54, "r")))
+        self.assertIn("直接攻击落空", "".join(move_effects(board, (72, 73))))
+        self.assertNotIn("直接攻击落空", "".join(move_effects(board, (72, 63))))
+
     def test_compares_existing_multipv_without_new_search(self):
         board = Board.from_fen(START_FEN)
         moves = board.legal_moves()[:3]

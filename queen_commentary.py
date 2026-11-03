@@ -63,6 +63,73 @@ def _line(board, pv, limit=4):
     return result
 
 
+def _legal_from(board, origin):
+    """Probe one piece only; no engine search or mutation of the live board."""
+    piece = board.sq[origin]
+    if not piece:
+        return []
+    side = color_of(piece)
+    result = []
+    for move in board.gen_moves(side, origin):
+        probe = board.copy()
+        probe.apply(move)
+        if not probe.in_check(side):
+            result.append(move)
+    return result
+
+
+def _defended(board, origin):
+    side = color_of(board.sq[origin])
+    targets = set()
+    for index, piece in enumerate(board.sq):
+        if index == origin or not piece or color_of(piece) != side or piece.upper() not in "RNC":
+            continue
+        probe = board.copy()
+        probe.sq[index] = piece.swapcase()
+        if (origin, index) in _legal_from(probe, origin):
+            targets.add(index)
+    return targets
+
+
+def _attacked(board, target, enemy):
+    return any(move[1] == target and move in _legal_from(board, move[0])
+               for move in board.gen_moves(enemy))
+
+
+def move_effects(board, move):
+    """Describe verified changes caused by this move, without predicting a reply."""
+    origin, destination = move
+    piece = board.sq[origin]
+    if not piece or color_of(piece) != board.turn or move not in _legal_from(board, origin):
+        return []
+    after = board.copy()
+    after.apply(move)
+    side, enemy = board.turn, after.turn
+    subject = {"R": "这辆车", "C": "这门炮", "N": "这匹马", "B": "这枚相" if side == RED else "这枚象",
+               "A": "这枚仕" if side == RED else "这枚士", "P": "这枚兵" if side == RED else "这枚卒",
+               "K": "咱们的帅" if side == RED else "咱们的将"}[piece.upper()]
+    effects = []
+    before_moves, after_moves = _legal_from(board, origin), _legal_from(after, destination)
+    old_targets = {target for _, target in before_moves if board.sq[target]}
+    new_targets = [target for _, target in after_moves if after.sq[target] and
+                   after.sq[target].upper() in "RNC" and target not in old_targets]
+    if new_targets:
+        target = max(new_targets, key=lambda index: PIECE_VALUE[after.sq[index].upper()])
+        effects.append(f"{subject}现在瞄着对面的{PIECE_NAMES[after.sq[target]]}。")
+    protected = _defended(after, destination) - _defended(board, origin)
+    if protected:
+        target = max(protected, key=lambda index: PIECE_VALUE[after.sq[index].upper()])
+        effects.append(f"{subject}过来照应咱们的{PIECE_NAMES[after.sq[target]]}。")
+    if piece.upper() in "RNC" and _attacked(board, origin, enemy) and not _attacked(after, destination, enemy):
+        effects.append(f"{subject}挪开后，对面原来的直接攻击落空了。")
+    from_row, to_row = origin // 9, destination // 9
+    if piece.upper() == "P" and (from_row == 5 and to_row == 4 if side == RED else from_row == 4 and to_row == 5):
+        effects.append(f"{subject}刚过河，之后也能横着走了。")
+    if piece.upper() in "RNC" and len(before_moves) <= 2 and len(after_moves) >= len(before_moves) + 3:
+        effects.append(f"{subject}能走的格子比刚才多了。")
+    return effects
+
+
 def _move_facts(board, move):
     side = board.turn
     piece = board.sq[move[0]]
@@ -198,6 +265,7 @@ def build_queen_evidence(board, chosen_move, candidates):
         "当前子力": _material(board, side),
         "最终选择": move_description(board, chosen_move),
         "选择理由": chosen_facts,
+        "本手作用": move_effects(board, chosen_move),
         "最可能应手": reply,
         "应手回吃本子": reply_recaptures,
         "候选取舍": alternatives,

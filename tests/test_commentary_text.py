@@ -23,6 +23,16 @@ class CommentaryTextTests(unittest.TestCase):
                      "取舍": "与首选接近，属于另一种计划"}]})
         self.assertEqual(text, "")
 
+    def test_own_move_effects_take_precedence_over_reply_predictions(self):
+        effect = "这辆车现在瞄着对面的马。"
+        evidence = {"本手作用": [effect], "最可能应手": "黑方 车1平6"}
+        self.assertEqual(waiting_note(evidence), effect)
+        self.assertEqual(LiveController._idle_move_text("红方 车九进一", evidence), effect)
+        self.assertEqual(waiting_note(evidence, used=[effect]), "")
+        text = LiveController._synced_move_text("红方 车九进一", effects=[effect])
+        self.assertIn(effect, text)
+        self.assertNotIn("对手可能", text)
+
     def test_missing_new_fact_means_no_filler(self):
         self.assertEqual(waiting_note({"选择理由": ["吃掉卒", "向前推进"]}), "")
         self.assertEqual(waiting_note({"最可能应手": "黑方 车1平6",

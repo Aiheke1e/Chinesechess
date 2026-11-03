@@ -144,6 +144,8 @@ class CommentaryStyle:
         self.recent_families = deque(maxlen=4)
         self.spoken_families = deque(maxlen=4)
         self.turn = 0
+        self.move_calls = 0
+        self.last_move_flourish = -3
 
     def pick(self, scope, options, *, required=False):
         with self.lock:
@@ -199,6 +201,11 @@ class CommentaryStyle:
                 return self.pick("应手跟进", options, required=True)
         if kind not in ("关键走棋解说", "我方走棋播报", "我方走棋解说"):
             return text
+        with self.lock:
+            self.move_calls += 1
+            call = self.move_calls
+            if call - self.last_move_flourish < 3:
+                return text
         notation = str(payload.get("我方计划走法") or "")
         move = re.sub(r"^(红方|黑方)\s+", "", notation)
         if not re.match(r"[车马炮兵卒相象仕士帅将].+[进退平]", move) or len(text) > 30:
@@ -219,7 +226,11 @@ class CommentaryStyle:
             scene = {"马": "马", "车": "车", "炮": "炮", "兵": "兵卒", "卒": "兵卒",
                      "相": "相象", "象": "相象", "仕": "仕士", "士": "仕士", "帅": "帅将", "将": "帅将"}.get(move[:1], "")
         joke = self.pick(scene, FLOURISHES.get(scene, ()))
-        return text.rstrip("。") + "。" + joke if joke and len(text) + len(joke) <= 46 else text
+        if joke and len(text) + len(joke) <= 46:
+            with self.lock:
+                self.last_move_flourish = call
+            return text.rstrip("。") + "。" + joke
+        return text
 
     def opening(self, name, fallback, persona):
         if name not in OPENING_LINES:
