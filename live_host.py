@@ -24,7 +24,8 @@ from glm_client import DEFAULT_MODEL, respond
 from opening_library import load_opening_library
 from commentary_text import complete_note, connected_move_note, waiting_note, confirmed_win_note
 from mate_patterns import build_finisher, confirmed_finisher_note
-from chat_selection import ChatSelector
+from chat_selection import ChatSelector, viewer_key
+from interaction_text import welcome_line, spoken_reply
 
 
 HERE = Path(__file__).resolve().parent
@@ -33,6 +34,7 @@ CHESS_EVENTS = HERE / "work" / "events.jsonl"
 LIVE_LOG = HERE / "work" / "live_events.jsonl"
 SPEECH_STARTED = HERE / "work" / "speech_started.json"
 SPEECH_PREPARING = HERE / "work" / "speech_preparing.json"
+SPEECH_PRIORITY = HERE / "work" / "speech_priority.json"
 CHESS_SPEECH_KINDS = {
     "我方走棋播报", "我方走棋解说", "对手走棋播报", "对手走棋解说",
     "关键走棋解说", "关键应手解说", "等待期长讲解", "应手预判",
@@ -228,6 +230,11 @@ class SpeechPipeline:
         self.playback_state_lock = threading.Lock()
         self.current_playback = None
         self.active_chat = False
+        self.active_chat_payload = None
+        self.active_chat_cancel_epoch = 0
+        self.chat_priority_total = 0.0
+        self.chat_priority_started = None
+        self.high_mates = 0
         self.chat_epoch = 0
         self.idle_lock = threading.Lock()
         self.idle_state = None
@@ -253,6 +260,8 @@ class SpeechPipeline:
             return False
         if kind in CHESS_SPEECH_KINDS:
             payload = {**payload, "_chess_epoch": getattr(self, "chess_epoch", 0)}
+        if kind == "欢迎观众":
+            direct_text = welcome_line(payload.get("观众"))
         with self.condition:
             if self.closed.is_set() or getattr(self, "suspended", False):
                 return False
@@ -260,7 +269,19 @@ class SpeechPipeline:
                 if self.active_chat or any(job[4] == kind for job in self.jobs):
                     return False
                 payload = {**payload, "_chat_epoch": self.chat_epoch}
+                self.active_chat = True
+                self.active_chat_payload = payload
+                self.active_chat_cancel_epoch = self.cancel_epoch
+                self.chat_priority_started = time.monotonic()
             self.sequence += 1
+            job = (priority, self.sequence, time.monotonic(), self.cancel_epoch,
+                   kind, payload, direct_text)
+            if kind == "弹幕回复":
+                self._mark_chat_priority(True)
+                threading.Thread(target=self._chat_worker, args=(job,),
+                                 name="audience-reply", daemon=True).start()
+                self.notify("queued", "弹幕回复已加入播报队列", {"kind": kind, **payload})
+                return True
             # Once our next move is known, any queued older chess narration is
             # already behind the board.  Keep chat/gifts, but let the latest
             # move replace stale chess play-by-play.
@@ -269,7 +290,8 @@ class SpeechPipeline:
                              if job[4] not in CHESS_SPEECH_KINDS]
                 heapq.heapify(self.jobs)
             heapq.heappush(self.jobs, (
-                priority, self.sequence, time.monotonic(), self.cancel_epoch,
+                -1 if self._is_mate(kind, payload) else max(2, priority),
+                self.sequence, time.monotonic(), self.cancel_epoch,
                 kind, payload, direct_text))
             # Keep important jobs and cap backlog so speech never trails minutes behind.
             if len(self.jobs) > 12:
@@ -282,15 +304,111 @@ class SpeechPipeline:
 
     def can_reply_chat(self):
         with self.condition:
-            return (not self.closed.is_set() and not getattr(self, "suspended", False)
-                    and not self.active_chat and not any(job[4] == "弹幕回复" for job in self.jobs)
-                    and getattr(self, "current_playback", None) != "high"
-                    and not self.prepared)
+            available = (not self.closed.is_set() and not getattr(self, "suspended", False)
+                         and not self.active_chat)
+        return available and not self._mate_busy()
+
+    @staticmethod
+    def _is_mate(kind, payload=None):
+        return kind == "绝杀长解说" or bool((payload or {}).get("绝杀长播报"))
+
+    def _mate_busy(self):
+        with self.condition:
+            queued = (self.high_mates or self._is_mate(getattr(self, "active_kind", None))
+                      or self._is_mate(getattr(self, "current_kind", None))
+                      or any(self._is_mate(job[4], job[5]) for job in self.jobs))
+        with self.prepared_lock:
+            prepared = any(self._is_mate(state.get("kind")) for state in self.prepared.values())
+        return bool(queued or prepared)
+
+    def _chat_busy(self):
+        with self.condition:
+            return bool(self.active_chat and self.active_chat_cancel_epoch == self.cancel_epoch
+                        and self._chat_valid("弹幕回复", self.active_chat_payload or {}))
+
+    def _has_turn(self, kind, payload):
+        if self._is_mate(kind, payload):
+            return True
+        return not self._mate_busy() and (kind == "弹幕回复" or not self._chat_busy())
+
+    def _state_live(self, state):
+        return (state.get("approved", True) is not False and state["epoch"] == self.cancel_epoch
+                and not self.closed.is_set() and not getattr(self, "suspended", False)
+                and not (state.get("cancel") and state["cancel"].is_set())
+                and state.get("chess_epoch", self.chess_epoch) == self.chess_epoch)
+
+    def _wait_turn(self, kind, payload, state):
+        state.setdefault("priority_clock", self._chat_priority_clock())
+        while self._state_live(state) and self._chat_valid(kind, payload):
+            now = time.monotonic()
+            # Pause the ordinary move's start timeout only for the chat turn,
+            # with a bounded budget. Never acknowledge an unplayed move.
+            clock = self._chat_priority_clock()
+            if kind != "弹幕回复" and not self._is_mate(kind, payload):
+                extension = min(max(0, clock - state["priority_clock"]),
+                                max(0, 45 - state.get("priority_delay", 0)))
+                if "deadline" in state:
+                    state["deadline"] += extension
+                state["priority_delay"] = state.get("priority_delay", 0) + extension
+            state["priority_clock"] = clock
+            if now >= state.get("deadline", float("inf")):
+                return False
+            if self._has_turn(kind, payload):
+                return True
+            if kind != "弹幕回复" and self._mate_busy():
+                return False
+            self.closed.wait(.03)
+        return False
+
+    def _play_in_turn(self, audio, payload, state, text, kind, mode, acknowledge=False):
+        while self._wait_turn(kind, payload, state):
+            if not self.playback_lock.acquire(timeout=.03):
+                continue
+            try:
+                if not self._has_turn(kind, payload):
+                    continue
+                with self.playback_state_lock:
+                    self.current_playback, self.current_kind = mode, kind
+                try:
+                    played = self._play_synced_audio(audio, payload, state, text, kind, acknowledge)
+                    if played or state.get("audio_started") or not self._state_live(state):
+                        return played
+                finally:
+                    with self.playback_state_lock:
+                        self.current_playback, self.current_kind = None, None
+            finally:
+                self.playback_lock.release()
+        return False
+
+    def _mark_chat_priority(self, active):
+        self._write_speech_marker(SPEECH_PRIORITY, {"active": bool(active), "created": time.time()})
+
+    def _chat_priority_clock(self):
+        with self.condition:
+            return self.chat_priority_total + (time.monotonic() - self.chat_priority_started
+                if self.chat_priority_started is not None else 0)
+
+    def _finish_chat_priority(self):
+        with self.condition:
+            if self.chat_priority_started is not None:
+                self.chat_priority_total += time.monotonic() - self.chat_priority_started
+                self.chat_priority_started = None
+            self._mark_chat_priority(False)
+
+    def _chat_worker(self, job):
+        try:
+            self._run_job(job)
+        finally:
+            with self.condition:
+                self._finish_chat_priority()
+                self.active_chat = False
+                self.active_chat_payload = None
+                self.condition.notify_all()
 
     def activity_snapshot(self):
         with self.condition:
             queued = len(self.jobs)
-            working = bool(getattr(self, "active_kind", None))
+            working = bool(getattr(self, "active_kind", None) or self.active_chat)
         with self.prepared_lock:
             preparing = len(self.prepared)
         with self.playback_state_lock:
@@ -303,14 +421,15 @@ class SpeechPipeline:
             self.chat_epoch += 1
             self.jobs = [job for job in self.jobs if job[4] != "弹幕回复"]
             heapq.heapify(self.jobs)
+            self._finish_chat_priority()
 
     def _chat_valid(self, kind, payload):
-        return (kind != "弹幕回复" or (
-            payload.get("_chat_epoch", self.chat_epoch) == self.chat_epoch
-            and time.monotonic() <= payload.get("_expires_at", float("inf"))))
+        return (time.monotonic() <= payload.get("_expires_at", float("inf"))
+                and (kind != "弹幕回复" or payload.get("_chat_epoch", self.chat_epoch) == self.chat_epoch))
 
     def clear(self, stop_audio=False):
         self.cancel_idle()
+        self._finish_chat_priority()
         with self.condition:
             self.jobs.clear()
             self.cancel_epoch += 1
@@ -415,13 +534,14 @@ class SpeechPipeline:
                          and not (state.get("cancel") and state["cancel"].is_set())
                          and state.get("chess_epoch", self.chess_epoch) == self.chess_epoch
                          and (kind != "弹幕回复" or
-                              (payload.get("_chat_epoch", self.chat_epoch) == self.chat_epoch
-                               and not self.prepared)))
+                              payload.get("_chat_epoch", self.chat_epoch) == self.chat_epoch)
+                         and self._has_turn(kind, payload))
         if (not valid() or not self._chat_valid(kind, payload)
                 or time.monotonic() >= state.get("deadline", float("inf"))):
             return False
         duration = self._audio_duration(audio)
         winsound.PlaySound(str(audio), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+        state["audio_started"] = True
         with self.playback_state_lock:
             self.audio_active = True
         try:
@@ -511,7 +631,7 @@ class SpeechPipeline:
         if not token or not self._ensure_worker():
             return False
         state = {"decision": threading.Event(), "approved": None,
-                 "epoch": self.cancel_epoch, "chess_epoch": self.chess_epoch}
+                 "epoch": self.cancel_epoch, "chess_epoch": self.chess_epoch, "kind": kind}
         with self.prepared_lock:
             if self.closed.is_set() or getattr(self, "suspended", False):
                 return False
@@ -554,18 +674,12 @@ class SpeechPipeline:
                 return
             if audio and self.settings.speech_enabled:
                 self.cancel_idle()
-                with self.high_speech_lock:
-                    with self.playback_lock:
-                        with self.playback_state_lock:
-                            self.current_playback = "high"
-                        try:
-                            if not self._play_synced_audio(audio, payload, state, text, kind):
-                                return
-                        finally:
-                            with self.playback_state_lock:
-                                self.current_playback = None
+                if not self._play_in_turn(audio, payload, state, text, kind, "high", acknowledge=True):
+                    return
                 self._prune_audio(Path(audio).parent)
             else:
+                if not self._wait_turn(kind, payload, state):
+                    return
                 self.notify("reply", text, {"kind": kind, **payload})
                 self.notify("speech_status", "仅显示文本，未启动语音", payload)
             self.history.extend([
@@ -602,6 +716,7 @@ class SpeechPipeline:
                 state = self.prepared.get(str(token))
                 if state is not None:
                     state["deadline"] = float(deadline)
+                    state["priority_clock"] = self._chat_priority_clock()
         return self._decide_move(token, True)
 
     def discard_move(self, token):
@@ -618,6 +733,9 @@ class SpeechPipeline:
         payload = dict(payload)
         if kind in CHESS_SPEECH_KINDS:
             payload["_chess_epoch"] = self.chess_epoch
+        if self._is_mate(kind, payload):
+            with self.condition:
+                self.high_mates += 1
         threading.Thread(
             target=self._play_high_worker,
             args=(kind, dict(payload), text, self.cancel_epoch),
@@ -629,30 +747,26 @@ class SpeechPipeline:
         try:
             if epoch != self.cancel_epoch or self.closed.is_set():
                 return
+            state = {"epoch": epoch, "approved": True}
+            if kind in CHESS_SPEECH_KINDS:
+                state["chess_epoch"] = payload.get("_chess_epoch", self.chess_epoch)
             if not self.settings.speech_enabled:
+                if not self._wait_turn(kind, payload, state):
+                    return
                 self.notify("reply", text, {"kind": kind, **payload})
                 self.notify("speech_status", "高优走步仅显示文本", payload)
                 return
             self.notify("speech_status", "正在生成高优走步语音", payload)
             audio = self.tts(text, self.settings.voice)
-            state = {"epoch": epoch, "approved": True}
-            if kind in CHESS_SPEECH_KINDS:
-                state["chess_epoch"] = payload.get("_chess_epoch", self.chess_epoch)
-            with self.high_speech_lock:
-                with self.playback_lock:
-                    with self.playback_state_lock:
-                        self.current_playback = "high"
-                    try:
-                        if not self._play_synced_audio(audio, payload, state, text, kind,
-                                                       acknowledge=False):
-                            return
-                    finally:
-                        with self.playback_state_lock:
-                            self.current_playback = None
+            if not self._play_in_turn(audio, payload, state, text, kind, "high"):
+                return
             self._prune_audio(Path(audio).parent)
         except Exception as error:
             self.notify("error", str(error)[:200], {"kind": kind})
         finally:
+            if self._is_mate(kind, payload):
+                with self.condition:
+                    self.high_mates = max(0, self.high_mates - 1)
             self.notify("speech_status", "等待下一条内容", payload)
 
     def prepare_idle(self, payload, kind="等待期长讲解", direct_text=None):
@@ -701,20 +815,12 @@ class SpeechPipeline:
                 return
             if audio and self.settings.speech_enabled:
                 self.notify("speech_status", f"等待落子，播放{kind}", payload)
-                with self.playback_lock:
-                    if state["cancel"].is_set():
-                        return
-                    with self.playback_state_lock:
-                        self.current_playback = "low"
-                    try:
-                        if not self._play_synced_audio(audio, payload, state, text, kind,
-                                                       acknowledge=False):
-                            return
-                    finally:
-                        with self.playback_state_lock:
-                            self.current_playback = None
+                if not self._play_in_turn(audio, payload, state, text, kind, "low"):
+                    return
                 self._prune_audio(Path(audio).parent)
             else:
+                if not self._wait_turn(kind, payload, state):
+                    return
                 self.notify("reply", text, {"kind": kind, **payload})
                 self.notify("speech_status", f"{kind}仅显示文本", payload)
             self.history.extend([
@@ -775,74 +881,61 @@ class SpeechPipeline:
                     break
                 if not ready or not self.jobs:
                     continue
-                (priority, sequence, created, epoch, kind, payload,
-                 direct) = heapq.heappop(self.jobs)
-                self.active_chat = kind == "弹幕回复"
-                self.active_kind = kind
-            if epoch != self.cancel_epoch or getattr(self, "suspended", False):
-                self.active_chat = False
-                self.active_kind = None
-                continue
-            if (kind in CHESS_SPEECH_KINDS and
-                    (time.monotonic() - created > 10.0 or
-                     payload.get("_chess_epoch", 0) != getattr(self, "chess_epoch", 0))):
-                self.notify("speech_status", "已跳过过期棋局讲解", payload)
-                self.active_kind = None
-                continue
-            chat_completed = False
+                job = heapq.heappop(self.jobs)
+                self.active_kind = job[4]
             try:
-                if not self._chat_valid(kind, payload):
-                    continue
-                self.notify("speech_status", f"正在组织{kind}话术", payload)
-                text = direct or self.llm(
-                    kind, {"主播设定": self.settings.persona, **payload},
-                    list(self.history), model=self.settings.model)
-                text = self._first_person_text(text, payload)[:300]
-                if not text:
-                    continue
-                if not self._chess_line_valid(text, kind, payload):
-                    continue
-                if epoch != self.cancel_epoch or not self._chat_valid(kind, payload):
-                    continue
-                if (kind in CHESS_SPEECH_KINDS and
-                        payload.get("_chess_epoch", 0) != self.chess_epoch):
-                    continue
-                if self.settings.speech_enabled:
-                    self.notify("speech_status", "正在生成百炼语音", payload)
-                    audio = self.tts(text, self.settings.voice)
-                    state = {"epoch": epoch, "approved": True}
-                    if kind in CHESS_SPEECH_KINDS:
-                        state["chess_epoch"] = payload.get("_chess_epoch", 0)
-                    with self.playback_lock:
-                        with self.playback_state_lock:
-                            self.current_playback = "low" if kind in CHESS_SPEECH_KINDS else "interaction"
-                        try:
-                            if not self._play_synced_audio(audio, payload, state, text, kind,
-                                                           acknowledge=False):
-                                continue
-                        finally:
-                            with self.playback_state_lock:
-                                self.current_playback = None
-                    self._prune_audio(Path(audio).parent)
-                else:
-                    self.notify("reply", text, {"kind": kind, **payload})
-                    self.notify("speech_status", "仅文本模式：未调用 TTS", payload)
-                chat_completed = True
+                self._run_job(job)
+            finally:
+                with self.condition:
+                    self.active_kind = None
+
+    def _run_job(self, job):
+        priority, sequence, created, epoch, kind, payload, direct = job
+        completed = False
+        state = {"epoch": epoch, "approved": True}
+        if kind in CHESS_SPEECH_KINDS:
+            state["chess_epoch"] = payload.get("_chess_epoch", 0)
+        try:
+            if not self._state_live(state) or not self._chat_valid(kind, payload):
+                return
+            if kind in CHESS_SPEECH_KINDS and time.monotonic() - created > 10:
+                return
+            if not self._wait_turn(kind, payload, state):
+                return
+            self.notify("speech_status", f"正在组织{kind}话术", payload)
+            history = list(self.history) if kind in CHESS_SPEECH_KINDS else []
+            text = direct or self.llm(kind, {"主播设定": self.settings.persona, **payload},
+                                      history, model=self.settings.model)
+            text = self._first_person_text(text, payload)[:300]
+            if kind == "弹幕回复":
+                text = spoken_reply(text, payload=payload)
+            if not text or not self._chess_line_valid(text, kind, payload):
+                return
+            if not self._state_live(state) or not self._chat_valid(kind, payload):
+                return
+            if self.settings.speech_enabled:
+                self.notify("speech_status", "正在生成百炼语音", payload)
+                audio = self.tts(text, self.settings.voice)
+                mode = "low" if kind in CHESS_SPEECH_KINDS else "interaction"
+                if not self._play_in_turn(audio, payload, state, text, kind, mode):
+                    return
+                self._prune_audio(Path(audio).parent)
+            else:
+                if not self._wait_turn(kind, payload, state):
+                    return
+                self.notify("reply", text, {"kind": kind, **payload})
+                self.notify("speech_status", "仅文本模式：未调用 TTS", payload)
+            completed = True
+            if kind in CHESS_SPEECH_KINDS:
                 self.history.extend([{"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
                                      {"role": "assistant", "content": text}])
-                self.notify("speech_status", "等待下一条内容", payload)
-                deadline = time.monotonic() + max(0.0, float(self.settings.cooldown))
-                while not self.closed.is_set() and time.monotonic() < deadline:
-                    time.sleep(0.05)
-            except Exception as error:
-                self.notify("error", str(error)[:200], {"kind": kind})
-            finally:
-                if kind == "弹幕回复":
-                    self.notify("interaction_done", "本条弹幕互动结束",
-                                {**payload, "completed": chat_completed})
-                with self.condition:
-                    self.active_chat = False
-                    self.active_kind = None
+            self.notify("speech_status", "等待下一条内容", payload)
+            self.closed.wait(max(0.0, float(self.settings.cooldown)))
+        except Exception as error:
+            self.notify("error", str(error)[:200], {"kind": kind})
+        finally:
+            if kind == "弹幕回复":
+                self.notify("interaction_done", "本条弹幕互动结束", {**payload, "completed": completed})
 
     @staticmethod
     def _prune_audio(folder, keep=20):
@@ -1969,11 +2062,12 @@ class LiveController:
             self.pipeline.submit(1, "弹幕回复", {"观众": user, "弹幕": text,
                                  "互动标识": f"test-{time.time_ns()}"})
         elif (kind == "member" and self.settings.welcome_enabled and
-              (event.get("user_id") or user) not in self.welcomed and
-              now - self.last_welcome >= 8):
-            self.welcomed.add(event.get("user_id") or user)
+              viewer_key(event) not in self.welcomed and
+              now - self.last_welcome >= 60 and self.pipeline.can_reply_chat()):
+            self.welcomed.add(viewer_key(event))
             self.last_welcome = now
-            self.pipeline.submit(4, "欢迎观众", {"观众": user})
+            self.pipeline.submit(4, "欢迎观众", {"观众": user,
+                                 "_expires_at": now + 10}, direct_text=welcome_line(user))
 
     def _publish_chat_stats(self, force=False):
         now = time.monotonic()
@@ -1992,6 +2086,7 @@ class LiveController:
             if selected:
                 self.pipeline.submit(3, "弹幕回复", {
                     "观众": selected["user"], "弹幕": selected["text"],
+                    "弹幕编号": selected["id"],
                     "互动标识": f"chat-{time.time_ns()}",
                     "_expires_at": selected["received"] + self.chat_selector.MAX_AGE})
 

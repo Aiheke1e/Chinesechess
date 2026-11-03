@@ -135,7 +135,7 @@ class RoomFeedUITests(unittest.TestCase):
         self.assertIn("谢谢小李的小心心。", speech)
         self.assertIn("欢迎棋友。", speech)
         self.assertIn("车九平二。", speech)
-        self.assertNotIn("炮为什么要走这里？", speech)
+        self.assertIn("弹幕：炮为什么要走这里？", speech)
         self.assertEqual(self.panel.interaction_user.get(), "小王")
         self.assertFalse(self.panel.log_visible["room"])
         self.panel._receive_live_event({"kind": "interaction_done", "data": {

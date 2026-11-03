@@ -6,6 +6,11 @@ import threading
 import time
 
 
+def viewer_key(event):
+    # Douyin may give many masked viewers the same placeholder numeric ID.
+    return f"{event.get('user_id') or ''}:{event.get('user') or '观众'}"
+
+
 class ChatSelector:
     MAX_PENDING = 60
     MAX_AGE = 25.0
@@ -90,7 +95,7 @@ class ChatSelector:
             if len(self.recent_text) > 300:
                 self.recent_text.pop(next(iter(self.recent_text)))
             user = str(event.get("user") or "观众")[:30]
-            key = str(event.get("user_id") or user)
+            key = viewer_key({**event, "user": user})
             self.pending.pop(key, None)
             self.pending[key] = {"user": user, "user_id": key, "text": text,
                                  "received": now, "id": str(event.get("id") or "")}

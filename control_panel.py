@@ -1075,7 +1075,10 @@ class ControlPanel:
         # Provenance belongs to this speech job, never to the newer live board.
         meta = ControlPanel._commentary_log_label(label, data)
         timestamp = str(record.get("time") or "").strip()
-        return (f"{timestamp}  ·  {meta}" if timestamp else meta), text
+        header = f"{timestamp}  ·  {meta}" if timestamp else meta
+        if kind == "弹幕回复" and data.get("弹幕"):
+            header += "\n弹幕：" + str(data["弹幕"])
+        return header, text
 
     def append_speech(self, record):
         entry = self._speech_log_entry(record)

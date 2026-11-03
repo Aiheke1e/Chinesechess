@@ -28,6 +28,7 @@ CFG_PATH = os.path.join(HERE, "player_config.json")
 LIVE_CFG_PATH = os.path.join(HERE, "live_config.json")
 SPEECH_PREPARING_PATH = os.path.join(HERE, "work", "speech_preparing.json")
 SPEECH_STARTED_PATH = os.path.join(HERE, "work", "speech_started.json")
+SPEECH_PRIORITY_PATH = os.path.join(HERE, "work", "speech_priority.json")
 DEFAULT_CFG = {
     "my_color": "r",
     "orientation": "auto",
@@ -105,8 +106,18 @@ def _speech_enabled():
         raise SpeechSyncError("无法核对语音开关，未发送点击") from error
 
 
+def _chat_priority_active():
+    try:
+        with open(SPEECH_PRIORITY_PATH, encoding="utf-8") as stream:
+            marker = json.load(stream)
+        return bool(marker.get("active") and 0 <= time.time() - float(marker.get("created", 0)) < 45)
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def wait_for_speech_start(token, plan_timeout=2.0, audio_timeout=15.0,
-                          cancelled=None, deadline=None, finish_timeout=40.0):
+                          cancelled=None, deadline=None, finish_timeout=40.0,
+                          priority_timeout=45.0):
     """Require matching audio start; verified finishers must finish before input."""
     if token.endswith(":sandbox"):
         return False
@@ -135,7 +146,16 @@ def wait_for_speech_start(token, plan_timeout=2.0, audio_timeout=15.0,
     wait_finished = bool(plan.get("wait_finished"))
     completion_deadline = None
     heartbeat_at = time.monotonic() + 1.0
-    while time.monotonic() < (completion_deadline or deadline):
+    last_check, priority_delay = time.monotonic(), 0.0
+    while True:
+        now = time.monotonic()
+        if not wait_finished and _chat_priority_active():
+            extension = min(now - last_check, max(0, priority_timeout - priority_delay))
+            deadline += extension
+            priority_delay += extension
+        last_check = now
+        if now >= (completion_deadline or deadline):
+            break
         if cancelled and cancelled():
             return False
         if not _speech_enabled():
@@ -149,8 +169,9 @@ def wait_for_speech_start(token, plan_timeout=2.0, audio_timeout=15.0,
                     return True
                 if completion_deadline is None:
                     completion_deadline = time.monotonic() + max(0.0, finish_timeout)
-        if wait_finished and time.monotonic() >= heartbeat_at:
-            write_runtime_status("speech_waiting", "绝杀收尾播报中，说完后落子",
+        if time.monotonic() >= heartbeat_at:
+            write_runtime_status("speech_waiting", "绝杀收尾播报中，说完后落子" if wait_finished
+                                 else "弹幕互动优先，等待本手播报" if priority_delay else "等待本手播报确认",
                                  details={"speech_token": token})
             heartbeat_at = time.monotonic() + 1.0
         time.sleep(0.03)

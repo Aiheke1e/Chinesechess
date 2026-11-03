@@ -180,10 +180,11 @@ class SelectedReplyTests(unittest.TestCase):
         finally:
             pipeline.close()
 
-    def test_pending_own_move_interrupts_chat_audio_without_marking_it_completed(self):
+    def test_only_pending_finisher_interrupts_chat_audio(self):
         pipeline = SpeechPipeline(LiveSettings(speech_enabled=True), Mock())
         def start(*args):
-            pipeline.prepared["new-move"] = {"decision": threading.Event(), "approved": None}
+            pipeline.prepared["new-move"] = {"decision": threading.Event(), "approved": None,
+                                              "kind": "绝杀长解说"}
         with patch("live_host.winsound.PlaySound", side_effect=start), patch.object(
                 pipeline, "_audio_duration", return_value=0.1):
             self.assertFalse(pipeline._play_synced_audio("sample.wav", {"观众": "小王"},
