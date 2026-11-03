@@ -2369,7 +2369,7 @@ class ControlPanel:
                         self.audience_text.set(f"在线 {count:,} 人" if isinstance(count, int)
                                                else "在线人数 · 待获取")
                         self.chat_sampling_text.set(
-                            f"自动抽选 · 约每 {stats.get('interval', 8)} 秒最多回复一条 · "
+                            f"自动抽选 · 约每 {stats.get('interval', 15)} 秒最多回复一条 · "
                             f"弹幕 {stats.get('chat_rate', 0):g} 条/秒")
                         self._queue_monitor()
                     elif kind == "interaction_done":

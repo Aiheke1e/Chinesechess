@@ -26,6 +26,7 @@ from commentary_text import complete_note, connected_move_note, waiting_note, co
 from mate_patterns import build_finisher, confirmed_finisher_note, finisher_copy, MATE_OPENINGS
 from chat_selection import ChatSelector, viewer_key
 from interaction_text import welcome_line, spoken_reply, gift_reply
+from interaction_chess import ChessChatContext, grounded_reply
 from commentary_style import CommentaryStyle, DEFAULT_PERSONA, LEGACY_PERSONAS, piece_amount, humor_enabled
 from stream_brand import (HOST_NAME, CHANNEL_NAME, DEFAULT_INTRODUCTION,
                           LEGACY_INTRODUCTIONS, migrate_host_identity)
@@ -961,7 +962,7 @@ class SpeechPipeline:
             self.notify("speech_status", f"正在组织{kind}话术", payload)
             history = list(self.history) if kind in CHESS_SPEECH_KINDS else []
             style_hint = ({"最近用过的比喻": self.style.topics()} if kind in INTERACTION_SPEECH_KINDS else {})
-            text = direct or self.llm(kind, {"主播设定": self.settings.persona, **style_hint, **payload},
+            text = direct or payload.get("_grounded_reply") or self.llm(kind, {"主播设定": self.settings.persona, **style_hint, **payload},
                                       history, model=self.settings.model)
             text = self._first_person_text(text, payload)[:300]
             text = self.style.decorate(kind, text, payload, self.settings.persona)
@@ -1060,6 +1061,7 @@ class LiveController:
         self.gift_timers = {}
         self.pipeline = SpeechPipeline(self.settings, self._notify)
         self.speech_style = self.pipeline.style
+        self.chat_chess_context = ChessChatContext()
         self.tailer = ChessEventTailer(CHESS_EVENTS, self.submit_chess)
         self.tailer.start()
         self.chat_selector = ChatSelector()
@@ -1128,6 +1130,9 @@ class LiveController:
     def stop_chess_tasks(self):
         """Stop board narration without changing room connection or interaction."""
         self.chess_suspended = True
+        context = getattr(self, "chat_chess_context", None)
+        if context is not None:
+            context.reset()
         self.pipeline.pause_chess()
         self.commentary_analyses = {}
         self.last_confirmed_analysis = None
@@ -1593,6 +1598,12 @@ class LiveController:
         return self._speech_flair().pick("获胜收官", variants, required=True)
 
     def submit_chess(self, event):
+        # Read-only snapshots never start recognition, search or a board action.
+        if not getattr(self, "chess_suspended", False):
+            context = getattr(self, "chat_chess_context", None)
+            if context is None:
+                context = self.chat_chess_context = ChessChatContext()
+            context.observe(event)
         if getattr(self, "suspended", False) or getattr(self, "chess_suspended", False):
             return
         if not getattr(getattr(self, "settings", None),
@@ -2073,9 +2084,13 @@ class LiveController:
             self._queue_gift(user, event.get("gift") or text,
                              event.get("count", 1), force=force)
         elif kind == "chat":
-            self.pipeline.submit(1, "弹幕回复", {"观众": user, "弹幕": text,
-                                 "测试输入": bool(force),
-                                 "互动标识": f"test-{time.time_ns()}"})
+            payload = {"观众": user, "弹幕": text, "测试输入": bool(force),
+                       "互动标识": f"test-{time.time_ns()}"}
+            context = getattr(self, "chat_chess_context", None)
+            answer = grounded_reply(text, context.snapshot() if context else {})
+            if answer is not None:
+                payload["_grounded_reply"] = answer
+            self.pipeline.submit(1, "弹幕回复", payload)
         elif (kind == "member" and self.settings.welcome_enabled and
               viewer_key(event) not in self.welcomed and
               now - self.last_welcome >= 60 and self.pipeline.can_reply_chat()):
@@ -2100,11 +2115,16 @@ class LiveController:
                 return
             selected = self.chat_selector.take()
             if selected:
-                self.pipeline.submit(3, "弹幕回复", {
+                payload = {
                     "观众": selected["user"], "弹幕": selected["text"],
                     "弹幕编号": selected["id"],
                     "互动标识": f"chat-{time.time_ns()}",
-                    "_expires_at": selected["received"] + self.chat_selector.MAX_AGE})
+                    "_expires_at": selected["received"] + self.chat_selector.MAX_AGE}
+                context = getattr(self, "chat_chess_context", None)
+                answer = grounded_reply(selected["text"], context.snapshot() if context else {})
+                if answer is not None:
+                    payload["_grounded_reply"] = answer
+                self.pipeline.submit(3, "弹幕回复", payload)
 
     def _chat_loop(self):
         while not self.chat_closed.wait(0.5):

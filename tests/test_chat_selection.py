@@ -34,20 +34,20 @@ class ChatSelectionTests(unittest.TestCase):
 
     def test_online_population_and_actual_chat_rate_both_control_interval(self):
         self.selector.update_online(12)
-        self.assertEqual(self.selector.stats()["interval"], 8)
+        self.assertEqual(self.selector.stats()["interval"], 15)
         self.selector.update_online(120)
-        self.assertEqual(self.selector.stats()["interval"], 12)
+        self.assertEqual(self.selector.stats()["interval"], 18)
         self.selector.update_online(1200)
-        self.assertEqual(self.selector.stats()["interval"], 20)
+        self.assertEqual(self.selector.stats()["interval"], 24)
         self.selector.update_online(12000)
         self.assertEqual(self.selector.stats()["interval"], 30)
         self.selector.update_online(12)
         for number in range(40):
             self.selector.offer(self.event(number))
-        self.assertEqual(self.selector.stats()["interval"], 20)
+        self.assertEqual(self.selector.stats()["interval"], 24)
         self.now += 46
         self.assertIsNone(self.selector.stats()["online"])
-        self.assertEqual(self.selector.stats()["interval"], 8)
+        self.assertEqual(self.selector.stats()["interval"], 15)
         self.assertFalse(self.selector.update_online(-1))
         self.assertFalse(self.selector.update_online("invalid"))
 
@@ -60,7 +60,7 @@ class ChatSelectionTests(unittest.TestCase):
         self.assertEqual(len(self.selector.pending), 1)
         self.now += 2
         self.assertEqual(self.selector.take()["text"], "这匹马怎么走？")
-        self.now += 9
+        self.now += 16
         self.selector.offer(self.event(5, "小王", "这盘现在谁占优势？"))
         self.now += 2
         self.assertIsNone(self.selector.take())

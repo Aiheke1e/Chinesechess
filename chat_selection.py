@@ -4,6 +4,7 @@ import random
 import re
 import threading
 import time
+from interaction_chess import incomplete_comment
 
 
 def viewer_key(event):
@@ -56,12 +57,12 @@ class ChatSelector:
         self._prune(now)
         online = self.online if now - self.online_at <= 45 else None
         rate = sum(count for _, count in self.arrivals) / 15
-        interval = 8 if online is None or online < 50 else (
-            12 if online < 500 else 20 if online < 5000 else 30)
+        interval = 15 if online is None or online < 50 else (
+            18 if online < 500 else 24 if online < 5000 else 30)
         if rate >= 10:
             interval = max(interval, 30)
         elif rate >= 2:
-            interval = max(interval, 20)
+            interval = max(interval, 24)
         return {"online": online, "chat_rate": round(rate, 1), "interval": interval}
 
     def stats(self):
@@ -84,7 +85,7 @@ class ChatSelector:
             # Keep meaningful text, not long advertisements or pure emoji/666.
             content = re.sub(r"\[[^\]\n]{1,12}\]", "", text)
             meaningful = re.sub(r"[^\w\u4e00-\u9fff]", "", content)
-            if (len(meaningful) < 2 or len(text) > 160
+            if (len(meaningful) < 2 or len(text) > 160 or incomplete_comment(text)
                     or re.search(r"https?://|www\.", text, re.I)
                     or re.fullmatch(r"[哈呵嘿哦啊嗯好棒赞689]+", meaningful)
                     or re.search(r"(.)\1{5,}", meaningful)):
@@ -112,10 +113,10 @@ class ChatSelector:
                 return None
             rows = [row for key, row in self.pending.items()
                     if now - row["received"] >= 1.5 and
-                    now - self.recent_users.get(key, -1e9) >= min(90, stats["interval"] * 2)]
+                    now - self.recent_users.get(key, -1e9) >= max(45, min(90, stats["interval"] * 2))]
             if not rows:
                 return None
-            weights = [2 if re.search(r"[?？]|为什么|怎么|能不能|请问", row["text"]) else 1
+            weights = [5 if re.search(r"[?？]|为什么|怎么|能不能|请问|没看懂|漏杀|才对|早该", row["text"]) else 1
                        for row in rows]
             picked = self.rng.choices(rows, weights=weights, k=1)[0]
             self.pending.clear()  # Unselected comments never accumulate into a speech backlog.

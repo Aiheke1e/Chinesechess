@@ -82,7 +82,7 @@ def _defended(board, origin):
     side = color_of(board.sq[origin])
     targets = set()
     for index, piece in enumerate(board.sq):
-        if index == origin or not piece or color_of(piece) != side or piece.upper() not in "RNC":
+        if index == origin or not piece or color_of(piece) != side or piece.upper() not in "RNCPAB":
             continue
         probe = board.copy()
         probe.sq[index] = piece.swapcase()

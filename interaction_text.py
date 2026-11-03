@@ -1,5 +1,6 @@
 """Short audience lines without invented nicknames or stage directions."""
 import re
+from interaction_chess import grounded_reply
 
 
 def viewer_address(user):
@@ -21,7 +22,7 @@ def welcome_line(user):
 def reply_hint(comment):
     if re.search(r"怎么领|哪里.*领|哪.*领取|领取|棋谱.*[哪领]|[哪领].*棋谱", comment):
         return "没有提供领取入口、活动或商品信息。不能编造链接、福利、赠品或要求送礼；不清楚领什么就先问清楚。"
-    if re.search(r"气出病|气死|看得.*急|太菜|棋.*[臭烂]|下[得的].*[臭烂]", comment):
+    if re.search(r"气出病|气死|看得.*急|太菜|水平臭|子都看不住|棋.*[臭烂]|下[得的].*[臭烂]", comment):
         return "观众在轻松吐槽或批评，嫌棋下得不好、看得着急。气出病不是人气，不要说棋下得好或变网红；轻松接住意见。"
     if re.search(r"好听|声音.*舒服|歌.*不错", comment):
         return "观众在评价听感，不是在评价走棋。简短接话，不假装自己听过或知道是哪首歌。"
@@ -30,7 +31,13 @@ def reply_hint(comment):
 
 def spoken_reply(text, limit=55, payload=None):
     payload = payload or {}
-    hint = reply_hint(str(payload.get("弹幕") or ""))
+    comment = str(payload.get("弹幕") or "")
+    if payload.get("_grounded_reply"):
+        text = payload["_grounded_reply"]
+    elif (answer := grounded_reply(comment)) is not None:
+        # Chess claims cannot be invented by an unconstrained social reply.
+        text = answer
+    hint = reply_hint(comment)
     if "领取入口" in hint:
         text = ("我这边没有棋谱领取入口，可不能瞎指路，把你领到隔壁去。"
                 if "棋谱" in str(payload.get("弹幕") or "") else "你想领什么？说具体一点，主播还没学会读心术呢。")
@@ -49,17 +56,25 @@ def spoken_reply(text, limit=55, payload=None):
     text = re.sub(r"[\U0001f000-\U0001faff\u2600-\u27ff\ufe0f\u200d]", "", text)
     text = re.sub(r"[\r\n*_#`]+", "", text).strip()
     name = viewer_address(payload.get("观众"))
+    if name and re.search(r"我叫(?:什么|啥)|我的(?:名字|昵称)|看[得不]到我的?(?:名字|昵称)", comment):
+        text = "看到的是你直播间显示的昵称，真实姓名我可不乱猜。"
     address = ""
     if name and text:
-        text = re.sub(r"^" + re.escape(name) + r"(?:[，,:：、！!\s]+|$)", "", text, count=1)
-        text = re.sub(r"^(?:这位棋友|这位朋友|这位观众|棋友|朋友)[，,:：、！!\s]+", "", text)
+        lead = r"(?:(?:哎|欸|嘿|嗨|好嘞|哈哈|好的)[，,:：、！!\s]*)*"
+        address_pattern = re.compile(r"^" + lead + r"(?:" + re.escape(name) +
+            r"|这位棋友|这位朋友|这位观众|棋友|朋友)(?:[，,:：、！!\s]+|$)")
+        for _ in range(3):
+            cleaned = address_pattern.sub("", text, count=1)
+            if cleaned == text:
+                break
+            text = cleaned
         address = name + "，"
     # Keep the actual readable nickname. Exceptionally long names still leave
     # room for a short answer instead of producing just a name and full stop.
     budget = max(18, limit - len(address))
     sentences = re.findall(r"[^。！？!?]+[。！？!?]?", text)
     result = ""
-    for sentence in sentences:
+    for sentence in sentences[:2]:
         if len(result + sentence) > budget:
             break
         result += sentence

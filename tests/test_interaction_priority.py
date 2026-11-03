@@ -93,7 +93,9 @@ class InteractionTextTests(unittest.TestCase):
         request = json.loads(chat.call_args.args[0][0]["content"])
         self.assertEqual(request["输入"]["弹幕"], "出招吧真好听")
         self.assertNotIn("最近对话", request)
-        self.assertEqual(request["称呼"], "李棋友")
+        self.assertEqual(request["称呼"], "由程序添加，正文不添加称呼")
+        self.assertNotIn("观众", request["输入"])
+        self.assertNotIn("李棋友", str(request))
         self.assertNotIn("别的观众", str(chat.call_args.args))
         self.assertEqual(chat.call_args.kwargs["system_prompt"], glm_client.INTERACTION_PROMPT)
 
