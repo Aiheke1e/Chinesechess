@@ -16,6 +16,7 @@ from adb_bridge import (adb, current_package, list_devices, resolution,
                         screenshot, tap, cancellable_adb, TaskCancelled)
 from board import Board, START_FEN
 from broadcast_view import BroadcastView
+from broadcast_layout import chess_window_bounds, popup_position
 from monitoring import MonitorIssues, player_view, speech_view, live_view
 from diagnostics import DIAGNOSTIC_DIR, capture_diagnostic
 from recognizer import recognize_position
@@ -120,7 +121,8 @@ THEME = dict(THEMES["清晰蓝白"])
 
 
 def load_ui_settings():
-    defaults = {"theme": "清晰蓝白", "opacity": 100, "preview_visible": True}
+    defaults = {"theme": "清晰蓝白", "opacity": 100, "preview_visible": True,
+                "broadcast_width": 600, "broadcast_height": 160, "broadcast_sized": False}
     try:
         with open(UI_CFG, encoding="utf-8") as stream:
             saved = json.load(stream)
@@ -132,6 +134,9 @@ def load_ui_settings():
             defaults["theme"] = name
         defaults["opacity"] = max(72, min(100, int(saved.get("opacity", 100))))
         defaults["preview_visible"] = bool(saved.get("preview_visible", True))
+        defaults["broadcast_width"] = max(260, min(1600, int(saved.get("broadcast_width", 600))))
+        defaults["broadcast_height"] = max(110, min(600, int(saved.get("broadcast_height", 160))))
+        defaults["broadcast_sized"] = "broadcast_width" in saved and "broadcast_height" in saved
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         pass
     return defaults
@@ -161,6 +166,9 @@ class ControlPanel:
         self.preview_visible = ui.get("preview_visible", True)
         self.preview_enabled = tk.BooleanVar(value=self.preview_visible)
         self.broadcast_visible = tk.BooleanVar(value=False)
+        self.broadcast_width = tk.StringVar(value=str(ui.get("broadcast_width", 600)))
+        self.broadcast_height = tk.StringVar(value=str(ui.get("broadcast_height", 160)))
+        self.broadcast_sized = ui.get("broadcast_sized", False)
         self.monitor_issues = MonitorIssues()
         self._monitor_job = None
         self._player_runtime = None
@@ -267,9 +275,11 @@ class ControlPanel:
         self.latest_speech = tk.StringVar(value="讲解准备就绪，开局后将在这里显示最新内容。")
 
         self.broadcast_view = BroadcastView(
-            self.root, self.interaction_user, self.interaction_message, THEME)
+            self.root, self.interaction_user, self.interaction_message, THEME,
+            on_popout=self.open_broadcast_window)
+        self.broadcast_view.configure(width=round(int(self.broadcast_width.get()) * ui_scale(self.root)))
         if self.preview_visible:
-            self.broadcast_view.pack(fill="x", padx=16, pady=(12, 10))
+            self.broadcast_view.pack(anchor="center", padx=16, pady=(12, 10))
         self.theme_name.trace_add("write", self._change_theme)
 
         controls = self.controls = self._ui_card(self.root)
@@ -353,14 +363,83 @@ class ControlPanel:
         window = self.broadcast_window = tk.Toplevel(self.root)
         window.title("直播互动展示")
         scale = ui_scale(self.root)
-        window.geometry(f"{round(960 * scale)}x{round(190 * scale)}")
-        window.minsize(round(480 * scale), round(180 * scale))
-        window.configure(bg=THEME["panel"])
+        if not hasattr(self, "broadcast_width"):
+            self.broadcast_width = tk.StringVar(master=self.root, value="600")
+            self.broadcast_height = tk.StringVar(master=self.root, value="160")
+        game = chess_window_bounds()
+        if game and not getattr(self, "broadcast_sized", False):
+            self.broadcast_width.set(str(round((game["viewport"][2] - game["viewport"][0]) / scale)))
+        width, height = self._broadcast_dimensions()
+        width, height = round(width * scale), round(height * scale)
+        x, y = popup_position((width + round(16 * scale), height + round(40 * scale)),
+            (0, round(38 * scale), self.root.winfo_screenwidth(), self.root.winfo_screenheight() - round(48 * scale)),
+            game["outer"] if game else None, margin=round(12 * scale))
+        window.geometry(f"{width}x{height}{x:+d}{y:+d}")
+        window.minsize(round(260 * scale), round(110 * scale))
+        window.resizable(True, True)
+        window.configure(bg="#101d34")
         window.attributes("-alpha", 1.0)
         view = BroadcastView(window, self.interaction_user, self.interaction_message, THEME)
         view.pack(fill="both", expand=True)
-
+        menu = tk.Menu(window, tearoff=False)
+        menu.add_command(label="对齐象棋宽度", command=self.align_broadcast_width)
+        menu.add_command(label="调整尺寸…", command=self._focus_broadcast_size)
+        menu.add_separator()
+        menu.add_command(label="关闭展示窗", command=self.close_broadcast_window)
+        for widget in self._walk_widgets(view):
+            widget.bind("<Button-3>", lambda event: menu.tk_popup(event.x_root, event.y_root))
+        window.bind("<Configure>", self._remember_broadcast_size)
         window.protocol("WM_DELETE_WINDOW", self.close_broadcast_window)
+
+    def _broadcast_dimensions(self):
+        try:
+            width, height = int(self.broadcast_width.get()), int(self.broadcast_height.get())
+        except (ValueError, tk.TclError):
+            width, height = 600, 160
+        scale = ui_scale(self.root)
+        width = max(260, min(width, 1600, round(self.root.winfo_screenwidth() / scale) - 24))
+        height = max(110, min(height, 600, round(self.root.winfo_screenheight() / scale) - 110))
+        return width, height
+
+    def apply_broadcast_size(self, event=None):
+        width, height = self._broadcast_dimensions()
+        self.broadcast_width.set(str(width))
+        self.broadcast_height.set(str(height))
+        self.broadcast_sized = True
+        scale = ui_scale(self.root)
+        view = getattr(self, "broadcast_view", None)
+        if view is not None and view.winfo_exists():
+            view.configure(width=round(width * scale))
+        window = getattr(self, "broadcast_window", None)
+        if window is not None and window.winfo_exists():
+            window.geometry(f"{round(width * scale)}x{round(height * scale)}")
+        self._schedule_ui_save()
+
+    def align_broadcast_width(self):
+        game = chess_window_bounds()
+        if game:
+            self.broadcast_width.set(str(round((game["viewport"][2] - game["viewport"][0]) / ui_scale(self.root))))
+            self.apply_broadcast_size()
+        elif hasattr(self, "status"):
+            self.status.set("请先展开象棋窗口，再对齐展示宽度。")
+
+    def _focus_broadcast_size(self):
+        self._show_settings()
+        self.broadcast_width_entry.focus_set()
+        self.broadcast_width_entry.selection_range(0, "end")
+
+    def _remember_broadcast_size(self, event):
+        if event.widget is not self.broadcast_window or event.width < 100 or event.height < 50:
+            return
+        scale = ui_scale(self.root)
+        self.broadcast_width.set(str(round(event.width / scale)))
+        self.broadcast_height.set(str(round(event.height / scale)))
+        self.broadcast_sized = True
+        preview = getattr(self, "broadcast_view", None)
+        if preview is not None and preview.winfo_exists():
+            preview.configure(width=event.width)
+        if hasattr(self, "theme_name"):
+            self._schedule_ui_save()
 
     def close_broadcast_window(self):
         window, self.broadcast_window = getattr(self, "broadcast_window", None), None
@@ -378,7 +457,7 @@ class ControlPanel:
     def toggle_preview(self):
         self.preview_visible = not self.preview_visible
         if self.preview_visible:
-            self.broadcast_view.pack(fill="x", padx=16, pady=(12, 10), before=self.controls)
+            self.broadcast_view.pack(anchor="center", padx=16, pady=(12, 10), before=self.controls)
         else:
             self.broadcast_view.pack_forget()
         self.controls.pack_configure(pady=(0 if self.preview_visible else 12, 6))
@@ -593,6 +672,20 @@ class ControlPanel:
         ttk.Label(form, text="思考毫秒", style="Card.TLabel").grid(row=4, column=0, sticky="w", pady=16)
         time_entry = ttk.Entry(form, textvariable=self.movetime, width=12)
         time_entry.grid(row=4, column=1, sticky="w")
+        ttk.Label(form, text="展示尺寸", style="Card.TLabel").grid(row=4, column=2, sticky="w", padx=(16, 12))
+        size_row = ttk.Frame(form, style="Card.TFrame")
+        size_row.grid(row=4, column=3, columnspan=3, sticky="w")
+        self.broadcast_width_entry = ttk.Spinbox(size_row, from_=260, to=1600, increment=10,
+            textvariable=self.broadcast_width, width=6, command=self.apply_broadcast_size)
+        self.broadcast_width_entry.pack(side="left")
+        ttk.Label(size_row, text=" × ", style="Muted.TLabel").pack(side="left")
+        height_entry = ttk.Spinbox(size_row, from_=110, to=600, increment=10,
+            textvariable=self.broadcast_height, width=6, command=self.apply_broadcast_size)
+        height_entry.pack(side="left")
+        ttk.Label(size_row, text="  宽 × 高", style="Muted.TLabel").pack(side="left")
+        for entry in (self.broadcast_width_entry, height_entry):
+            entry.bind("<Return>", self.apply_broadcast_size)
+            entry.bind("<FocusOut>", self.apply_broadcast_size)
         ttk.Label(form, text="弹幕互动", style="Card.TLabel").grid(row=5, column=0, sticky="w")
         row = ttk.Frame(form, style="Card.TFrame")
         row.grid(row=5, column=1, columnspan=5, sticky="ew")
@@ -613,6 +706,7 @@ class ControlPanel:
                                  activebackground=THEME["jade2"], activeforeground=THEME["text"])
         self.tools_menu.add_command(label="保存设置", command=self.save_live_settings)
         self.tools_menu.add_command(label="当前异常", command=self.show_monitor_issues)
+        self.tools_menu.add_command(label="对齐象棋宽度", command=self.align_broadcast_width)
         self.tools_menu.add_separator()
         self.tools_menu.add_command(label="预览一手", command=self.preview_once)
         self.tools_menu.add_separator()
@@ -857,7 +951,9 @@ class ControlPanel:
                 json.dump({"theme": self.theme_name.get(),
                            "appearance_version": 2,
                            "opacity": int(self.opacity.get()),
-                           "preview_visible": getattr(self, "preview_visible", True)},
+                           "preview_visible": getattr(self, "preview_visible", True),
+                           "broadcast_width": self._broadcast_dimensions()[0],
+                           "broadcast_height": self._broadcast_dimensions()[1]},
                           stream, ensure_ascii=False, indent=2)
         except OSError:
             pass

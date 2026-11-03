@@ -3,7 +3,7 @@ from tkinter import ttk
 import unittest
 from unittest.mock import Mock, patch
 
-from broadcast_view import BroadcastView
+from broadcast_view import BroadcastView, BROADCAST_PALETTE
 from control_panel import ControlPanel, THEME
 
 
@@ -78,6 +78,39 @@ class BroadcastViewTests(unittest.TestCase):
         panel.toggle_preview()
         self.assertEqual(panel.broadcast_view.winfo_manager(), "pack")
         self.root.tk.call(window.protocol("WM_DELETE_WINDOW"))
+
+    def test_popout_uses_saved_size_and_updates_both_views_from_the_same_real_comment(self):
+        panel = object.__new__(ControlPanel)
+        panel.root = self.root
+        panel.interaction_user, panel.interaction_message = self.user, self.message
+        panel.broadcast_window = None
+        panel.broadcast_width = tk.StringVar(master=self.root, value="510")
+        panel.broadcast_height = tk.StringVar(master=self.root, value="190")
+        panel.broadcast_sized = True
+        panel._schedule_ui_save = Mock()
+        with patch("control_panel.chess_window_bounds", return_value=None):
+            panel.open_broadcast_window()
+        self.root.update_idletasks()
+        window = panel.broadcast_window
+        capture = window.winfo_children()[0]
+        self.assertEqual(tuple(map(int, window.resizable())), (1, 1))
+        self.assertEqual(capture.message_label.cget("background"), BROADCAST_PALETTE["panel"])
+        self.assertFalse(hasattr(capture, "popout_button"))
+        self.user.set("直播间收到的真实昵称")
+        self.message.set("现在回复的是这条真实弹幕")
+        self.assertEqual(capture.user_label.cget("text"), self.user.get())
+        self.assertEqual(capture.message_label.cget("text"), self.message.get())
+        panel.broadcast_width.set("620")
+        panel.broadcast_height.set("220")
+        panel.apply_broadcast_size()
+        self.root.update_idletasks()
+        self.assertEqual(panel._broadcast_dimensions(), (620, 220))
+        panel.close_broadcast_window()
+        with patch("control_panel.chess_window_bounds", return_value=None):
+            panel.open_broadcast_window()
+        self.root.update_idletasks()
+        self.assertEqual(panel._broadcast_dimensions(), (620, 220))
+        panel.close_broadcast_window()
 
     def test_state_switch_keeps_callback_and_disabled_behavior(self):
         panel = object.__new__(ControlPanel)
