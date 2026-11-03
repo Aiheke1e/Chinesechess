@@ -129,8 +129,6 @@ class RoomFeedUITests(unittest.TestCase):
         self.panel.toggle_log("live")
         self.assertEqual(len(self.panel.body.panes()), 0)
         self.assertEqual(self.panel.logs_empty.winfo_manager(), "pack")
-        from workspace_image import WorkspaceImage
-        self.assertIsInstance(self.panel.logs_empty, WorkspaceImage)
         self.panel.toggle_log("chess")
         self.assertEqual(len(self.panel.body.panes()), 1)
         self.assertEqual(self.panel.logs_empty.winfo_manager(), "")
@@ -464,6 +462,33 @@ class RoomFeedUITests(unittest.TestCase):
             self.panel.avatar_upload_button.invoke()
             error.assert_called_once()
         self.assertIs(self.panel.broadcast_view._avatar_source_image, original)
+
+    def test_custom_background_and_transparency_persist_without_changing_window_opacity(self):
+        import control_panel
+        from app_wallpaper import DEFAULT_BACKGROUND
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "selected.png"
+            shutil.copyfile(DEFAULT_BACKGROUND, source)
+            uploads = Path(folder) / "backgrounds"
+            with patch("control_panel.filedialog.askopenfilename", return_value=str(source)), patch(
+                    "control_panel.BACKGROUND_DIRECTORY", uploads):
+                self.panel.background_upload_button.invoke()
+            selected = Path(self.panel.background_image_path)
+            self.assertEqual(selected.parent, uploads)
+            source.unlink()
+            self.assertTrue(selected.is_file())
+            self.panel.background_transparency.set(65)
+            self.panel.change_background_transparency()
+            self.assertEqual(self.panel.wallpaper.transparency, 65)
+            self.assertEqual(float(self.root.attributes("-alpha")), 1.0)
+            with patch("control_panel.UI_CFG", str(Path(folder) / "ui.json")):
+                self.panel._save_ui_settings()
+                restored = control_panel.load_ui_settings()
+            self.assertEqual(restored["background_image_path"], str(selected))
+            self.assertEqual(restored["background_transparency"], 65)
+            self.panel.reset_background_image()
+            self.assertEqual(self.panel.background_image_path, "")
+            self.assertEqual(self.panel.wallpaper.transparency, 65)
 
 
 if __name__ == "__main__":

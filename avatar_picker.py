@@ -1,12 +1,11 @@
 """Local avatar library and a thumbnail picker outside the capture area."""
 from pathlib import Path
-import shutil
 import tkinter as tk
 from tkinter import ttk
-from uuid import uuid4
 from PIL import Image, ImageOps, ImageTk
 
 from soft_ui import ui_scale
+from local_images import import_image
 from stream_brand import AVATAR_PRESETS, DEFAULT_AVATAR
 
 
@@ -23,23 +22,7 @@ def avatar_caption(path):
 
 def import_avatar(path):
     """Validate and preserve the original file locally; no external upload."""
-    source = Path(path)
-    try:
-        with Image.open(source) as image:
-            extension = {"PNG": ".png", "JPEG": ".jpg", "WEBP": ".webp"}.get(image.format)
-            if extension is None:
-                raise ValueError("请选择 PNG、JPG 或 WebP 图片")
-            image.verify()
-    except Image.DecompressionBombError as error:
-        raise ValueError("图片尺寸过大") from error
-    UPLOAD_DIRECTORY.mkdir(parents=True, exist_ok=True)
-    destination = UPLOAD_DIRECTORY / f"{uuid4().hex}{extension}"
-    try:
-        shutil.copyfile(source, destination)
-    except OSError:
-        destination.unlink(missing_ok=True)
-        raise
-    return str(destination)
+    return import_image(path, UPLOAD_DIRECTORY)
 
 
 class AvatarPicker(tk.Toplevel):

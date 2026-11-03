@@ -1,0 +1,11 @@
+Use case: identity-preserve
+Asset type: full-resolution 4K photographic background for a desktop application.
+Input image: the referenced enhanced photograph is the exact edit target.
+Primary request: increase the actual output pixel dimensions substantially beyond the supplied 1673x940 image. Deliver a 3840x2160-pixel landscape image (4K, approximately 16:9) as the final image, not a small preview. This is a restrained super-resolution restoration, not a new photograph or a change of scene.
+Keep the same woman's identity, facial proportions, expression, pose, hands, side braid, white bow, white embroidered dress, subject position and camera viewpoint. Preserve the grassland, blue sky, horizon and distant buildings and poles. Keep the full original composition. Reconstruct only natural fine detail in hair, fabric and grass; avoid new objects or changing facial features.
+Natural daylight and original colors, photographic texture, no smoothing into plastic skin, no beauty makeover, no sharpening halos or artificial HDR. No crop, no new scenery, no text, no watermark. Fully opaque photographic output. High pixel dimensions are the priority for this version.
+
+实际生成尺寸：1672×941。
+用户已明确选择：用本地 Pillow 高质量放大到4K，保留现在的人物和构图。
+后处理：Pillow RGB / LANCZOS，导出3840×2160 PNG；本地缩放增加像素，不宣称恢复了原本不存在的细节。
+最终项目文件：assets/grassland-portrait-hd-v2.png
