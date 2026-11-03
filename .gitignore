@@ -30,6 +30,7 @@ data/opening_book*.json.gz
 !assets/doubao-chess-computer.png
 !assets/xiaoyi-douyin-avatar-v1.png
 !assets/doubao-chess-casual-avatar-v2.png
+!assets/doubao-chess-red-scarf-v3.png
 
 # Pikafish runtime files are downloaded separately; keep only its licenses/docs.
 engine_bin/*.7z
