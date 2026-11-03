@@ -128,10 +128,8 @@ class RoomFeedUITests(unittest.TestCase):
         self.panel.toggle_log("chess")
         self.panel.toggle_log("live")
         self.assertEqual(len(self.panel.body.panes()), 0)
-        self.assertEqual(self.panel.logs_empty.winfo_manager(), "pack")
         self.panel.toggle_log("chess")
         self.assertEqual(len(self.panel.body.panes()), 1)
-        self.assertEqual(self.panel.logs_empty.winfo_manager(), "")
         self.assertIn("本手记录", self.panel.log.get("1.0", "end"))
 
     def test_room_feed_and_all_spoken_replies_stay_in_their_own_logs(self):
@@ -462,45 +460,6 @@ class RoomFeedUITests(unittest.TestCase):
             self.panel.avatar_upload_button.invoke()
             error.assert_called_once()
         self.assertIs(self.panel.broadcast_view._avatar_source_image, original)
-
-    def test_custom_background_and_transparency_persist_without_changing_window_opacity(self):
-        import control_panel
-        from app_wallpaper import DEFAULT_BACKGROUND
-        with tempfile.TemporaryDirectory() as folder:
-            source = Path(folder) / "selected.png"
-            shutil.copyfile(DEFAULT_BACKGROUND, source)
-            uploads = Path(folder) / "backgrounds"
-            with patch("control_panel.filedialog.askopenfilename", return_value=str(source)), patch(
-                    "control_panel.BACKGROUND_DIRECTORY", uploads):
-                self.panel.background_upload_button.invoke()
-            selected = Path(self.panel.background_image_path)
-            self.assertEqual(selected.parent, uploads)
-            source.unlink()
-            self.assertTrue(selected.is_file())
-            self.panel.background_transparency.set(65)
-            self.panel.change_background_transparency()
-            self.assertEqual(self.panel.wallpaper.transparency, 65)
-
-            self.assertEqual(float(self.root.attributes("-alpha")), 1.0)
-            with patch("control_panel.UI_CFG", str(Path(folder) / "ui.json")):
-                self.panel._save_ui_settings()
-                restored = control_panel.load_ui_settings()
-            self.assertEqual(restored["background_image_path"], str(selected))
-            self.assertEqual(restored["background_transparency"], 65)
-            self.panel.reset_background_image()
-            self.assertEqual(self.panel.background_image_path, "")
-            self.assertEqual(self.panel.wallpaper.transparency, 65)
-
-    def test_wallpaper_covers_controls_settings_and_all_three_logs(self):
-        surfaces = self.panel.wallpaper._surfaces
-        self.assertIn(self.panel.controls, surfaces)
-        self.assertIn(self.panel.settings_form, surfaces)
-        for pane in self.panel.log_panels.values():
-            self.assertIn(pane.content, surfaces)
-            self.assertEqual(pane.canvas.winfo_manager(), "")
-        for text in (self.panel.log, self.panel.live_log, self.panel.room_log, self.panel.persona_text):
-            self.assertIn(text._display, surfaces)
-        self.assertNotIn(self.panel.broadcast_view, surfaces)
 
 
 if __name__ == "__main__":
