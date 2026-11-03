@@ -274,6 +274,25 @@ class RoomFeedUITests(unittest.TestCase):
         self.root.update_idletasks()
         self.assertFalse(errors)
 
+    def test_settings_use_preview_space_without_hiding_the_independent_capture_window(self):
+        self.panel.preview_toggle.invoke()
+        self.panel.open_broadcast_window()
+        window = self.panel.broadcast_window
+        self.panel.interaction_user.set("真实观众")
+        self.panel.interaction_message.set("原始弹幕")
+        self.panel.pages.select(1)
+        self.root.update()
+        self.assertEqual(self.panel.broadcast_view.winfo_manager(), "")
+        self.assertTrue(self.panel.preview_visible)
+        self.assertTrue(self.panel.preview_enabled.get())
+        self.assertEqual(window.state(), "normal")
+        self.panel.pages.select(0)
+        self.root.update()
+        self.assertEqual(self.panel.broadcast_view.winfo_manager(), "pack")
+        self.assertIs(self.panel.broadcast_window, window)
+        self.assertEqual(self.panel.interaction_user.get(), "真实观众")
+        self.assertEqual(self.panel.interaction_message.get(), "原始弹幕")
+
     def test_enabling_interaction_after_stop_displays_replies_without_reviving_board_workers(self):
         canceled = self.panel.task_cancel
         canceled.set()

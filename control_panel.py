@@ -349,6 +349,7 @@ class ControlPanel:
         self.live_settings_page = self._scroll_page("  设置  ")
         self._build_workspace(workspace)
         self._build_live_settings(self.live_settings_page)
+        self.pages.bind("<<NotebookTabChanged>>", self._layout_preview_for_page, add="+")
         self.root.bind("<F8>", lambda event: self.stop())
         self.root.bind("<MouseWheel>", self._scroll_settings, add="+")
         self.broadcaster_open = True
@@ -517,14 +518,19 @@ class ControlPanel:
 
     def toggle_preview(self):
         self.preview_visible = not self.preview_visible
-        if self.preview_visible:
-            self.broadcast_view.pack(anchor="center", padx=16, pady=(12, 10), before=self.controls)
-        else:
-            self.broadcast_view.pack_forget()
-        self.controls.pack_configure(pady=(0 if self.preview_visible else 12, 6))
+        self._layout_preview_for_page()
         if hasattr(self, "preview_enabled"):
             self.preview_enabled.set(self.preview_visible)
         self._schedule_ui_save()
+
+    def _layout_preview_for_page(self, event=None):
+        on_workspace = not hasattr(self, "pages") or self.pages.index(self.pages.select()) == 0
+        visible = self.preview_visible and on_workspace
+        if visible:
+            self.broadcast_view.pack(anchor="center", padx=16, pady=(12, 10), before=self.controls)
+        else:
+            self.broadcast_view.pack_forget()
+        self.controls.pack_configure(pady=(0 if visible else 12, 6))
 
     def _scroll_page(self, title):
         page = ttk.Frame(self.pages, style="App.TFrame")
@@ -677,109 +683,123 @@ class ControlPanel:
         parent.columnconfigure(0, weight=1)
         surface = self._ui_card(parent)
         surface.grid(row=0, column=0, sticky="nsew")
-        form = ttk.Frame(surface.content, style="Card.TFrame", padding=(14, 14))
+        form = self.settings_form = ttk.Frame(surface.content, style="Card.TFrame", padding=(10, 8))
         form.pack(fill="both", expand=True)
-        form.columnconfigure((1, 3, 5), weight=1, uniform="fields")
-        ttk.Label(form, text="直播间", style="Card.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 16))
+        form.columnconfigure(0, minsize=82)
+        form.columnconfigure((1, 2, 3, 4, 5), weight=1, uniform="settings")
+        self.toggle_group = form
+
+        def label(text, row):
+            ttk.Label(form, text=text, style="Card.TLabel").grid(
+                row=row, column=0, sticky="w", padx=(0, 12), pady=8)
+
+        label("直播间", 0)
         connection_row = ttk.Frame(form, style="Card.TFrame")
         connection_row.grid(row=0, column=1, columnspan=5, sticky="ew")
-        self.room_entry = ttk.Entry(connection_row, textvariable=self.live_room)
-        self.room_entry.pack(side="left", fill="x", expand=True, padx=(0, 12))
+        self.room_entry = ttk.Entry(connection_row, textvariable=self.live_room, width=1)
+        self.room_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
         actions = self.settings_actions = ttk.Frame(connection_row, style="Card.TFrame")
         actions.pack(side="right")
         self.live_connect_button = ttk.Button(actions, text="连接直播间", width=10,
             style="Primary.TButton", command=self.toggle_live_connection)
         self.live_connect_button.pack(side="left")
         self.interaction_button = ttk.Button(actions, text="开启弹幕互动", width=12, command=self.toggle_interaction)
-        self.interaction_button.pack(side="left", padx=(6, 4))
-        row = ttk.Frame(form, style="Card.TFrame")
-        row.grid(row=1, column=1, columnspan=5, sticky="ew", pady=(6, 18))
-        ttk.Label(row, textvariable=self.live_status, style="Muted.TLabel").pack(side="left")
-        ttk.Label(row, textvariable=self.audience_text, style="Muted.TLabel").pack(side="right")
-        ttk.Label(form, text="功能开关", style="Card.TLabel").grid(row=2, column=0, sticky="nw", pady=6)
-        row = self.toggle_group = ttk.Frame(form, style="SwitchGroup.TFrame", padding=12)
-        row.grid(row=2, column=1, columnspan=5, sticky="ew", pady=(0, 18))
-        row.columnconfigure((0, 1, 2, 3), weight=1, uniform="toggles")
+        self.interaction_button.pack(side="left", padx=(6, 0))
+        status_row = ttk.Frame(form, style="Card.TFrame")
+        status_row.grid(row=1, column=1, columnspan=5, sticky="ew", pady=(4, 10))
+        ttk.Label(status_row, textvariable=self.live_status, style="Muted.TLabel").pack(side="left")
+        ttk.Label(status_row, textvariable=self.audience_text, style="Muted.TLabel").pack(side="right")
+
         save = lambda: self.save_live_settings(quiet=True)
-        toggles = [("自动连局", self.continuous, None),
+        rows = (
+            (2, "对弈", (("自动连局", self.continuous, None),
                 ("解说", self.live_commentary, self.toggle_live_commentary),
                 ("语音", self.live_speech, self.toggle_live_speech),
-                ("欢迎进场", self.live_welcome, save),
-                ("礼物答谢", self.live_gifts, save),
                 ("沙盘演示", self.live_sandtable, save),
-                ("延伸讲解", self.live_queen_commentary, save),
-                ("顶部A区", self.preview_enabled, self.toggle_preview),
-                ("弹出A区", self.broadcast_visible, self.toggle_broadcast_window)]
-        toggles.extend((title, self.log_vars[key], lambda k=key: self.toggle_log(k))
-                       for key, title in (("chess", "棋局记录"), ("live", "解说记录"), ("room", "直播间消息")))
+                ("延伸讲解", self.live_queen_commentary, save))),
+            (3, "互动", (("欢迎进场", self.live_welcome, save),
+                ("礼物答谢", self.live_gifts, save))),
+            (4, "A区", (("顶部A区", self.preview_enabled, self.toggle_preview),
+                ("弹出A区", self.broadcast_visible, self.toggle_broadcast_window))),
+            (6, "日志", tuple((title, self.log_vars[key], lambda k=key: self.toggle_log(k))
+                for key, title in (("chess", "棋局记录"), ("live", "解说记录"), ("room", "直播间消息")))),
+        )
         self.toggle_widgets = {}
-        for index, (text, variable, command) in enumerate(toggles):
-            switch = ttk.Checkbutton(row, text=text, variable=variable, command=command)
-            switch.grid(row=index // 4, column=index % 4, sticky="w", padx=(0, 12), pady=9)
-            self.toggle_widgets[text] = switch
+        for number, caption, options in rows:
+            label(caption, number)
+            for column, (title, variable, command) in enumerate(options, start=1):
+                switch = ttk.Checkbutton(form, text=title, variable=variable,
+                    command=command, style="Settings.TCheckbutton")
+                switch.grid(row=number, column=column, sticky="w", padx=(0, 8), pady=8)
+                self.toggle_widgets[title] = switch
         self.preview_toggle = self.toggle_widgets["顶部A区"]
         self.log_buttons = {key: (self.toggle_widgets[title], title)
-                            for key, title in (("chess", "棋局记录"), ("live", "解说记录"), ("room", "直播间消息"))}
-        for i, (label, variable, values) in enumerate((
-                ("音色", self.live_voice, available_voices()),
-                ("解说频率", self.live_density, ("安静", "自然", "热闹")),
-                ("主题", self.theme_name, tuple(THEMES)))):
-            column = i * 2
-            ttk.Label(form, text=label, style="Card.TLabel").grid(
-                row=3, column=column, sticky="w", padx=(16 if i else 0, 12))
-            combo = ttk.Combobox(form, textvariable=variable, values=values, state="readonly", width=12)
-            combo.grid(row=3, column=column + 1, sticky="ew")
-            combo.bind("<<ComboboxSelected>>", lambda event: self.save_live_settings(quiet=True))
-        ttk.Label(form, text="思考毫秒", style="Card.TLabel").grid(row=4, column=0, sticky="w", pady=16)
-        time_entry = ttk.Entry(form, textvariable=self.movetime, width=12)
-        time_entry.grid(row=4, column=1, sticky="w")
-        ttk.Label(form, text="A区尺寸", style="Card.TLabel").grid(row=4, column=2, sticky="w", padx=(16, 12))
+            for key, title in (("chess", "棋局记录"), ("live", "解说记录"), ("room", "直播间消息"))}
+
+        interaction_row = ttk.Frame(form, style="Card.TFrame")
+        interaction_row.grid(row=3, column=3, columnspan=3, sticky="ew")
+        ttk.Label(interaction_row, textvariable=self.interaction_state, style="Muted.TLabel").pack(side="left", padx=(0, 10))
+        ttk.Label(interaction_row, textvariable=self.chat_sampling_text, style="Muted.TLabel").pack(side="left")
+
         size_row = ttk.Frame(form, style="Card.TFrame")
         size_row.grid(row=4, column=3, columnspan=3, sticky="w")
+        ttk.Label(size_row, text="宽", style="Muted.TLabel").pack(side="left", padx=(0, 4))
         self.broadcast_width_entry = ttk.Spinbox(size_row, from_=260, to=1600, increment=10,
-            textvariable=self.broadcast_width, width=6, command=self.apply_broadcast_size)
+            textvariable=self.broadcast_width, width=5, command=self.apply_broadcast_size)
         self.broadcast_width_entry.pack(side="left")
-        ttk.Label(size_row, text=" × ", style="Muted.TLabel").pack(side="left")
+        ttk.Label(size_row, text="高", style="Muted.TLabel").pack(side="left", padx=(10, 4))
         height_entry = ttk.Spinbox(size_row, from_=110, to=600, increment=10,
-            textvariable=self.broadcast_height, width=6, command=self.apply_broadcast_size)
+            textvariable=self.broadcast_height, width=5, command=self.apply_broadcast_size)
         height_entry.pack(side="left")
-        ttk.Label(size_row, text="  宽 × 高", style="Muted.TLabel").pack(side="left")
+        ttk.Button(size_row, text="对齐棋盘", width=8, command=self.align_broadcast_width).pack(side="left", padx=(10, 0))
         for entry in (self.broadcast_width_entry, height_entry):
             entry.bind("<Return>", self.apply_broadcast_size)
             entry.bind("<FocusOut>", self.apply_broadcast_size)
-        ttk.Label(form, text="A区头像", style="Card.TLabel").grid(row=5, column=0, sticky="w")
+
+        label("A区头像", 5)
         avatar_row = ttk.Frame(form, style="Card.TFrame")
-        avatar_row.grid(row=5, column=1, columnspan=5, sticky="ew", pady=(0, 14))
+        avatar_row.grid(row=5, column=1, columnspan=3, sticky="w", pady=5)
         self.area_a_avatar_name = tk.StringVar(master=self.root, value=avatar_caption(self.area_a_avatar_path))
-        ttk.Label(avatar_row, textvariable=self.area_a_avatar_name, style="Muted.TLabel").pack(side="left", padx=(0, 16))
-        self.avatar_presets_button = ttk.Button(avatar_row, text="选择默认头像…", command=self.open_avatar_picker)
-        self.avatar_presets_button.pack(side="left", padx=(0, 8))
-        self.avatar_upload_button = ttk.Button(avatar_row, text="上传图片…", command=self.choose_area_a_avatar)
+        ttk.Label(avatar_row, textvariable=self.area_a_avatar_name, style="Muted.TLabel").pack(side="left", padx=(0, 10))
+        self.avatar_presets_button = ttk.Button(avatar_row, text="默认头像", command=self.open_avatar_picker)
+        self.avatar_presets_button.pack(side="left", padx=(0, 6))
+        self.avatar_upload_button = ttk.Button(avatar_row, text="上传图片", command=self.choose_area_a_avatar)
         self.avatar_upload_button.pack(side="left")
-        ttk.Label(form, text="弹幕互动", style="Card.TLabel").grid(row=6, column=0, sticky="w")
-        row = ttk.Frame(form, style="Card.TFrame")
-        row.grid(row=6, column=1, columnspan=5, sticky="ew")
-        ttk.Label(row, textvariable=self.interaction_state, style="Card.TLabel").pack(side="left", padx=(0, 16))
-        ttk.Label(row, textvariable=self.chat_sampling_text, style="Muted.TLabel").pack(side="left")
-        ttk.Label(form, text="说话风格", style="Card.TLabel").grid(row=7, column=0, sticky="nw", pady=(12, 0))
+        ttk.Label(form, text="主题", style="Card.TLabel").grid(row=5, column=4, sticky="e", padx=(0, 10))
+        theme_combo = ttk.Combobox(form, textvariable=self.theme_name, values=tuple(THEMES),
+            state="readonly", width=10)
+        theme_combo.grid(row=5, column=5, sticky="ew", pady=5)
+        theme_combo.bind("<<ComboboxSelected>>", lambda event: self.save_live_settings(quiet=True))
+
+        label("音色", 7)
+        voice_combo = ttk.Combobox(form, textvariable=self.live_voice, values=available_voices(),
+            state="readonly", width=10)
+        voice_combo.grid(row=7, column=1, sticky="ew", pady=(8, 0))
+        ttk.Label(form, text="解说频率", style="Card.TLabel").grid(row=7, column=2, sticky="e", padx=(0, 10))
+        density_combo = ttk.Combobox(form, textvariable=self.live_density,
+            values=("安静", "自然", "热闹"), state="readonly", width=10)
+        density_combo.grid(row=7, column=3, sticky="ew", pady=(8, 0))
+        for combo in (voice_combo, density_combo):
+            combo.bind("<<ComboboxSelected>>", lambda event: self.save_live_settings(quiet=True))
+        ttk.Label(form, text="思考时间", style="Card.TLabel").grid(row=7, column=4, sticky="e", padx=(0, 10))
+        time_row = ttk.Frame(form, style="Card.TFrame")
+        time_row.grid(row=7, column=5, sticky="ew", pady=(8, 0))
+        ttk.Entry(time_row, textvariable=self.movetime, width=7).pack(side="left", fill="x", expand=True)
+        ttk.Label(time_row, text="毫秒", style="Muted.TLabel").pack(side="left", padx=(5, 0))
+        label("说话风格", 8)
         self.persona_text = tk.Text(form, height=3, width=1, wrap="word", bg=THEME["editor"],
             fg=THEME["text"], insertbackground=THEME["text"], selectbackground=THEME["select"],
             relief="flat", highlightthickness=1, highlightbackground=THEME["border"],
             highlightcolor=THEME["jade"], padx=10, pady=8, font=("Microsoft YaHei UI", 10), undo=True)
-        self.persona_text.grid(row=7, column=1, columnspan=5, sticky="ew", pady=(12, 0))
+        self.persona_text.grid(row=8, column=1, columnspan=5, sticky="ew", pady=(12, 0))
         self.persona_text.insert("1.0", load_settings().persona)
         self.persona_text.bind("<FocusOut>", lambda event: self.save_live_settings(quiet=True))
-
         self._layout_logs()
 
         self.tools_menu = tk.Menu(self.root, tearoff=False, bg=THEME["panel"], fg=THEME["text"],
                                  activebackground=THEME["jade2"], activeforeground=THEME["text"])
         self.tools_menu.add_command(label="保存设置", command=self.save_live_settings)
         self.tools_menu.add_command(label="当前异常", command=self.show_monitor_issues)
-        self.tools_menu.add_command(label="对齐象棋宽度", command=self.align_broadcast_width)
-        self.tools_menu.add_command(label="选择默认头像…", command=self.open_avatar_picker)
-        self.tools_menu.add_command(label="上传A区头像…", command=self.choose_area_a_avatar)
-        self.tools_menu.add_command(label="恢复默认形象", command=self.reset_area_a_avatar)
         self.tools_menu.add_separator()
         self.tools_menu.add_command(label="预览一手", command=self.preview_once)
         self.tools_menu.add_separator()
@@ -943,6 +963,8 @@ class ControlPanel:
         style.configure("TCheckbutton", background=THEME["panel2"], foreground=THEME["text"])
         style.map("TCheckbutton", foreground=[("disabled", THEME["muted"]), ("active", THEME["text"])],
                   background=[("active", THEME["panel2"])])
+        style.configure("Settings.TCheckbutton", background=THEME["panel"])
+        style.map("Settings.TCheckbutton", background=[("active", THEME["panel"])])
 
     def _change_theme(self, *_):
         name = self.theme_name.get()
