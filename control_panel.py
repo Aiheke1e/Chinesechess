@@ -273,22 +273,13 @@ class ControlPanel:
         controls.pack(fill="x", padx=16, pady=(0 if self.preview_visible else 12, 6))
         actions = self.actionbar = ttk.Frame(controls.content, style="Card.TFrame", padding=(6, 2))
         actions.pack(fill="x")
-        self.start_button = ttk.Button(actions, text="▶ 开始对弈", width=11,
+        self.start_button = ttk.Button(actions, text="▶ 开始", width=11,
             style="Action.Primary.TButton", command=self.prepare_and_wait)
         self.start_button.pack(side="left")
-        self.stop_button = ttk.Button(actions, text="■ 停止 F8", width=9,
+        self.stop_button = ttk.Button(actions, text="Ⅱ 暂停 F8", width=11,
             style="Action.Danger.TButton", command=self.stop)
         self.stop_button.pack(side="left", padx=(4, 12))
-        self.live_connect_button = ttk.Button(actions, text="连接直播间", width=10,
-            style="Primary.TButton", command=self.connect_live)
-        self.live_connect_button.pack(side="left")
-        ttk.Button(actions, text="断开", width=4, command=self.disconnect_live).pack(side="left", padx=(4, 12))
-        self.interaction_button = ttk.Button(actions, text="开启互动", width=8, command=self.toggle_interaction)
-        self.interaction_button.pack(side="left", padx=(0, 4))
-        self.preview_toggle = ttk.Button(actions, text="收起预览" if self.preview_visible else "展开预览",
-                                        width=8, command=self.toggle_preview)
-        self.preview_toggle.pack(side="left", padx=(0, 4))
-        ttk.Button(actions, text="弹出展示", width=8, command=self.open_broadcast_window).pack(side="left")
+        ttk.Label(actions, textvariable=self.session_summary, style="Muted.TLabel").pack(side="right", padx=12)
 
         indicators = tk.Frame(controls.content, bg=THEME["panel"])
         indicators.pack(fill="x", padx=14, pady=(8, 3))
@@ -321,7 +312,6 @@ class ControlPanel:
         self.attention_label.pack(side="left", fill="x", expand=True)
         self.attention_label.bind("<Configure>", lambda event:
             self.attention_label.configure(wraplength=max(200, event.width - 24)))
-        ttk.Button(self.attention_bar, text="查看详情", command=self.show_monitor_issues).pack(side="right", padx=8)
 
         footer = tk.Frame(self.root, bg=THEME["bg"])
         footer.pack(side="bottom", fill="x", padx=20, pady=(8, 12))
@@ -334,7 +324,7 @@ class ControlPanel:
         self.pages.pack(fill="both", expand=True, padx=16)
         workspace = ttk.Frame(self.pages, style="App.TFrame", padding=(0, 8, 0, 0))
         self.pages.add(workspace, text="  工作台  ")
-        self.live_settings_page = self._scroll_page("  直播与设置  ")
+        self.live_settings_page = self._scroll_page("  设置  ")
         self._build_workspace(workspace)
         self._build_live_settings(self.live_settings_page)
         self.root.bind("<F8>", lambda event: self.stop())
@@ -410,15 +400,8 @@ class ControlPanel:
         scrollbar.state(["disabled"] if full else ["!disabled"])
 
     def _build_workspace(self, parent):
-        toolbar = ttk.Frame(self.controls.content, style="Card.TFrame", padding=(6, 6, 6, 0))
-        toolbar.pack(fill="x")
         self.log_visible = {"chess": True, "live": True, "room": False}
         self.log_buttons = {}
-        for key, title in (("chess", "棋局记录"), ("live", "解说记录"), ("room", "直播间消息")):
-            button = ttk.Button(toolbar, command=lambda k=key: self.toggle_log(k))
-            button.pack(side="left", padx=(0, 6))
-            self.log_buttons[key] = (button, title)
-        ttk.Label(toolbar, textvariable=self.session_summary, style="Muted.TLabel").pack(side="right", padx=12)
         self.body = tk.PanedWindow(parent, orient="horizontal", bg=THEME["bg"],
                                    sashwidth=8, sashrelief="flat", bd=0)
         self.body.pack(fill="both", expand=True)
@@ -427,7 +410,7 @@ class ControlPanel:
         self.live_panel = self._ui_card(self.body)
         self.room_panel = self._ui_card(self.body)
         self.log_panels = {"chess": self.chess_panel, "live": self.live_panel, "room": self.room_panel}
-        self.logs_empty = ttk.Label(parent, text="记录已隐藏，可用上方按钮重新展开。", anchor="center")
+        self.logs_empty = ttk.Label(parent, text="记录已隐藏，可在设置中重新展开。", anchor="center")
         self._log_layout_job = None
         self._layout_logs()
         for key, panel, title, follow in (
@@ -536,6 +519,18 @@ class ControlPanel:
         parent.columnconfigure(0, weight=1)
         surface = self._ui_card(parent)
         surface.grid(row=0, column=0, sticky="nsew")
+        actions = self.settings_actions = ttk.Frame(surface.content, style="Card.TFrame", padding=(14, 8))
+        actions.pack(fill="x")
+        self.live_connect_button = ttk.Button(actions, text="连接直播间", width=10,
+            style="Primary.TButton", command=self.connect_live)
+        self.live_connect_button.pack(side="left")
+        ttk.Button(actions, text="断开", width=4, command=self.disconnect_live).pack(side="left", padx=(4, 12))
+        self.interaction_button = ttk.Button(actions, text="开启互动", width=8, command=self.toggle_interaction)
+        self.interaction_button.pack(side="left", padx=(0, 4))
+        self.preview_toggle = ttk.Button(actions, text="收起预览" if self.preview_visible else "展开预览",
+                                        width=8, command=self.toggle_preview)
+        self.preview_toggle.pack(side="left", padx=(0, 4))
+        ttk.Button(actions, text="弹出展示", width=8, command=self.open_broadcast_window).pack(side="left")
         form = ttk.Frame(surface.content, style="Card.TFrame", padding=(14, 12))
         form.pack(fill="both", expand=True)
         form.columnconfigure((1, 3, 5), weight=1, uniform="fields")
@@ -584,9 +579,19 @@ class ControlPanel:
         self.persona_text.insert("1.0", load_settings().persona)
         self.persona_text.bind("<FocusOut>", lambda event: self.save_live_settings(quiet=True))
 
+        ttk.Label(form, text="日志显示", style="Card.TLabel").grid(row=7, column=0, sticky="w", pady=(12, 0))
+        row = ttk.Frame(form, style="Card.TFrame")
+        row.grid(row=7, column=1, columnspan=5, sticky="w", pady=(12, 0))
+        for key, title in (("chess", "棋局记录"), ("live", "解说记录"), ("room", "直播间消息")):
+            button = ttk.Button(row, command=lambda k=key: self.toggle_log(k))
+            button.pack(side="left", padx=(0, 6))
+            self.log_buttons[key] = (button, title)
+        self._layout_logs()
+
         self.tools_menu = tk.Menu(self.root, tearoff=False, bg=THEME["panel"], fg=THEME["text"],
                                  activebackground=THEME["jade2"], activeforeground=THEME["text"])
         self.tools_menu.add_command(label="保存设置", command=self.save_live_settings)
+        self.tools_menu.add_command(label="当前异常", command=self.show_monitor_issues)
         self.tools_menu.add_separator()
         self.tools_menu.add_command(label="预览一手", command=self.preview_once)
         self.tools_menu.add_separator()
@@ -597,7 +602,7 @@ class ControlPanel:
         self.tools_menu.add_separator()
         self.tools_menu.add_command(label="恢复窗口不透明", command=lambda: (
             self.opacity.set(100), self._change_opacity(100)))
-        ttk.Menubutton(self.actionbar, text="工具", width=5, menu=self.tools_menu).pack(side="left", padx=4)
+        ttk.Menubutton(actions, text="工具", width=5, menu=self.tools_menu).pack(side="left", padx=4)
 
     def preview_once(self):
         self.dry.set(True)
@@ -840,7 +845,7 @@ class ControlPanel:
                            self.process and self.process.poll() is None)
             busy = self.waiting_for_board or running
             self.start_button.configure(
-                text="等待棋盘…" if self.waiting_for_board else "对弈进行中" if running else "▶  开始对弈")
+                text="等待棋盘…" if self.waiting_for_board else "运行中" if running else "▶ 开始")
             self.start_button.state(["disabled"] if busy else ["!disabled"])
             if hasattr(self, "tools_menu"):
                 self.tools_menu.entryconfigure("预览一手", state="disabled" if busy else "normal")

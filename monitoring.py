@@ -51,7 +51,7 @@ def live_view(state, online=None, rate=0):
         return "连接异常", "请查看异常详情或重新连接", "error"
     if state == "ended":
         return "直播已结束", "等待重新开播", "muted"
-    return "未连接", "到直播与设置连接房间", "muted"
+    return "未连接", "到设置连接房间", "muted"
 
 
 class MonitorIssues:

@@ -165,7 +165,19 @@ class RoomFeedUITests(unittest.TestCase):
             self.assertEqual(self.panel.interaction_button.cget("text"), "暂停互动")
         start_board.assert_not_called()
         self.assertIs(self.panel.interaction_button.master, self.panel.live_connect_button.master)
-        self.assertIs(self.panel.start_button.master, self.panel.live_connect_button.master)
+        self.assertIsNot(self.panel.start_button.master, self.panel.live_connect_button.master)
+
+    def test_top_only_keeps_start_and_pause_and_other_actions_live_in_settings(self):
+        top_buttons = {widget for widget in self.panel._walk_widgets(self.panel.controls)
+                       if isinstance(widget, (tk.ttk.Button, tk.ttk.Menubutton))}
+        self.assertEqual(top_buttons, {self.panel.start_button, self.panel.stop_button})
+        self.assertIn("暂停", self.panel.stop_button.cget("text"))
+        self.assertEqual([self.panel.pages.tab(tab, "text").strip() for tab in self.panel.pages.tabs()],
+                         ["工作台", "设置"])
+        settings = set(self.panel._walk_widgets(self.panel.live_settings_page))
+        for button in (self.panel.live_connect_button, self.panel.interaction_button,
+                       self.panel.preview_toggle, *(button for button, _ in self.panel.log_buttons.values())):
+            self.assertIn(button, settings)
 
     def test_switching_soft_theme_keeps_log_content_and_cleans_up_tk_callbacks(self):
         errors = []
