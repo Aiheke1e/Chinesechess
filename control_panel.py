@@ -205,8 +205,8 @@ class ControlPanel:
         self.audience_text = tk.StringVar(value="在线人数 · 待获取")
         self.chat_sampling_text = tk.StringVar(value="自动抽选 · 无需弹幕前缀")
         self.interaction_state = tk.StringVar(value="互动未开启")
-        self.interaction_user = tk.StringVar(value="棋友互动")
-        self.interaction_message = tk.StringVar(value="欢迎棋友，一起看棋。")
+        self.interaction_user = tk.StringVar(value="")
+        self.interaction_message = tk.StringVar(value="")
         self.broadcast_window = None
         self.interaction_id = None
         self.runtime_stats = tk.StringVar(value="识别告警 0 · 成功落子 0 · 完成对局 0")
@@ -1342,8 +1342,8 @@ class ControlPanel:
     def _reset_interaction_display(self):
         self.interaction_id = None
         if hasattr(self, "interaction_user"):
-            self.interaction_user.set("等待互动")
-            self.interaction_message.set("欢迎棋友，一起看棋。")
+            self.interaction_user.set("")
+            self.interaction_message.set("")
 
     def toggle_live_speech(self):
         if not self.save_live_settings(quiet=True):
@@ -1392,6 +1392,7 @@ class ControlPanel:
             return
         room = self.live_room.get()
         request = self.live_connect_request = object()
+        self._reset_interaction_display()
         self.connection_state = "connecting"
         self._sync_connection_button()
         self.live_status.set("正在解析直播间分享链接…")
@@ -2178,7 +2179,10 @@ class ControlPanel:
                             self.interaction_state.set("互动已暂停" if not self.live_controller.enabled else (
                                 "已回复 · 自动抽选中" if data.get("completed")
                                 else "互动已中断"))
-                            self._reset_interaction_display()
+                            # Keep the selected comment readable after playback.
+                            # Only the next reply's actual start replaces it.
+                            if not data.get("completed"):
+                                self._reset_interaction_display()
                     elif kind == "speech_status":
                         self.speech_status.set(text)
                     elif kind == "error":

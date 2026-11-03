@@ -141,7 +141,8 @@ class RoomFeedUITests(unittest.TestCase):
         self.panel._receive_live_event({"kind": "interaction_done", "data": {
             "互动标识": "弹幕回复", "completed": True}})
         self.panel._poll()
-        self.assertEqual(self.panel.interaction_user.get(), "等待互动")
+        self.assertEqual(self.panel.interaction_user.get(), "小王")
+        self.assertEqual(self.panel.interaction_message.get(), "炮为什么要走这里？")
 
     def test_run_switches_are_available_only_on_the_settings_page(self):
         switches = {"自动连局", "解说", "语音"}
@@ -151,6 +152,39 @@ class RoomFeedUITests(unittest.TestCase):
                     if isinstance(widget, tk.ttk.Checkbutton)}
         self.assertFalse(controls & switches)
         self.assertTrue(switches <= settings)
+
+    def test_broadcast_is_blank_until_reply_and_keeps_it_until_the_next_actual_reply(self):
+        self.assertEqual(self.panel.interaction_user.get(), "")
+        self.assertEqual(self.panel.interaction_message.get(), "")
+        def event(kind, data, text="回复台词。"):
+            self.panel._receive_live_event({"kind": kind, "text": text, "data": data})
+        first = {"kind": "弹幕回复", "观众": "小王", "弹幕": "这匹马能跳过去吗？", "互动标识": "first"}
+        second = {"kind": "弹幕回复", "观众": "小李", "弹幕": "主播晚上好", "互动标识": "second"}
+        event("reply", first)
+        event("interaction_done", {"互动标识": "first", "completed": True})
+        event("queued", second)
+        event("speech_status", second, "正在生成百炼语音")
+        event("reply", {"kind": "欢迎观众", "观众": "新棋友"}, "欢迎新棋友进入直播间。")
+        self.panel._poll()
+        self.assertEqual(self.panel.interaction_user.get(), "小王")
+        self.assertEqual(self.panel.interaction_message.get(), "这匹马能跳过去吗？")
+        event("reply", second)
+        event("interaction_done", {"互动标识": "first", "completed": False})
+        self.panel._poll()
+        self.assertEqual(self.panel.interaction_user.get(), "小李")
+        self.assertEqual(self.panel.interaction_message.get(), "主播晚上好")
+        self.panel.pause_live()
+        self.assertEqual(self.panel.interaction_user.get(), "")
+        self.assertEqual(self.panel.interaction_message.get(), "")
+
+    def test_canceled_reply_clears_the_display_without_placeholder_words(self):
+        self.panel._receive_live_event({"kind": "reply", "text": "回复台词。", "data": {
+            "kind": "弹幕回复", "观众": "小王", "弹幕": "主播晚上好", "互动标识": "first"}})
+        self.panel._receive_live_event({"kind": "interaction_done", "data": {
+            "互动标识": "first", "completed": False}})
+        self.panel._poll()
+        self.assertEqual(self.panel.interaction_user.get(), "")
+        self.assertEqual(self.panel.interaction_message.get(), "")
 
     def test_all_stateful_options_use_the_same_switch_group(self):
         self.assertEqual(len(self.panel.toggle_widgets), 12)
