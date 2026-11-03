@@ -54,7 +54,7 @@ class CommentaryTextTests(unittest.TestCase):
     def test_two_confirmed_captures_by_same_piece_can_be_linked(self):
         current, previous, reply = self.events(self.position(45, 36, 27),
                                                (45, 36), (4, 3), (36, 27))
-        self.assertEqual(connected_move_note(current, previous, reply), "这辆车再吃一枚炮。")
+        self.assertEqual(connected_move_note(current, previous, reply), "这辆车再吃一门炮。")
         current["number"] = 14
         self.assertEqual(connected_move_note(current, previous, reply), "")
 
@@ -99,7 +99,7 @@ class CommentaryTextTests(unittest.TestCase):
 
     def test_capture_prediction_names_our_piece_without_reversed_sentence(self):
         text = LiveController._engine_prediction_text("红方 车三进六，吃马", 2)
-        self.assertEqual(text, "对手可能走车三进六，吃掉咱们一枚马。")
+        self.assertEqual(text, "对手可能走车三进六，吃掉咱们一匹马。")
         self.assertNotIn("接下来留意", text)
 
     def test_matching_reply_connects_the_line_instead_of_celebrating_a_guess(self):

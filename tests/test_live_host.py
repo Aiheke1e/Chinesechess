@@ -125,12 +125,6 @@ class LiveHostTests(unittest.TestCase):
         for forbidden in ("红方", "黑方", "我方", "对方", "对手"):
             self.assertNotIn(forbidden, text)
 
-    def test_high_move_call_is_short_and_has_no_side_label(self):
-        text = LiveController._high_move_text("黑方 马8进7")
-        self.assertEqual(text, "跳马，马8进7。")
-        self.assertNotIn("黑方", text)
-        self.assertNotIn("对手", text)
-        self.assertLessEqual(len(text.rstrip("。")), 20)
 
     def test_idle_commentary_waits_for_explicit_wait_window(self):
         spoken = threading.Event()
@@ -324,7 +318,9 @@ class LiveHostTests(unittest.TestCase):
         self.assertFalse(notes[0][2]["spoken"])
 
     def test_plain_move_uses_piece_specific_streamer_wording(self):
-        text = LiveController._casual_move_text("红方 马二进三", 2)
+        from commentary_style import CommentaryStyle, DEFAULT_PERSONA
+        text = CommentaryStyle().decorate("关键走棋解说", "马二进三。", {
+            "我方计划走法": "红方 马二进三"}, DEFAULT_PERSONA)
         self.assertIn("马二进三", text)
         self.assertNotIn("我方", text)
         self.assertTrue("跳马" in text or "马儿" in text or "这匹马" in text)
@@ -428,8 +424,10 @@ class LiveHostTests(unittest.TestCase):
             "event": "game_over", "result": "won",
             "reason": "no_legal_moves"})
         self.assertEqual(submitted[0][0], "获胜收官")
-        self.assertIn("稳稳收下", submitted[0][1])
+        self.assertTrue(any(word in submitted[0][1] for word in ("拿下", "收下")))
         self.assertNotIn("受害者", submitted[0][1])
+        controller.submit_chess({"event": "game_over", "result": "won", "reason": "no_legal_moves"})
+        self.assertNotEqual(submitted[0][1], submitted[1][1])
 
     def test_surrender_result_gets_cautious_closing_line(self):
         submitted = []

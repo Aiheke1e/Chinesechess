@@ -23,9 +23,10 @@ from bailian_tts import available_voices, synthesize
 from glm_client import DEFAULT_MODEL, respond
 from opening_library import load_opening_library
 from commentary_text import complete_note, connected_move_note, waiting_note, confirmed_win_note
-from mate_patterns import build_finisher, confirmed_finisher_note
+from mate_patterns import build_finisher, confirmed_finisher_note, finisher_copy, MATE_OPENINGS
 from chat_selection import ChatSelector, viewer_key
-from interaction_text import welcome_line, spoken_reply
+from interaction_text import welcome_line, spoken_reply, gift_reply
+from commentary_style import CommentaryStyle, DEFAULT_PERSONA, LEGACY_PERSONAS, piece_amount, humor_enabled
 
 
 HERE = Path(__file__).resolve().parent
@@ -124,10 +125,7 @@ class LiveSettings:
     voice: str = "Maia"
     prefix: str = ""  # Legacy config field; automatic sampling never requires it.
     cooldown: float = 1.0
-    persona: str = ("你叫棋小雅，是一位专业但不端着的中国象棋主播。"
-                    "像和熟人边下边聊，少念书面报告，多用跳马、拱兵、"
-                    "出车、架炮这类自然说法；偶尔抖个轻包袱，幽默但不尬，"
-                    "不嘲讽对手和观众，也不要句句重复我方、对方。")
+    persona: str = DEFAULT_PERSONA
     introduction: str = "大家好，我是棋小雅。这里会一边下象棋，一边和大家聊棋、聊生活，欢迎来到直播间。"
     welcome_enabled: bool = True
     gift_enabled: bool = True
@@ -147,6 +145,8 @@ def load_settings():
     for key in asdict(settings):
         if key in data:
             setattr(settings, key, data[key])
+    if settings.persona in LEGACY_PERSONAS:
+        settings.persona = DEFAULT_PERSONA
     return settings
 
 
@@ -227,6 +227,7 @@ class SpeechPipeline:
         self.cancel_epoch = 0
         self.chess_epoch = 0
         self.history = deque(maxlen=8)
+        self.style = CommentaryStyle()
         self.prepared = {}
         self.prepared_lock = threading.Lock()
         self.playback_lock = threading.Lock()
@@ -581,6 +582,7 @@ class SpeechPipeline:
             self.audio_active = True
         try:
             self.notify("reply", text, {"kind": kind, **payload})
+            self.style.remember(text)
             if acknowledge:
                 self._mark_speech_started(payload)
             until = time.monotonic() + duration
@@ -695,6 +697,7 @@ class SpeechPipeline:
                 kind, {"主播设定": self.settings.persona, **payload},
                 list(self.history), model=self.settings.model)
             text = self._first_person_text(text, payload)
+            text = self.style.decorate(kind, text, payload, self.settings.persona)
             text = (self._complete_chess_text(text, max_chars=220)
                     if payload.get("绝杀长播报") else self._short_chess_text(text))
             if not text or not self._chess_line_valid(text, kind, payload):
@@ -717,6 +720,7 @@ class SpeechPipeline:
                 if not self._wait_turn(kind, payload, state):
                     return
                 self.notify("reply", text, {"kind": kind, **payload})
+                self.style.remember(text)
                 self.notify("speech_status", "仅显示文本，未启动语音", payload)
             self.history.extend([
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
@@ -841,6 +845,7 @@ class SpeechPipeline:
                 list(self.history), model=self.settings.model)
             text = self._first_person_text(text, payload)
             text = complete_note(text)
+            text = self.style.decorate(kind, text, payload, self.settings.persona)
             if not self._chess_line_valid(text, kind, payload):
                 return
             if kind in CHESS_SPEECH_KINDS and self._recently_spoken(text):
@@ -863,6 +868,7 @@ class SpeechPipeline:
                 if not self._wait_turn(kind, payload, state):
                     return
                 self.notify("reply", text, {"kind": kind, **payload})
+                self.style.remember(text)
                 self.notify("speech_status", f"{kind}仅显示文本", payload)
             self.history.extend([
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
@@ -944,11 +950,15 @@ class SpeechPipeline:
                 return
             self.notify("speech_status", f"正在组织{kind}话术", payload)
             history = list(self.history) if kind in CHESS_SPEECH_KINDS else []
-            text = direct or self.llm(kind, {"主播设定": self.settings.persona, **payload},
+            style_hint = ({"最近用过的比喻": self.style.topics()} if kind in INTERACTION_SPEECH_KINDS else {})
+            text = direct or self.llm(kind, {"主播设定": self.settings.persona, **style_hint, **payload},
                                       history, model=self.settings.model)
             text = self._first_person_text(text, payload)[:300]
+            text = self.style.decorate(kind, text, payload, self.settings.persona)
             if kind == "弹幕回复":
                 text = spoken_reply(text, payload=payload)
+            elif kind == "礼物答谢":
+                text = gift_reply(text, payload, self.style)
             if not text or not self._chess_line_valid(text, kind, payload):
                 return
             if not self._state_live(state) or not self._chat_valid(kind, payload):
@@ -964,6 +974,7 @@ class SpeechPipeline:
                 if not self._wait_turn(kind, payload, state):
                     return
                 self.notify("reply", text, {"kind": kind, **payload})
+                self.style.remember(text)
                 self.notify("speech_status", "仅文本模式：未调用 TTS", payload)
             completed = True
             if kind in CHESS_SPEECH_KINDS:
@@ -1038,6 +1049,7 @@ class LiveController:
         self.pending_gifts = {}
         self.gift_timers = {}
         self.pipeline = SpeechPipeline(self.settings, self._notify)
+        self.speech_style = self.pipeline.style
         self.tailer = ChessEventTailer(CHESS_EVENTS, self.submit_chess)
         self.tailer.start()
         self.chat_selector = ChatSelector()
@@ -1233,7 +1245,7 @@ class LiveController:
             return ""
         if "，吃" in move:
             action, target = move.rsplit("，吃", 1)
-            return f"对手可能走{action}，吃掉咱们一枚{target[:1]}。"
+            return f"对手可能走{action}，吃掉咱们{piece_amount(target[:1])}。"
         variants = (
             f"对手可能走{move}。",
             f"对手这边可能接{move}。",
@@ -1244,6 +1256,12 @@ class LiveController:
     def _reset_opening(self):
         self.opening_moves = []
         self.opening_announced = set()
+
+    def _speech_flair(self):
+        style = getattr(self, "speech_style", None)
+        if not isinstance(style, CommentaryStyle):
+            style = self.speech_style = CommentaryStyle()
+        return style
 
     @classmethod
     def _opening_matches(cls, moves):
@@ -1314,6 +1332,8 @@ class LiveController:
         for name, text in self._opening_matches(moves):
             if name in announced:
                 continue
+            text = self._speech_flair().opening(name, text,
+                getattr(getattr(self, "settings", None), "persona", DEFAULT_PERSONA))
             announced.add(name)
             evidence = {"布局名称": name, "判定依据": list(moves),
                         "解说对应走法": notation, "解说对应手数": number}
@@ -1343,7 +1363,7 @@ class LiveController:
             }
             if name and canonical not in known:
                 announced.add(name)
-                text = f"走到这里，棋谱库把这路归在{name}。"
+                text = f"这盘走到{name}这一路了。"
                 cancel_idle = getattr(self.pipeline, "cancel_idle", None)
                 if callable(cancel_idle):
                     cancel_idle()
@@ -1446,76 +1466,8 @@ class LiveController:
                 return text[len(prefix):]
         return text
 
-    @classmethod
-    def _casual_move_text(cls, notation, number=0):
-        """Turn formal notation into short, varied streamer speech."""
-        move = cls._spoken_notation(notation)
-        piece = move[:1]
-        choices = {
-            "马": (
-                f"这手跳马，{move}，先让这匹马活动起来。",
-                f"马儿蹦起来，{move}，别老在家里吃草。",
-                f"来个{move}，这匹马开始上班了。",
-            ),
-            "兵": (
-                f"小兵往前拱，{move}，步子不大，态度先摆出来。",
-                f"先走个{move}，小兵也得出来见见世面。",
-                f"这步是{move}，稳稳往前顶一下。",
-            ),
-            "卒": (
-                f"小卒往前拱，{move}，一步一步来。",
-                f"先走个{move}，小卒过日子主打一个踏实。",
-                f"这步是{move}，先往前顶一下。",
-            ),
-            "车": (
-                f"大车开出来，{move}，重家伙开始活动。",
-                f"这手出车，{move}，车可不能一直停在车库里。",
-                f"走个{move}，给大车换条线路。",
-            ),
-            "炮": (
-                f"这门炮动一动，{move}，先把炮架起来。",
-                f"来一手{move}，炮台换个位置继续观察。",
-                f"走个{move}，这门炮先找找角度。",
-            ),
-            "相": (
-                f"补一手相，{move}，家里先收拾利索。",
-                f"这步{move}，相走田，阵脚稳一稳。",
-            ),
-            "象": (
-                f"补一手象，{move}，先把阵脚稳住。",
-                f"这步{move}，象走田，家里照看一下。",
-            ),
-            "仕": (f"补个仕，{move}，先把家门看好。",),
-            "士": (f"补个士，{move}，家门口多一个保安。",),
-            "帅": (f"老帅挪一步，{move}，亲自换个位置。",),
-            "将": (f"老将动一动，{move}，这回亲自挪窝。",),
-        }
-        variants = choices.get(piece, (
-            f"这手走{move}，先看看局面怎么回应。",
-            f"来，{move}，棋先这么下。",
-        ))
-        return variants[(max(1, int(number or 1)) - 1) % len(variants)]
 
-    @classmethod
-    def _casual_opponent_text(cls, notation, count=1):
-        move = cls._spoken_notation(notation)
-        variants = (
-            f"那边回了个{move}，先记在心里，不急着下结论。",
-            f"人家也没闲着，走的是{move}，咱们接着看。",
-            f"这边应了一手{move}，有点意思，先往下走。",
-        )
-        return variants[(max(1, int(count or 1)) - 1) % len(variants)]
 
-    @classmethod
-    def _high_move_text(cls, notation):
-        """Mandatory sub-three-second move call: action only, no side labels."""
-        move = cls._spoken_notation(notation)
-        action = {
-            "马": "跳马", "车": "出车", "炮": "架炮",
-            "兵": "拱兵", "卒": "拱卒", "相": "飞相", "象": "飞象",
-            "仕": "补仕", "士": "补士", "帅": "动帅", "将": "动将",
-        }.get(move[:1], "走子")
-        return f"{action}，{move}。"
 
     @classmethod
     def _closing_move_text(cls, notation, number=0, forced=False, reasons=()):
@@ -1524,9 +1476,9 @@ class LiveController:
             if "，吃" in move:
                 return cls._synced_move_text(notation, reasons, number) + "咱们按这条线收官。"
             if "形成将军" in reasons:
-                return f"{move}，将军，咱们按这条线收官。"
-            variants = (f"{move}，咱们按这条杀棋路线走稳。",
-                        f"{move}，杀棋的路线有了，稳稳下完。")
+                return f"{move}，将军，收官这段咱们不抢跑。"
+            variants = (f"{move}，杀棋路线接着走，收官这段不抢跑。",
+                        f"{move}，杀棋路线有了，收官的压轴题认真做。")
         else:
             variants = (
                 f"{move}，目前局面占优，咱们继续走稳。",
@@ -1542,7 +1494,8 @@ class LiveController:
         captured = move.rsplit("吃", 1)[-1][:1] if "吃" in move else ""
         base_move = move.split("，吃", 1)[0]
         if captured:
-            calls = (f"吃掉一枚{captured}", f"把这枚{captured}拿掉", f"先收掉这枚{captured}")
+            amount = piece_amount(captured)
+            calls = (f"吃掉{amount}", f"把这{amount[1:]}拿掉", f"先收掉这{amount[1:]}")
             index = (int(number or 1) - 1) % len(calls)
             if "形成将军" in reasons:
                 return f"{base_move}，吃{captured}带将。"
@@ -1619,12 +1572,16 @@ class LiveController:
 
     def _victory_text(self):
         self.victory_count = getattr(self, "victory_count", 0) + 1
+        if not humor_enabled(getattr(getattr(self, "settings", None), "persona", DEFAULT_PERSONA)):
+            return "这盘拿下，下一局继续。"
         variants = (
-            "拿下！收尾干净利落，棋盘擦一擦，继续迎客。",
-            "稳稳收下，刚才忙活的几枚子，总算能歇口气了。",
-            "结束，棋盘已经打扫干净。下一位朋友，里面请。",
+            ("戏台", "拿下！这盘的收尾戏演完，掌声现在可以放出来了。"),
+            ("上班", "稳稳收下，棋子们辛苦了，这盘可以打卡下班。"),
+            ("财务", "这盘拿下，账本合上，咱们接着下。"),
+            ("家门", "这盘拿下，棋盘收拾好，下一位棋友请进。"),
+            ("考试", "拿下！这道题做完了，下一盘咱们继续答卷。"),
         )
-        return variants[(self.victory_count - 1) % len(variants)]
+        return self._speech_flair().pick("获胜收官", variants, required=True)
 
     def submit_chess(self, event):
         if getattr(self, "suspended", False) or getattr(self, "chess_suspended", False):
@@ -1841,6 +1798,10 @@ class LiveController:
             event, getattr(self, "last_confirmed_analysis", None),
             getattr(self, "last_commentary_reply", None))
         if finisher:
+            playful = humor_enabled(getattr(getattr(self, "settings", None), "persona", DEFAULT_PERSONA))
+            opening = self._speech_flair().pick("绝杀开场", MATE_OPENINGS, required=True) if playful else ""
+            finisher["text"] = finisher_copy(finisher["name"], finisher["notation"],
+                event.get("number", 1), opening=opening, playful=playful)
             payload.update({"绝杀长播报": True, "杀法名称": finisher["name"],
                             "我方计划走法": finisher["notation"],
                             "解说对应走法": finisher["notation"]})
@@ -2039,7 +2000,7 @@ class LiveController:
             return complete_note(f"对手这手{actual}，咱们得认真接了。")
         else:
             variants = (
-                f"对手是个高手啊，这手{actual}，有自己的想法。",
+                f"对手这手{actual}，走的是另一条路。",
                 f"嚯，{actual}，对手没按这条路来。",
                 f"对手走了{actual}，这位棋友有自己的剧本。",
                 f"这手{actual}，对手另有安排，咱们接着拆招。",

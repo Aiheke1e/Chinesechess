@@ -79,6 +79,7 @@ class MatePatternTests(unittest.TestCase):
                 self.assertTrue(90 <= len(plan["text"]) <= 220)
                 self.assertTrue(SpeechPipeline._chess_line_valid(plan["text"], "绝杀长解说", {}))
                 self.assertIn(name, plan["text"])
+                self.assertTrue(plan["text"].startswith(f"这手准备{name}。"))
                 before = rotate(Board.from_fen(event["fen_before"]))
                 a, b = Board.from_ucci(event["ucci"])
                 mirrored = build_finisher({**event, "fen_before": before.to_fen(),
@@ -136,6 +137,7 @@ class MatePatternTests(unittest.TestCase):
         stored = controller.commentary_analyses["finish-21"]
         final_event = {"result": "won", "fen": stored["finisher"]["terminal_fen"]}
         self.assertIn("马后炮成了", confirmed_finisher_note(final_event, stored))
+        self.assertNotIn("落子确认", confirmed_finisher_note(final_event, stored))
         self.assertEqual(confirmed_finisher_note({**final_event, "fen": START_FEN}, stored), "")
         self.assertEqual(confirmed_finisher_note({**final_event, "result": "finished"}, stored), "")
 

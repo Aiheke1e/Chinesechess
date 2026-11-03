@@ -3,6 +3,7 @@ import re
 
 from board import Board
 from notation import PIECE_NAMES
+from commentary_style import piece_amount
 
 
 def spoken_move(notation):
@@ -40,8 +41,8 @@ def waiting_note(evidence):
         if target[:1] not in "车马炮兵卒仕士相象帅将":
             return ""
         if evidence.get("应手回吃本子"):
-            return complete_note(f"对手可能{move}，吃回这枚{target[:1]}，这轮交换要一起看。")
-        return complete_note(f"对手可能{move}，吃掉咱们一枚{target[:1]}。")
+            return complete_note(f"对手可能{move}，吃回这{piece_amount(target[:1])[1:]}，这轮交换要一起看。")
+        return complete_note(f"对手可能{move}，吃掉咱们{piece_amount(target[:1])}。")
     # Spectators follow the played line. Engine alternatives are never a
     # reason to introduce a second choice into the broadcast.
     return ""
@@ -103,7 +104,7 @@ def connected_move_note(current, previous, reply):
             return ""
         if captured and first_capture:
             target = PIECE_NAMES[captured]
-            return f"{name}再吃一枚{target}" + ("，同时将军。" if checking else "。")
+            return f"{name}再吃{piece_amount(target)}" + ("，同时将军。" if checking else "。")
         if checking and previous_check:
             return f"{name}继续将军。"
     except (KeyError, TypeError, ValueError, IndexError, AttributeError):
