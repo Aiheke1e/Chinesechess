@@ -12,7 +12,7 @@ from chat_selection import ChatSelector
 from control_panel import ControlPanel
 from live_host import LiveController, LiveSettings
 from room_feed import room_message_entry
-from stream_brand import AREA_A_TITLE, DEFAULT_AVATAR
+from stream_brand import AREA_A_TITLE, DEFAULT_AVATAR, AVATAR_PRESETS
 
 
 class RoomFeedTests(unittest.TestCase):
@@ -386,9 +386,15 @@ class RoomFeedUITests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             new_avatar = str(Path(folder) / "custom-avatar.png")
             shutil.copyfile(DEFAULT_AVATAR, new_avatar)
-            with patch("control_panel.filedialog.askopenfilename", return_value=new_avatar):
+            uploaded = Path(folder) / "saved-avatars"
+            with patch("avatar_picker.UPLOAD_DIRECTORY", uploaded), patch(
+                    "control_panel.filedialog.askopenfilename", return_value=new_avatar):
                 self.panel.choose_area_a_avatar()
-            self.assertEqual(self.panel.area_a_avatar_path, new_avatar)
+            saved = Path(self.panel.area_a_avatar_path)
+            self.assertEqual(saved.parent, uploaded)
+            self.assertEqual(saved.read_bytes(), Path(new_avatar).read_bytes())
+            Path(new_avatar).unlink()
+            self.assertTrue(saved.is_file())
             capture = window.winfo_children()[0]
             self.assertIs(capture._avatar_source_image, self.panel.broadcast_view._avatar_source_image)
             self.assertEqual(window.geometry(), geometry)
@@ -397,6 +403,30 @@ class RoomFeedUITests(unittest.TestCase):
             self.panel.reset_area_a_avatar()
             self.assertEqual(self.panel.area_a_avatar_path, "")
             self.assertEqual(window.geometry(), geometry)
+
+    def test_all_five_built_in_avatars_can_be_selected_without_changing_current_comment(self):
+        self.panel.interaction_user.set("真实观众")
+        self.panel.interaction_message.set("请保留这条原始弹幕")
+        self.panel.avatar_presets_button.invoke()
+        picker = self.panel.avatar_picker_window
+        self.assertEqual(len(picker._buttons), 5)
+        for (button, preset), (_, expected) in zip(picker._buttons, AVATAR_PRESETS):
+            self.assertEqual(preset, expected)
+            button.invoke()
+            self.assertEqual(self.panel.area_a_avatar_path, str(expected))
+            self.assertEqual(self.panel.interaction_user.get(), "真实观众")
+            self.assertEqual(self.panel.interaction_message.get(), "请保留这条原始弹幕")
+        picker.destroy()
+
+    def test_canceling_or_rejecting_upload_preserves_current_avatar(self):
+        original = self.panel.broadcast_view._avatar_source_image
+        with patch("control_panel.filedialog.askopenfilename", return_value=""):
+            self.panel.avatar_upload_button.invoke()
+        with patch("control_panel.filedialog.askopenfilename", return_value="missing.png"), patch(
+                "control_panel.messagebox.showerror") as error:
+            self.panel.avatar_upload_button.invoke()
+            error.assert_called_once()
+        self.assertIs(self.panel.broadcast_view._avatar_source_image, original)
 
 
 if __name__ == "__main__":

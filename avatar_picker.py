@@ -1,0 +1,90 @@
+"""Local avatar library and a thumbnail picker outside the capture area."""
+from pathlib import Path
+import shutil
+import tkinter as tk
+from tkinter import ttk
+from uuid import uuid4
+from PIL import Image, ImageOps, ImageTk
+
+from soft_ui import ui_scale
+from stream_brand import AVATAR_PRESETS, DEFAULT_AVATAR
+
+
+UPLOAD_DIRECTORY = Path(__file__).resolve().parent / "work" / "avatars"
+
+
+def avatar_caption(path):
+    selected = Path(path) if path else DEFAULT_AVATAR
+    for caption, preset in AVATAR_PRESETS:
+        if selected.resolve() == preset.resolve():
+            return caption
+    return "已上传图片"
+
+
+def import_avatar(path):
+    """Validate and preserve the original file locally; no external upload."""
+    source = Path(path)
+    try:
+        with Image.open(source) as image:
+            extension = {"PNG": ".png", "JPEG": ".jpg", "WEBP": ".webp"}.get(image.format)
+            if extension is None:
+                raise ValueError("请选择 PNG、JPG 或 WebP 图片")
+            image.verify()
+    except Image.DecompressionBombError as error:
+        raise ValueError("图片尺寸过大") from error
+    UPLOAD_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    destination = UPLOAD_DIRECTORY / f"{uuid4().hex}{extension}"
+    try:
+        shutil.copyfile(source, destination)
+    except OSError:
+        destination.unlink(missing_ok=True)
+        raise
+    return str(destination)
+
+
+class AvatarPicker(tk.Toplevel):
+    def __init__(self, parent, selected, on_select, on_upload, palette):
+        super().__init__(parent)
+        self.title("A区头像")
+        self.transient(parent)
+        self.configure(bg=palette["panel"])
+        self.resizable(False, False)
+        self._images = []
+        self._buttons = []
+        self._palette = palette
+        self._on_select = on_select
+        grid = tk.Frame(self, bg=palette["panel"], padx=16, pady=16)
+        grid.pack(fill="both", expand=True)
+        size = round(116 * ui_scale(self))
+        for index, (caption, path) in enumerate(AVATAR_PRESETS):
+            with Image.open(path) as source:
+                thumbnail = ImageOps.contain(ImageOps.exif_transpose(source).convert("RGBA"),
+                    (size, size), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(thumbnail, master=self)
+            self._images.append(photo)
+            button = tk.Button(grid, text=caption, image=photo, compound="top",
+                bg=palette["panel"], fg=palette["text"], activebackground=palette["panel2"],
+                activeforeground=palette["text"], font=("Microsoft YaHei UI", 10),
+                padx=10, pady=8, bd=0, relief="flat", highlightthickness=2, cursor="hand2",
+                command=lambda target=path: self._choose(str(target)))
+            button.grid(row=index // 3, column=index % 3, padx=5, pady=5, sticky="nsew")
+            self._buttons.append((button, path))
+        actions = ttk.Frame(self, padding=(20, 0, 20, 16))
+        actions.pack(fill="x")
+        ttk.Button(actions, text="上传图片…", command=lambda: on_upload(self)).pack(side="left")
+        ttk.Button(actions, text="完成", command=self.destroy).pack(side="right")
+        self.set_selection(selected)
+        self.update_idletasks()
+        x = max(0, min(parent.winfo_rootx() + 60, self.winfo_screenwidth() - self.winfo_reqwidth()))
+        y = max(0, min(parent.winfo_rooty() + 60, self.winfo_screenheight() - self.winfo_reqheight() - 50))
+        self.geometry(f"+{x}+{y}")
+
+    def _choose(self, path):
+        if self._on_select(path):
+            self.set_selection(path)
+
+    def set_selection(self, selected):
+        selected = Path(selected) if selected else DEFAULT_AVATAR
+        for button, path in self._buttons:
+            color = self._palette["jade"] if selected.resolve() == path.resolve() else self._palette["border"]
+            button.configure(highlightbackground=color, highlightcolor=color)

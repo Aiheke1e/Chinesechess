@@ -16,6 +16,7 @@ from adb_bridge import (adb, current_package, list_devices, resolution,
                         screenshot, tap, cancellable_adb, TaskCancelled)
 from board import Board, START_FEN
 from broadcast_view import BroadcastView
+from avatar_picker import AvatarPicker, avatar_caption, import_avatar
 from broadcast_layout import chess_window_bounds, popup_position
 from monitoring import MonitorIssues, player_view, speech_view, live_view
 from diagnostics import DIAGNOSTIC_DIR, capture_diagnostic
@@ -282,7 +283,7 @@ class ControlPanel:
         self.broadcast_view = BroadcastView(
             self.root, self.interaction_user, self.interaction_message, THEME,
             on_popout=self.open_broadcast_window, avatar_path=self.area_a_avatar_path,
-            on_avatar_change=self.choose_area_a_avatar)
+            on_avatar_change=self.open_avatar_picker)
         self.broadcast_view.configure(width=round(int(self.broadcast_width.get()) * ui_scale(self.root)))
         if self.preview_visible:
             self.broadcast_view.pack(anchor="center", padx=16, pady=(12, 10))
@@ -386,12 +387,13 @@ class ControlPanel:
         window.configure(bg="#101d34")
         window.attributes("-alpha", 1.0)
         view = BroadcastView(window, self.interaction_user, self.interaction_message, THEME,
-            avatar_path=getattr(self, "area_a_avatar_path", ""), on_avatar_change=self.choose_area_a_avatar)
+            avatar_path=getattr(self, "area_a_avatar_path", ""), on_avatar_change=self.open_avatar_picker)
         view.pack(fill="both", expand=True)
         menu = tk.Menu(window, tearoff=False)
         menu.add_command(label="对齐象棋宽度", command=self.align_broadcast_width)
         menu.add_command(label="调整A区尺寸…", command=self._focus_broadcast_size)
-        menu.add_command(label="更换A区形象…", command=self.choose_area_a_avatar)
+        menu.add_command(label="选择默认头像…", command=self.open_avatar_picker)
+        menu.add_command(label="上传图片…", command=self.choose_area_a_avatar)
         menu.add_command(label="恢复默认形象", command=self.reset_area_a_avatar)
         menu.add_separator()
         menu.add_command(label="关闭A区", command=self.close_broadcast_window)
@@ -404,19 +406,44 @@ class ControlPanel:
         if not self.broadcast_view.set_avatar(path, strict=True):
             return False
         self.area_a_avatar_path = path
+        if hasattr(self, "area_a_avatar_name"):
+            self.area_a_avatar_name.set(avatar_caption(path))
         window = getattr(self, "broadcast_window", None)
         if window is not None and window.winfo_exists():
             for view in window.winfo_children():
                 if isinstance(view, BroadcastView):
                     view.set_avatar(path)
+        picker = getattr(self, "avatar_picker_window", None)
+        if picker is not None and picker.winfo_exists():
+            picker.set_selection(path)
         self._schedule_ui_save()
         return True
 
-    def choose_area_a_avatar(self):
-        path = filedialog.askopenfilename(parent=self.root, title="更换A区形象",
+    def open_avatar_picker(self):
+        picker = getattr(self, "avatar_picker_window", None)
+        if picker is not None and picker.winfo_exists():
+            picker.deiconify()
+            picker.lift()
+            return
+        window = getattr(self, "broadcast_window", None)
+        parent = window if window is not None and window.winfo_exists() and window.winfo_viewable() else self.root
+        self.avatar_picker_window = AvatarPicker(parent,
+            getattr(self, "area_a_avatar_path", ""), self._set_area_a_avatar,
+            self.choose_area_a_avatar, dict(THEME))
+
+    def choose_area_a_avatar(self, parent=None):
+        parent = parent or self.root
+        path = filedialog.askopenfilename(parent=parent, title="上传A区头像",
             filetypes=[("图片", "*.png *.jpg *.jpeg *.webp"), ("所有文件", "*.*")])
-        if path and not self._set_area_a_avatar(path):
-            messagebox.showerror("形象未更换", "这张图片无法读取，请选择 PNG、JPG 或 WebP 图片。", parent=self.root)
+        if not path:
+            return
+        try:
+            imported = import_avatar(path)
+            if not self._set_area_a_avatar(imported):
+                os.unlink(imported)
+                raise ValueError("图片无法读取")
+        except (OSError, ValueError):
+            messagebox.showerror("头像未更换", "图片无法读取或保存，请选择 PNG、JPG 或 WebP 图片。", parent=parent)
 
     def reset_area_a_avatar(self):
         self._set_area_a_avatar("")
@@ -716,17 +743,26 @@ class ControlPanel:
         for entry in (self.broadcast_width_entry, height_entry):
             entry.bind("<Return>", self.apply_broadcast_size)
             entry.bind("<FocusOut>", self.apply_broadcast_size)
-        ttk.Label(form, text="弹幕互动", style="Card.TLabel").grid(row=5, column=0, sticky="w")
+        ttk.Label(form, text="A区头像", style="Card.TLabel").grid(row=5, column=0, sticky="w")
+        avatar_row = ttk.Frame(form, style="Card.TFrame")
+        avatar_row.grid(row=5, column=1, columnspan=5, sticky="ew", pady=(0, 14))
+        self.area_a_avatar_name = tk.StringVar(master=self.root, value=avatar_caption(self.area_a_avatar_path))
+        ttk.Label(avatar_row, textvariable=self.area_a_avatar_name, style="Muted.TLabel").pack(side="left", padx=(0, 16))
+        self.avatar_presets_button = ttk.Button(avatar_row, text="选择默认头像…", command=self.open_avatar_picker)
+        self.avatar_presets_button.pack(side="left", padx=(0, 8))
+        self.avatar_upload_button = ttk.Button(avatar_row, text="上传图片…", command=self.choose_area_a_avatar)
+        self.avatar_upload_button.pack(side="left")
+        ttk.Label(form, text="弹幕互动", style="Card.TLabel").grid(row=6, column=0, sticky="w")
         row = ttk.Frame(form, style="Card.TFrame")
-        row.grid(row=5, column=1, columnspan=5, sticky="ew")
+        row.grid(row=6, column=1, columnspan=5, sticky="ew")
         ttk.Label(row, textvariable=self.interaction_state, style="Card.TLabel").pack(side="left", padx=(0, 16))
         ttk.Label(row, textvariable=self.chat_sampling_text, style="Muted.TLabel").pack(side="left")
-        ttk.Label(form, text="说话风格", style="Card.TLabel").grid(row=6, column=0, sticky="nw", pady=(12, 0))
+        ttk.Label(form, text="说话风格", style="Card.TLabel").grid(row=7, column=0, sticky="nw", pady=(12, 0))
         self.persona_text = tk.Text(form, height=3, width=1, wrap="word", bg=THEME["editor"],
             fg=THEME["text"], insertbackground=THEME["text"], selectbackground=THEME["select"],
             relief="flat", highlightthickness=1, highlightbackground=THEME["border"],
             highlightcolor=THEME["jade"], padx=10, pady=8, font=("Microsoft YaHei UI", 10), undo=True)
-        self.persona_text.grid(row=6, column=1, columnspan=5, sticky="ew", pady=(12, 0))
+        self.persona_text.grid(row=7, column=1, columnspan=5, sticky="ew", pady=(12, 0))
         self.persona_text.insert("1.0", load_settings().persona)
         self.persona_text.bind("<FocusOut>", lambda event: self.save_live_settings(quiet=True))
 
@@ -737,7 +773,8 @@ class ControlPanel:
         self.tools_menu.add_command(label="保存设置", command=self.save_live_settings)
         self.tools_menu.add_command(label="当前异常", command=self.show_monitor_issues)
         self.tools_menu.add_command(label="对齐象棋宽度", command=self.align_broadcast_width)
-        self.tools_menu.add_command(label="更换A区形象…", command=self.choose_area_a_avatar)
+        self.tools_menu.add_command(label="选择默认头像…", command=self.open_avatar_picker)
+        self.tools_menu.add_command(label="上传A区头像…", command=self.choose_area_a_avatar)
         self.tools_menu.add_command(label="恢复默认形象", command=self.reset_area_a_avatar)
         self.tools_menu.add_separator()
         self.tools_menu.add_command(label="预览一手", command=self.preview_once)

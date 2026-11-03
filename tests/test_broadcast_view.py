@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 
 from broadcast_view import BroadcastView, BROADCAST_PALETTE
 from control_panel import ControlPanel, THEME
-from stream_brand import DEFAULT_AVATAR, CHANNEL_NAME, AI_DISCLOSURE
+from stream_brand import DEFAULT_AVATAR
 
 
 class BroadcastViewTests(unittest.TestCase):
@@ -28,8 +28,8 @@ class BroadcastViewTests(unittest.TestCase):
         self.assertEqual(len(self.message.trace_info()), 2)
         self.user.set("另一位棋友")
         self.message.set("这次能配合炮将军吗？")
-        self.assertEqual(first.user_label.cget("text"), "另一位棋友")
-        self.assertEqual(second.message_label.cget("text"), "这次能配合炮将军吗？")
+        self.assertEqual(first.comment_text.get("1.0", "end-1c"), "另一位棋友：这次能配合炮将军吗？")
+        self.assertEqual(second.comment_text.get("1.0", "end-1c"), "另一位棋友：这次能配合炮将军吗？")
         first.destroy()
         self.assertEqual(len(self.message.trace_info()), 1)
         self.message.set("只更新还存在的展示区")
@@ -65,10 +65,10 @@ class BroadcastViewTests(unittest.TestCase):
             asset.verify()
         view = BroadcastView(self.root, self.user, self.message, THEME)
         self.assertIsNotNone(view._avatar_source_image)
-        self.assertEqual(view.brand_label.cget("text"), CHANNEL_NAME)
-        self.assertEqual(view.ai_label.cget("text"), AI_DISCLOSURE)
+        self.assertEqual(view.content.winfo_children(), [view.avatar_label, view.comment_text])
+        self.assertEqual(view.comment_text.get("1.0", "end-1c"), "棋友老张：这匹马能跳过去吗？")
         view.set_palette(THEME)
-        self.assertEqual(view.ai_label.cget("fg"), BROADCAST_PALETTE["jade"])
+        self.assertEqual(view.comment_text.tag_cget("viewer", "foreground"), BROADCAST_PALETTE["jade"])
         self.assertEqual(self.user.get(), "棋友老张")
         self.assertEqual(self.message.get(), "这匹马能跳过去吗？")
         original = view._avatar_source_image
@@ -95,7 +95,7 @@ class BroadcastViewTests(unittest.TestCase):
         self.assertEqual(panel.broadcast_view.winfo_manager(), "")
         self.message.set("后台收起预览，直播画面仍应继续更新。")
         capture = window.winfo_children()[0]
-        self.assertEqual(capture.message_label.cget("text"), self.message.get())
+        self.assertEqual(capture.comment_text.get("1.0", "end-1c"), self.user.get() + "：" + self.message.get())
         panel.toggle_preview()
         self.assertEqual(panel.broadcast_view.winfo_manager(), "pack")
         self.root.tk.call(window.protocol("WM_DELETE_WINDOW"))
@@ -115,12 +115,11 @@ class BroadcastViewTests(unittest.TestCase):
         window = panel.broadcast_window
         capture = window.winfo_children()[0]
         self.assertEqual(tuple(map(int, window.resizable())), (1, 1))
-        self.assertEqual(capture.message_label.cget("background"), BROADCAST_PALETTE["panel"])
+        self.assertEqual(capture.comment_text.cget("background"), BROADCAST_PALETTE["panel"])
         self.assertFalse(hasattr(capture, "popout_button"))
         self.user.set("直播间收到的真实昵称")
         self.message.set("现在回复的是这条真实弹幕")
-        self.assertEqual(capture.user_label.cget("text"), self.user.get())
-        self.assertEqual(capture.message_label.cget("text"), self.message.get())
+        self.assertEqual(capture.comment_text.get("1.0", "end-1c"), self.user.get() + "：" + self.message.get())
         panel.broadcast_width.set("620")
         panel.broadcast_height.set("220")
         panel.apply_broadcast_size()
@@ -132,6 +131,15 @@ class BroadcastViewTests(unittest.TestCase):
         self.root.update_idletasks()
         self.assertEqual(panel._broadcast_dimensions(), (620, 220))
         panel.close_broadcast_window()
+
+    def test_comment_keeps_unicode_nickname_and_empty_state_without_placeholder(self):
+        self.user.set("🍊老张")
+        view = BroadcastView(self.root, self.user, self.message, THEME)
+        self.assertEqual(view.comment_text.get("viewer.first", "viewer.last"), "🍊老张")
+        self.user.set("")
+        self.message.set("")
+        self.assertEqual(view.comment_text.get("1.0", "end-1c"), "")
+        view.destroy()
 
     def test_state_switch_keeps_callback_and_disabled_behavior(self):
         panel = object.__new__(ControlPanel)
