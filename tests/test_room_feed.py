@@ -81,6 +81,8 @@ class RoomFeedUITests(unittest.TestCase):
 
     def tearDown(self):
         if hasattr(self, "root"):
+            for job in self.root.tk.call("after", "info"):
+                self.root.tk.call("after", "cancel", job)
             self.root.destroy()
 
     def connection(self, epoch=1):
@@ -149,6 +151,33 @@ class RoomFeedUITests(unittest.TestCase):
                     if isinstance(widget, tk.ttk.Checkbutton)}
         self.assertFalse(controls & switches)
         self.assertTrue(switches <= settings)
+
+    def test_shared_interaction_button_pauses_and_resumes_without_starting_a_game(self):
+        self.controller.suspended = False
+        self.controller.enabled = True
+        self.controller.pause.side_effect = lambda: setattr(self.controller, "enabled", False)
+        self.controller.enable.side_effect = lambda: setattr(self.controller, "enabled", True)
+        with patch.object(self.panel, "save_live_settings", return_value=True), patch.object(
+                self.panel, "prepare_and_wait") as start_board:
+            self.panel.interaction_button.invoke()
+            self.assertEqual(self.panel.interaction_button.cget("text"), "开启互动")
+            self.panel.interaction_button.invoke()
+            self.assertEqual(self.panel.interaction_button.cget("text"), "暂停互动")
+        start_board.assert_not_called()
+        self.assertIs(self.panel.interaction_button.master, self.panel.live_connect_button.master)
+        self.assertIs(self.panel.start_button.master, self.panel.live_connect_button.master)
+
+    def test_switching_soft_theme_keeps_log_content_and_cleans_up_tk_callbacks(self):
+        errors = []
+        self.root.report_callback_exception = lambda *args: errors.append(args)
+        self.panel.append_speech({"kind": "reply", "text": "当前台词。", "data": {"kind": "弹幕回复"}})
+        for theme in ("雾蓝柔光", "午夜蓝", "云白青黛"):
+            self.panel.theme_name.set(theme)
+            self.root.update_idletasks()
+        self.assertIn("当前台词。", self.panel.live_log.get("1.0", "end"))
+        self.panel.broadcast_view.destroy()
+        self.root.update_idletasks()
+        self.assertFalse(errors)
 
     def test_enabling_interaction_after_stop_displays_replies_without_reviving_board_workers(self):
         canceled = self.panel.task_cancel

@@ -1,21 +1,19 @@
 """Viewer-facing comment display, shared by the workbench and capture window."""
 import tkinter as tk
 from tkinter import font as tkfont
+from soft_ui import SoftCard
 
 
-class BroadcastView(tk.Frame):
+class BroadcastView(SoftCard):
     def __init__(self, parent, user, message, palette):
-        super().__init__(parent, bg=palette["panel"], height=152,
-                         highlightthickness=1, highlightbackground=palette["border"])
+        super().__init__(parent, palette, height=132, inset=7)
         self.pack_propagate(False)
         self._layout_job = None
         self._variables = (user, message)
         self._traces = [variable.trace_add("write", self._schedule_layout)
                         for variable in self._variables]
-        accent = tk.Frame(self, bg=palette["jade"], width=4)
-        accent.pack(side="left", fill="y", padx=(0, 20))
-        content = tk.Frame(self, bg=palette["panel"])
-        content.pack(fill="both", expand=True, padx=(0, 24), pady=14)
+        content = tk.Frame(self.content, bg=palette["panel"])
+        content.pack(fill="both", expand=True, padx=12, pady=6)
         self.user_label = tk.Label(content, textvariable=user, bg=palette["panel"],
             fg=palette["jade"], font=("Microsoft YaHei UI", 11, "bold"),
             width=1, anchor="w")
@@ -25,7 +23,7 @@ class BroadcastView(tk.Frame):
             fg=palette["text"], font=self.message_font, width=1, anchor="nw", justify="left")
         self.message_label.pack(fill="both", expand=True, pady=(8, 0))
         self.message_label.bind("<Configure>", self._schedule_layout)
-        self.bind("<Destroy>", self._cleanup)
+        self.bind("<Destroy>", self._cleanup, add="+")
 
     def _schedule_layout(self, *_):
         if self._layout_job is None:
