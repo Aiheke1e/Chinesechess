@@ -82,7 +82,8 @@ class ChatSelector:
             if not eligible:
                 return False
             # Keep meaningful text, not long advertisements or pure emoji/666.
-            meaningful = re.sub(r"[^\w\u4e00-\u9fff]", "", text)
+            content = re.sub(r"\[[^\]\n]{1,12}\]", "", text)
+            meaningful = re.sub(r"[^\w\u4e00-\u9fff]", "", content)
             if (len(meaningful) < 2 or len(text) > 160
                     or re.search(r"https?://|www\.", text, re.I)
                     or re.fullmatch(r"[哈呵嘿哦啊嗯好棒赞689]+", meaningful)

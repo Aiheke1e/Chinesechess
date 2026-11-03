@@ -52,7 +52,7 @@ class ChatSelectionTests(unittest.TestCase):
         self.assertFalse(self.selector.update_online("invalid"))
 
     def test_spam_duplicates_and_repeated_users_do_not_dominate(self):
-        for text in ("666666", "哈哈哈哈哈", "👍👍👍", "https://example.com/ad", "买" * 200):
+        for text in ("666666", "哈哈哈哈哈", "👍👍👍", "[九转大肠]", "[捂脸][鼓掌]", "https://example.com/ad", "买" * 200):
             self.assertFalse(self.selector.offer(self.event(text=text)))
         self.assertTrue(self.selector.offer(self.event(user="小王", text="为什么不走车？")))
         self.assertFalse(self.selector.offer(self.event(user="小李", text="为什么不走车？")))

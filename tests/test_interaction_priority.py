@@ -7,23 +7,42 @@ from unittest.mock import Mock, patch
 import glm_client
 import player
 from chat_selection import ChatSelector
-from interaction_text import spoken_reply, welcome_line
+from interaction_text import spoken_reply, viewer_address, welcome_line
 from live_host import LiveController, LiveSettings, SpeechPipeline
 
 
 class InteractionTextTests(unittest.TestCase):
     def test_welcome_has_only_the_name_and_entry_notice(self):
         self.assertEqual(welcome_line("小王"), "欢迎小王进入直播间。")
-        self.assertEqual(welcome_line("李***"), "欢迎这位棋友进入直播间。")
+        self.assertEqual(welcome_line("李***"), "欢迎李棋友进入直播间。")
         self.assertEqual(spoken_reply("这首挺合你胃口。[捂脸][鼓掌]😀"), "这首挺合你胃口。")
 
     def test_logged_criticism_and_listening_comments_cannot_turn_into_chess_praise(self):
         self.assertEqual(spoken_reply("李棋友，你夸得我不好意思，棋艺再好也不能气病。", payload={
             "观众": "李***", "弹幕": "主播棋下的，能把人气出病来。[捂脸]"}),
-            "看得你着急了，咱们少点惊险，多点稳当。")
+            "李棋友，看得你着急了，咱们少点惊险，多点稳当。")
         self.assertEqual(spoken_reply("李棋友，这首歌挺不错，您喜欢吗？", payload={
-            "观众": "李***", "弹幕": "出招吧真好听"}), "合你胃口就好，听着舒服最重要。")
-        self.assertEqual(spoken_reply("李棋友，晚上好。", payload={"观众": "李***"}), "这位棋友，晚上好。")
+            "观众": "李***", "弹幕": "出招吧真好听"}), "李棋友，合你胃口就好，听着舒服最重要。")
+        self.assertEqual(spoken_reply("李棋友，晚上好。", payload={"观众": "李***"}), "李棋友，晚上好。")
+
+    def test_visible_nickname_is_used_once_without_guessing_masked_characters(self):
+        self.assertEqual(viewer_address("睡懵的象棋小仙女🧜🏻‍♀️"), "睡懵的象棋小仙女")
+        self.assertEqual(viewer_address("***"), "")
+        self.assertEqual(welcome_line("😀"), "欢迎新朋友进入直播间。")
+        for answer in ("这位棋友，晚上好。", "晚上好。", "小王，晚上好。"):
+            self.assertEqual(spoken_reply(answer, payload={"观众": "小王"}), "小王，晚上好。")
+        answer = spoken_reply("这位棋友，" + "这匹马要看住将门" * 9, payload={"观众": "睡懵的象棋小仙女🧜🏻‍♀️"})
+        self.assertLessEqual(len(answer), 55)
+        self.assertIn("这匹马", answer)
+        self.assertTrue(answer.startswith("睡懵的象棋小仙女，"))
+
+    def test_replies_do_not_invent_giveaways_links_or_gift_conditions(self):
+        answer = spoken_reply("棋谱在直播间页面有链接，点击就能领取啦！", payload={
+            "观众": "原***", "弹幕": "哪里有棋谱领"})
+        self.assertEqual(answer, "原棋友，棋谱的领取入口，我这边还没有信息，以直播间公布的说明为准。")
+        self.assertEqual(spoken_reply("送我个礼物，我就能告诉你怎么领啦！", payload={
+            "观众": "小王", "弹幕": "怎么领"}), "小王，你想领什么？说具体一点。")
+        self.assertIn("不用送礼", spoken_reply("先刷礼物，我才回答。", payload={"观众": "小王", "弹幕": "怎么下？"}))
 
     def test_welcome_does_not_call_a_model(self):
         heard = threading.Event()
@@ -73,6 +92,7 @@ class InteractionTextTests(unittest.TestCase):
         request = json.loads(chat.call_args.args[0][0]["content"])
         self.assertEqual(request["输入"]["弹幕"], "出招吧真好听")
         self.assertNotIn("最近对话", request)
+        self.assertEqual(request["称呼"], "李棋友")
         self.assertNotIn("别的观众", str(chat.call_args.args))
         self.assertEqual(chat.call_args.kwargs["system_prompt"], glm_client.INTERACTION_PROMPT)
 
