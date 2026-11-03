@@ -33,6 +33,7 @@ class SoftCard(tk.Frame):
         self._paint_job = None
         self._paint_key = None
         self._image = None
+        self._wallpaper_mode = False
         self.canvas = tk.Canvas(self, bg=palette["bg"], bd=0, highlightthickness=0)
         self.canvas.place(x=0, y=0, relwidth=1, relheight=1)
         self._image_item = self.canvas.create_image(0, 0, anchor="nw")
@@ -42,11 +43,13 @@ class SoftCard(tk.Frame):
         self.bind("<Destroy>", self._surface_cleanup)
 
     def _schedule_paint(self, *_):
-        if self._paint_job is None:
+        if not self._wallpaper_mode and self._paint_job is None:
             self._paint_job = self.after(20, self._paint)
 
     def _paint(self):
         self._paint_job = None
+        if self._wallpaper_mode:
+            return
         width, height = self.winfo_width(), self.winfo_height()
         if width < 2 * self.inset + 4 or height < 2 * self.inset + 4:
             return
@@ -57,6 +60,16 @@ class SoftCard(tk.Frame):
         self._image = ImageTk.PhotoImage(surface_image((width, height), key[2], key[3],
             inset=self.inset, radius=10, border=key[4]), master=self)
         self.canvas.itemconfigure(self._image_item, image=self._image)
+
+    def use_wallpaper(self):
+        """Let the main window's continuous image replace the opaque card."""
+        self._wallpaper_mode = True
+        if self._paint_job is not None:
+            self.after_cancel(self._paint_job)
+            self._paint_job = None
+        self.canvas.place_forget()
+        self.canvas.itemconfigure(self._image_item, image="")
+        self._image = None
 
     def set_palette(self, palette):
         self.palette = dict(palette)

@@ -19,6 +19,7 @@ from broadcast_view import BroadcastView
 from borderless_window import BorderlessControls
 from avatar_picker import AvatarPicker, avatar_caption, import_avatar
 from app_wallpaper import AppWallpaper, BACKGROUND_DIRECTORY
+from wallpaper_text import WallpaperText
 from local_images import import_image
 from broadcast_layout import chess_window_bounds, popup_position
 from monitoring import MonitorIssues, player_view, speech_view, live_view
@@ -322,12 +323,12 @@ class ControlPanel:
             dot = tk.Canvas(cell, width=10, height=10, bg=THEME["panel2"], highlightthickness=0)
             dot.grid(row=0, column=0, padx=(0, 5))
             oval = dot.create_oval(2, 2, 8, 8, fill=THEME["muted"], outline=THEME["muted"])
-            tk.Label(cell, text=caption, bg=THEME["panel2"], fg=THEME["muted"],
+            tk.Label(cell, text=caption, bg=THEME["panel2"], fg=THEME["text"],
                      font=("Microsoft YaHei UI", 9)).grid(row=0, column=1, sticky="w", padx=(0, 10))
             title = tk.Label(cell, text="待机", bg=THEME["panel2"], fg=THEME["text"],
                              font=("Microsoft YaHei UI", 10, "bold"), anchor="w")
             title.grid(row=0, column=2, sticky="ew")
-            detail = tk.Label(cell, text="", bg=THEME["panel2"], fg=THEME["muted"],
+            detail = tk.Label(cell, text="", bg=THEME["panel2"], fg=THEME["text"],
                               font=("Microsoft YaHei UI", 9), anchor="w")
             detail.grid(row=1, column=1, columnspan=2, sticky="ew", pady=(3, 0))
             detail.bind("<Configure>", lambda event, target=detail:
@@ -346,10 +347,10 @@ class ControlPanel:
         footer = tk.Frame(self.root, bg=THEME["bg"])
         self.wallpaper.register(footer)
         footer.pack(side="bottom", fill="x", padx=20, pady=(8, 12))
-        tk.Label(footer, textvariable=self.session_summary, bg=THEME["bg"], fg=THEME["muted"],
+        tk.Label(footer, textvariable=self.session_summary, bg=THEME["bg"], fg=THEME["text"],
                  font=("Microsoft YaHei UI", 9)).pack(side="right", padx=(16, 0))
         self.footer_status = tk.Label(footer, textvariable=self.status, anchor="w", justify="left",
-            bg=THEME["bg"], fg=THEME["muted"], font=("Microsoft YaHei UI", 9))
+            bg=THEME["bg"], fg=THEME["text"], font=("Microsoft YaHei UI", 9))
         self.footer_status.pack(side="left", fill="x", expand=True)
         self.footer_status.bind("<Configure>", lambda event: self.footer_status.configure(wraplength=max(200, event.width)))
 
@@ -361,6 +362,8 @@ class ControlPanel:
         self.live_settings_page = self._scroll_page("  设置  ")
         self._build_workspace(workspace)
         self._build_live_settings(self.live_settings_page)
+        self.wallpaper.cover_widgets(self.root, exclude=(
+            self.broadcast_view, self.attention_bar, self.sandtable_canvas))
         self._layout_preview()
         self.root.bind("<F8>", lambda event: self.stop())
         self.root.bind("<MouseWheel>", self._scroll_settings, add="+")
@@ -637,10 +640,10 @@ class ControlPanel:
             ttk.Menubutton(heading, text="···", width=2, menu=menu, style=f"{key}.Log.TMenubutton").pack(side="right")
             log_frame = ttk.Frame(surface, style="Card.TFrame", padding=(2, 0, 2, 2))
             log_frame.grid(row=5, column=0, sticky="nsew")
-            text = tk.Text(log_frame, bg=THEME["console"], fg=THEME["console_text"],
+            text = WallpaperText(log_frame, wallpaper=self.wallpaper, bg=THEME["console"], fg=THEME["console_text"],
                 insertbackground=THEME["text"], selectbackground=THEME["select"],
                 font=("Microsoft YaHei UI", 11), wrap="word", state="disabled", relief="flat",
-                width=1, height=1, padx=12, pady=12, highlightthickness=0)
+                width=1, height=1, padx=12, pady=12, highlightthickness=0, bd=0)
             scroll = ttk.Scrollbar(log_frame, orient="vertical", command=text.yview, style="Slim.Vertical.TScrollbar")
             scroll.pack(side="right", fill="y")
             text.pack(side="left", fill="both", expand=True)
@@ -833,7 +836,7 @@ class ControlPanel:
             variable=self.background_transparency, command=self.change_background_transparency)
         self.background_scale.pack(side="left", fill="x", expand=True, padx=(0, 8))
         label("说话风格", 9)
-        self.persona_text = tk.Text(form, height=3, width=1, wrap="word", bg=THEME["editor"],
+        self.persona_text = WallpaperText(form, wallpaper=self.wallpaper, height=3, width=1, wrap="word", bg=THEME["editor"],
             fg=THEME["text"], insertbackground=THEME["text"], selectbackground=THEME["select"],
             relief="flat", highlightthickness=1, highlightbackground=THEME["border"],
             highlightcolor=THEME["jade"], padx=10, pady=8, font=("Microsoft YaHei UI", 10), undo=True)
@@ -917,7 +920,7 @@ class ControlPanel:
         style.configure("TScale", background=THEME["panel"], troughcolor=THEME["panel2"])
         style.configure("TLabel", background=THEME["bg"], foreground=THEME["text"])
         style.configure("Card.TLabel", background=THEME["panel"], foreground=THEME["text"])
-        style.configure("Muted.TLabel", background=THEME["panel"], foreground=THEME["muted"])
+        style.configure("Muted.TLabel", background=THEME["panel"], foreground=THEME["text"])
         style.configure("Section.TLabel", background=THEME["panel"],
                         foreground=THEME["text"],
                         font=("Microsoft YaHei UI", 11, "bold"))
@@ -1223,7 +1226,7 @@ class ControlPanel:
         colors = {"ok": THEME["jade"], "warn": THEME["gold"], "error": THEME["red"], "muted": THEME["muted"]}
         for key, (title, detail, level) in (("board", board), ("voice", voice), ("stream", live)):
             labels = self.monitor_labels[key]
-            labels[0].configure(text=title, fg=colors[level])
+            labels[0].configure(text=title, fg=THEME["text"] if level == "muted" else colors[level])
             labels[1].configure(text=detail)
             self._set_indicator(key, colors[level])
         issues = self.monitor_issues.rows()

@@ -480,6 +480,7 @@ class RoomFeedUITests(unittest.TestCase):
             self.panel.background_transparency.set(65)
             self.panel.change_background_transparency()
             self.assertEqual(self.panel.wallpaper.transparency, 65)
+
             self.assertEqual(float(self.root.attributes("-alpha")), 1.0)
             with patch("control_panel.UI_CFG", str(Path(folder) / "ui.json")):
                 self.panel._save_ui_settings()
@@ -489,6 +490,17 @@ class RoomFeedUITests(unittest.TestCase):
             self.panel.reset_background_image()
             self.assertEqual(self.panel.background_image_path, "")
             self.assertEqual(self.panel.wallpaper.transparency, 65)
+
+    def test_wallpaper_covers_controls_settings_and_all_three_logs(self):
+        surfaces = self.panel.wallpaper._surfaces
+        self.assertIn(self.panel.controls, surfaces)
+        self.assertIn(self.panel.settings_form, surfaces)
+        for pane in self.panel.log_panels.values():
+            self.assertIn(pane.content, surfaces)
+            self.assertEqual(pane.canvas.winfo_manager(), "")
+        for text in (self.panel.log, self.panel.live_log, self.panel.room_log, self.panel.persona_text):
+            self.assertIn(text._display, surfaces)
+        self.assertNotIn(self.panel.broadcast_view, surfaces)
 
 
 if __name__ == "__main__":

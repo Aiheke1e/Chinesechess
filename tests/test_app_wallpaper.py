@@ -12,8 +12,15 @@ class WallpaperCompositionTests(unittest.TestCase):
                 result = compose_background(source, (8, 8), "blue", transparency)
                 self.assertEqual(result.size, (8, 8))
                 self.assertEqual(result.getpixel((4, 4)), center)
-                self.assertEqual(result.getpixel((0, 0)), (0, 0, 255))
+                self.assertEqual(result.getpixel((0, 0)), center)
         self.assertEqual(source.size, (4, 2))
+
+    def test_cover_fills_wide_and_tall_windows_without_stretching(self):
+        source = Image.new("RGB", (12, 8), "red")
+        for size in ((24, 8), (8, 24)):
+            with self.subTest(size=size):
+                result = compose_background(source, size, "blue", 0)
+                self.assertEqual(result.getextrema(), ((255, 255), (0, 0), (0, 0)))
 
     def test_default_background_is_a_real_4k_photo(self):
         with Image.open(DEFAULT_BACKGROUND) as source:
