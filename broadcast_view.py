@@ -1,7 +1,11 @@
 """Viewer-facing comment display, shared by the workbench and capture window."""
 import tkinter as tk
 from tkinter import font as tkfont
+from functools import lru_cache
+from pathlib import Path
+from PIL import Image, ImageOps, ImageTk
 from soft_ui import SoftCard, ui_scale
+from stream_brand import CHANNEL_NAME, DEFAULT_AVATAR
 
 
 BROADCAST_PALETTE = {
@@ -10,8 +14,17 @@ BROADCAST_PALETTE = {
 }
 
 
+@lru_cache(maxsize=4)
+def _avatar_source(path, modified):
+    with Image.open(path) as source:
+        result = ImageOps.exif_transpose(source).convert("RGBA")
+        result.load()
+    return result
+
+
 class BroadcastView(SoftCard):
-    def __init__(self, parent, user, message, palette=None, *, on_popout=None):
+    def __init__(self, parent, user, message, palette=None, *, on_popout=None,
+                 avatar_path=None, on_avatar_change=None):
         palette = dict(BROADCAST_PALETTE)
         super().__init__(parent, palette, height=round(132 * ui_scale(parent)), inset=4)
         self.pack_propagate(False)
@@ -21,12 +34,26 @@ class BroadcastView(SoftCard):
                         for variable in self._variables]
         self.display_user = tk.StringVar(master=self, value=user.get())
         self.display_message = tk.StringVar(master=self, value=message.get())
+        self.avatar_column = tk.Frame(self.content, bg=palette["panel"])
+        self.avatar_column.pack(side="left", fill="y", padx=(0, 12))
+        self.avatar_label = tk.Label(self.avatar_column, text="豆", bg=palette["panel"],
+            fg=palette["jade"], bd=0, font=("Microsoft YaHei UI", 22, "bold"))
+        self.avatar_label.pack(expand=True)
+        self.brand_label = tk.Label(self.avatar_column, text=CHANNEL_NAME, bg=palette["panel"],
+            fg=palette["jade"], font=("Microsoft YaHei UI", 9, "bold"), bd=0)
+        self.brand_label.pack(pady=(2, 2))
+        if on_avatar_change:
+            self.avatar_label.configure(cursor="hand2")
+            self.avatar_label.bind("<Button-1>", lambda event: on_avatar_change())
+        self._avatar_source_image = None
+        self._avatar_image = None
+        self._avatar_size = None
         content = self.inner = tk.Frame(self.content, bg=palette["panel"])
-        content.pack(fill="both", expand=True, padx=12, pady=5)
+        content.pack(side="left", fill="both", expand=True, padx=(0, 8), pady=5)
         self.header = tk.Frame(content, bg=palette["panel"])
         self.header.pack(fill="x")
         if on_popout:
-            self.popout_button = tk.Button(self.header, text="弹出 ↗", command=on_popout,
+            self.popout_button = tk.Button(self.header, text="弹出A区 ↗", command=on_popout,
                 bg=palette["panel"], fg=palette["jade"], activebackground="#243c60",
                 activeforeground=palette["text"], relief="flat", bd=0, cursor="hand2",
                 font=("Microsoft YaHei UI", 10), padx=8, pady=2)
@@ -46,7 +73,40 @@ class BroadcastView(SoftCard):
         self.message_label.pack(fill="both", expand=True, pady=(8, 0))
         self.message_label.bind("<Configure>", self._schedule_layout)
         self.user_label.bind("<Configure>", self._schedule_layout)
+        self.content.bind("<Configure>", self._schedule_layout)
         self.bind("<Destroy>", self._cleanup, add="+")
+        self.set_avatar(avatar_path)
+
+    def set_avatar(self, path=None, *, strict=False):
+        requested = Path(path) if path else DEFAULT_AVATAR
+        try:
+            source = _avatar_source(str(requested), requested.stat().st_mtime_ns)
+        except (OSError, ValueError, Image.DecompressionBombError):
+            if strict:
+                return False
+            try:
+                source = _avatar_source(str(DEFAULT_AVATAR), DEFAULT_AVATAR.stat().st_mtime_ns)
+            except (OSError, ValueError, Image.DecompressionBombError):
+                source = None
+        self._avatar_source_image = source
+        self._avatar_size = None
+        self._schedule_layout()
+        return source is not None
+
+    def _fit_avatar(self):
+        scale = ui_scale(self)
+        compact = self.winfo_width() < round(380 * scale)
+        if compact:
+            self.brand_label.pack_forget()
+        elif not self.brand_label.winfo_manager():
+            self.brand_label.pack(pady=(2, 2))
+        available = self.content.winfo_height() - (0 if compact else self.brand_label.winfo_reqheight() + 8)
+        size = max(round(28 * scale), min(round((42 if compact else 90) * scale), available))
+        if self._avatar_source_image is not None and size != self._avatar_size:
+            self._avatar_size = size
+            self._avatar_image = ImageTk.PhotoImage(ImageOps.contain(self._avatar_source_image,
+                (size, size), Image.Resampling.LANCZOS), master=self)
+            self.avatar_label.configure(image=self._avatar_image, text="")
 
     def _schedule_layout(self, *_):
         # Keep updates synchronous; fitting runs once after the geometry settles.
@@ -57,6 +117,7 @@ class BroadcastView(SoftCard):
 
     def _fit_message(self):
         self._layout_job = None
+        self._fit_avatar()
         width = max(40, self.message_label.winfo_width() - 8)
         height = max(1, self.message_label.winfo_height() - 4)
         name = self._variables[0].get()
@@ -111,7 +172,8 @@ class BroadcastView(SoftCard):
     def set_palette(self, palette):
         # The viewer-facing blue/gold theme is independent of operator themes.
         super().set_palette(BROADCAST_PALETTE)
-        for widget in (self.inner, self.header, self.user_label, self.message_label):
+        for widget in (self.inner, self.header, self.user_label, self.message_label,
+                       self.avatar_column, self.avatar_label, self.brand_label):
             widget.configure(bg=BROADCAST_PALETTE["panel"])
         self.user_label.configure(fg=BROADCAST_PALETTE["jade"])
         self.message_label.configure(fg=BROADCAST_PALETTE["text"])

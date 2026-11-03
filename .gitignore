@@ -26,6 +26,7 @@ data/opening_book*.json.gz
 # Runtime screenshots are ignored, but recognition/test assets are required.
 !templates/*.png
 !fixture/*.png
+!assets/doubao-chess-avatar.png
 
 # Pikafish runtime files are downloaded separately; keep only its licenses/docs.
 engine_bin/*.7z

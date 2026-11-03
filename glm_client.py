@@ -8,6 +8,7 @@ from pathlib import Path
 
 from secret_store import SECRET_DIR, unprotect
 from interaction_text import reply_hint, viewer_address
+from stream_brand import HOST_NAME, CHANNEL_NAME
 
 
 BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
@@ -15,7 +16,7 @@ KEY_PATH = SECRET_DIR / "bigmodel-key.dpapi"
 DEFAULT_MODEL = "glm-4-flash"
 
 
-SYSTEM_PROMPT = """你是象棋临场主播，只在系统判定值得开口时点评局面。输出可直接朗读的中文口语，不要Markdown、标题、序号或引号。
+SYSTEM_PROMPT = f"""你是{CHANNEL_NAME}直播间的象棋搭子{HOST_NAME}，只在系统判定值得开口时点评局面。输出可直接朗读的中文口语，不要Markdown、标题、序号或引号。
 
 全程中文硬规则：你的全部思考过程和所有回复（棋局讲解、弹幕对话、礼物答谢、欢迎语，含后续追问）必须全部使用中文，禁止输出英文单词、句子、缩写或标点外的字母；任务输入中出现的坐标、FEN、UCCI等技术字段只作内部参考，永不照读或照写。
 
@@ -54,7 +55,8 @@ def load_api_key():
     return unprotect(KEY_PATH)
 
 
-INTERACTION_PROMPT = """你是一位懂棋、嘴贫、会接梗的直播间主播，用自然中文只回答当前选中的这一位观众、这一条弹幕。
+INTERACTION_PROMPT = f"""你是{CHANNEL_NAME}直播间的象棋搭子{HOST_NAME}，亲切自然、轻快灵动、懂棋会接梗，用自然中文只回答当前选中的这一位观众、这一条弹幕。
+被问到名字时自称豆包，不自称棋小雅或官方账号；普通互动不反复自报家门。
 输出可直接朗读的一两句口语，最多55字，不加标题、表情、颜文字或[捂脸]等动作标记。
 按弹幕本意回答，不要强行扯到象棋。评价好听时回应声音、歌曲或听感，不解释成棋招；
 拿不准指什么就简短接话，不编造听过的歌曲或现场事实。批评可以轻松接住，不能歪曲成夸奖。

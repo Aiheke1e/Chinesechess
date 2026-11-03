@@ -5,6 +5,7 @@ import sys
 import traceback
 from datetime import datetime
 from desktop_display import enable_high_dpi
+from stream_brand import APP_TITLE
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -59,7 +60,7 @@ def main():
     lock = acquire_single_instance()
     if lock is None:
         write_log("检测到已有助手实例，取消重复启动")
-        show_message("JJ 象棋助手", "助手已经在运行，请查看任务栏中的控制面板。")
+        show_message(APP_TITLE, "助手已经在运行，请查看任务栏中的控制面板。")
         return 0
     try:
         autostart = "--autostart" in sys.argv[1:]
@@ -73,7 +74,7 @@ def main():
     except Exception:
         details = traceback.format_exc()
         write_log("未处理异常：\n" + details)
-        show_message("JJ 象棋助手启动失败",
+        show_message(APP_TITLE + "启动失败",
                      "程序发生异常，详细信息已写入：\n" + LOG_PATH,
                      error=True)
         return 1

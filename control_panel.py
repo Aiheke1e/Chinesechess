@@ -10,7 +10,7 @@ import threading
 import tkinter as tk
 from collections import deque
 from datetime import datetime
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from adb_bridge import (adb, current_package, list_devices, resolution,
                         screenshot, tap, cancellable_adb, TaskCancelled)
@@ -33,6 +33,7 @@ from console_format import styled_player_line
 from room_feed import room_message_entry
 from soft_ui import SoftCard, install_button_styles, ui_scale, blend
 from desktop_display import enable_high_dpi
+from stream_brand import APP_TITLE, AREA_A_TITLE
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STOP_FILE = os.path.join(HERE, "work", "stop.request")
@@ -122,7 +123,8 @@ THEME = dict(THEMES["清晰蓝白"])
 
 def load_ui_settings():
     defaults = {"theme": "清晰蓝白", "opacity": 100, "preview_visible": True,
-                "broadcast_width": 600, "broadcast_height": 160, "broadcast_sized": False}
+                "broadcast_width": 600, "broadcast_height": 160, "broadcast_sized": False,
+                "area_a_avatar_path": ""}
     try:
         with open(UI_CFG, encoding="utf-8") as stream:
             saved = json.load(stream)
@@ -137,6 +139,8 @@ def load_ui_settings():
         defaults["broadcast_width"] = max(260, min(1600, int(saved.get("broadcast_width", 600))))
         defaults["broadcast_height"] = max(110, min(600, int(saved.get("broadcast_height", 160))))
         defaults["broadcast_sized"] = "broadcast_width" in saved and "broadcast_height" in saved
+        if isinstance(saved.get("area_a_avatar_path"), str):
+            defaults["area_a_avatar_path"] = saved["area_a_avatar_path"]
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         pass
     return defaults
@@ -169,6 +173,7 @@ class ControlPanel:
         self.broadcast_width = tk.StringVar(value=str(ui.get("broadcast_width", 600)))
         self.broadcast_height = tk.StringVar(value=str(ui.get("broadcast_height", 160)))
         self.broadcast_sized = ui.get("broadcast_sized", False)
+        self.area_a_avatar_path = ui.get("area_a_avatar_path", "")
         self.monitor_issues = MonitorIssues()
         self._monitor_job = None
         self._player_runtime = None
@@ -231,7 +236,7 @@ class ControlPanel:
         self.watchdog_reported_at = 0.0
         self.watchdog_recovery_started = False
         self.indicators = {}
-        root.title("JJ 象棋直播助手")
+        root.title(APP_TITLE)
         scale = ui_scale(root)
         width = min(round(1240 * scale), root.winfo_screenwidth() - round(60 * scale))
         height = min(round(800 * scale), root.winfo_screenheight() - round(90 * scale))
@@ -276,7 +281,8 @@ class ControlPanel:
 
         self.broadcast_view = BroadcastView(
             self.root, self.interaction_user, self.interaction_message, THEME,
-            on_popout=self.open_broadcast_window)
+            on_popout=self.open_broadcast_window, avatar_path=self.area_a_avatar_path,
+            on_avatar_change=self.choose_area_a_avatar)
         self.broadcast_view.configure(width=round(int(self.broadcast_width.get()) * ui_scale(self.root)))
         if self.preview_visible:
             self.broadcast_view.pack(anchor="center", padx=16, pady=(12, 10))
@@ -361,7 +367,7 @@ class ControlPanel:
             existing.lift()
             return
         window = self.broadcast_window = tk.Toplevel(self.root)
-        window.title("直播互动展示")
+        window.title(AREA_A_TITLE)
         scale = ui_scale(self.root)
         if not hasattr(self, "broadcast_width"):
             self.broadcast_width = tk.StringVar(master=self.root, value="600")
@@ -379,17 +385,41 @@ class ControlPanel:
         window.resizable(True, True)
         window.configure(bg="#101d34")
         window.attributes("-alpha", 1.0)
-        view = BroadcastView(window, self.interaction_user, self.interaction_message, THEME)
+        view = BroadcastView(window, self.interaction_user, self.interaction_message, THEME,
+            avatar_path=getattr(self, "area_a_avatar_path", ""), on_avatar_change=self.choose_area_a_avatar)
         view.pack(fill="both", expand=True)
         menu = tk.Menu(window, tearoff=False)
         menu.add_command(label="对齐象棋宽度", command=self.align_broadcast_width)
-        menu.add_command(label="调整尺寸…", command=self._focus_broadcast_size)
+        menu.add_command(label="调整A区尺寸…", command=self._focus_broadcast_size)
+        menu.add_command(label="更换A区形象…", command=self.choose_area_a_avatar)
+        menu.add_command(label="恢复豆包形象", command=self.reset_area_a_avatar)
         menu.add_separator()
-        menu.add_command(label="关闭展示窗", command=self.close_broadcast_window)
+        menu.add_command(label="关闭A区", command=self.close_broadcast_window)
         for widget in self._walk_widgets(view):
             widget.bind("<Button-3>", lambda event: menu.tk_popup(event.x_root, event.y_root))
         window.bind("<Configure>", self._remember_broadcast_size)
         window.protocol("WM_DELETE_WINDOW", self.close_broadcast_window)
+
+    def _set_area_a_avatar(self, path):
+        if not self.broadcast_view.set_avatar(path, strict=True):
+            return False
+        self.area_a_avatar_path = path
+        window = getattr(self, "broadcast_window", None)
+        if window is not None and window.winfo_exists():
+            for view in window.winfo_children():
+                if isinstance(view, BroadcastView):
+                    view.set_avatar(path)
+        self._schedule_ui_save()
+        return True
+
+    def choose_area_a_avatar(self):
+        path = filedialog.askopenfilename(parent=self.root, title="更换A区形象",
+            filetypes=[("图片", "*.png *.jpg *.jpeg *.webp"), ("所有文件", "*.*")])
+        if path and not self._set_area_a_avatar(path):
+            messagebox.showerror("形象未更换", "这张图片无法读取，请选择 PNG、JPG 或 WebP 图片。", parent=self.root)
+
+    def reset_area_a_avatar(self):
+        self._set_area_a_avatar("")
 
     def _broadcast_dimensions(self):
         try:
@@ -647,8 +677,8 @@ class ControlPanel:
                 ("礼物答谢", self.live_gifts, save),
                 ("沙盘演示", self.live_sandtable, save),
                 ("延伸讲解", self.live_queen_commentary, save),
-                ("顶部展示", self.preview_enabled, self.toggle_preview),
-                ("独立展示", self.broadcast_visible, self.toggle_broadcast_window)]
+                ("顶部A区", self.preview_enabled, self.toggle_preview),
+                ("弹出A区", self.broadcast_visible, self.toggle_broadcast_window)]
         toggles.extend((title, self.log_vars[key], lambda k=key: self.toggle_log(k))
                        for key, title in (("chess", "棋局记录"), ("live", "解说记录"), ("room", "直播间消息")))
         self.toggle_widgets = {}
@@ -656,7 +686,7 @@ class ControlPanel:
             switch = ttk.Checkbutton(row, text=text, variable=variable, command=command)
             switch.grid(row=index // 4, column=index % 4, sticky="w", padx=(0, 12), pady=9)
             self.toggle_widgets[text] = switch
-        self.preview_toggle = self.toggle_widgets["顶部展示"]
+        self.preview_toggle = self.toggle_widgets["顶部A区"]
         self.log_buttons = {key: (self.toggle_widgets[title], title)
                             for key, title in (("chess", "棋局记录"), ("live", "解说记录"), ("room", "直播间消息"))}
         for i, (label, variable, values) in enumerate((
@@ -672,7 +702,7 @@ class ControlPanel:
         ttk.Label(form, text="思考毫秒", style="Card.TLabel").grid(row=4, column=0, sticky="w", pady=16)
         time_entry = ttk.Entry(form, textvariable=self.movetime, width=12)
         time_entry.grid(row=4, column=1, sticky="w")
-        ttk.Label(form, text="展示尺寸", style="Card.TLabel").grid(row=4, column=2, sticky="w", padx=(16, 12))
+        ttk.Label(form, text="A区尺寸", style="Card.TLabel").grid(row=4, column=2, sticky="w", padx=(16, 12))
         size_row = ttk.Frame(form, style="Card.TFrame")
         size_row.grid(row=4, column=3, columnspan=3, sticky="w")
         self.broadcast_width_entry = ttk.Spinbox(size_row, from_=260, to=1600, increment=10,
@@ -707,6 +737,8 @@ class ControlPanel:
         self.tools_menu.add_command(label="保存设置", command=self.save_live_settings)
         self.tools_menu.add_command(label="当前异常", command=self.show_monitor_issues)
         self.tools_menu.add_command(label="对齐象棋宽度", command=self.align_broadcast_width)
+        self.tools_menu.add_command(label="更换A区形象…", command=self.choose_area_a_avatar)
+        self.tools_menu.add_command(label="恢复豆包形象", command=self.reset_area_a_avatar)
         self.tools_menu.add_separator()
         self.tools_menu.add_command(label="预览一手", command=self.preview_once)
         self.tools_menu.add_separator()
@@ -953,7 +985,8 @@ class ControlPanel:
                            "opacity": int(self.opacity.get()),
                            "preview_visible": getattr(self, "preview_visible", True),
                            "broadcast_width": self._broadcast_dimensions()[0],
-                           "broadcast_height": self._broadcast_dimensions()[1]},
+                           "broadcast_height": self._broadcast_dimensions()[1],
+                           "area_a_avatar_path": getattr(self, "area_a_avatar_path", "")},
                           stream, ensure_ascii=False, indent=2)
         except OSError:
             pass

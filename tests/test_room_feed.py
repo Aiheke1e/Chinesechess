@@ -2,6 +2,7 @@ from collections import deque
 import queue
 import threading
 import tempfile
+import shutil
 import tkinter as tk
 import unittest
 from pathlib import Path
@@ -11,6 +12,7 @@ from chat_selection import ChatSelector
 from control_panel import ControlPanel
 from live_host import LiveController, LiveSettings
 from room_feed import room_message_entry
+from stream_brand import AREA_A_TITLE, DEFAULT_AVATAR
 
 
 class RoomFeedTests(unittest.TestCase):
@@ -218,7 +220,7 @@ class RoomFeedUITests(unittest.TestCase):
         self.panel.preview_toggle.invoke()
         self.assertFalse(self.panel.preview_visible)
         self.assertFalse(self.panel.preview_enabled.get())
-        self.panel.toggle_widgets["独立展示"].invoke()
+        self.panel.toggle_widgets["弹出A区"].invoke()
         window = self.panel.broadcast_window
         window.withdraw()
         self.assertTrue(self.panel.broadcast_visible.get())
@@ -371,6 +373,30 @@ class RoomFeedUITests(unittest.TestCase):
         self.assertEqual(self.panel.interaction_message.get(), "主播晚上好")
         self.assertNotIn("模拟观众", self.panel.live_log.get("1.0", "end"))
         self.assertIsNone(self.panel._speech_log_entry({"kind": "reply", "text": "测试", "data": {"测试输入": True}}))
+
+    def test_replacing_area_a_avatar_keeps_comment_and_popout_geometry(self):
+        self.panel.open_broadcast_window()
+        window = self.panel.broadcast_window
+        window.withdraw()
+        self.root.update_idletasks()
+        self.assertEqual(window.title(), AREA_A_TITLE)
+        self.panel.interaction_user.set("直播间的真实昵称")
+        self.panel.interaction_message.set("这条弹幕要保持原样")
+        geometry = window.geometry()
+        with tempfile.TemporaryDirectory() as folder:
+            new_avatar = str(Path(folder) / "custom-avatar.png")
+            shutil.copyfile(DEFAULT_AVATAR, new_avatar)
+            with patch("control_panel.filedialog.askopenfilename", return_value=new_avatar):
+                self.panel.choose_area_a_avatar()
+            self.assertEqual(self.panel.area_a_avatar_path, new_avatar)
+            capture = window.winfo_children()[0]
+            self.assertIs(capture._avatar_source_image, self.panel.broadcast_view._avatar_source_image)
+            self.assertEqual(window.geometry(), geometry)
+            self.assertEqual(self.panel.interaction_user.get(), "直播间的真实昵称")
+            self.assertEqual(self.panel.interaction_message.get(), "这条弹幕要保持原样")
+            self.panel.reset_area_a_avatar()
+            self.assertEqual(self.panel.area_a_avatar_path, "")
+            self.assertEqual(window.geometry(), geometry)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 from commentary_style import CommentaryStyle, DEFAULT_PERSONA, LEGACY_PERSONAS
 from live_host import LiveController, LiveSettings, SpeechPipeline, load_settings
 from interaction_text import gift_reply, spoken_reply, welcome_line
+from stream_brand import DEFAULT_INTRODUCTION, LEGACY_INTRODUCTION
 
 
 class CommentaryStyleTests(unittest.TestCase):
@@ -77,6 +78,19 @@ class CommentaryStyleTests(unittest.TestCase):
         with patch("live_host.CONFIG_PATH") as config:
             config.read_text.return_value = json.dumps({"persona": "严肃讲棋，不讲笑话"})
             self.assertEqual(load_settings().persona, "严肃讲棋，不讲笑话")
+
+    def test_doubao_identity_migration_preserves_the_existing_tts_and_room(self):
+        with patch("live_host.CONFIG_PATH") as config:
+            config.read_text.return_value = json.dumps({
+                "persona": next(iter(LEGACY_PERSONAS)), "introduction": LEGACY_INTRODUCTION,
+                "voice": "longanyang", "room": "123456789", "speech_enabled": True})
+            settings = load_settings()
+            self.assertTrue(settings.persona.startswith("你叫豆包"))
+            self.assertEqual(settings.introduction, DEFAULT_INTRODUCTION)
+            self.assertEqual(settings.voice, "longanyang")
+            self.assertEqual(settings.room, "123456789")
+            self.assertTrue(settings.speech_enabled)
+            config.write_text.assert_not_called()
 
     def test_actual_prepared_audio_and_transcript_use_the_same_styled_move(self):
         heard, acknowledged = threading.Event(), threading.Event()
