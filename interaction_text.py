@@ -46,9 +46,8 @@ def spoken_reply(text, limit=55, payload=None):
     name = viewer_address(payload.get("观众"))
     address = ""
     if name and text:
-        text = re.sub(r"^(?:这位棋友|这位朋友|这位观众|棋友|朋友)[，,:：、！!\s]*", "", text)
-        if text.startswith(name):
-            text = text[len(name):].lstrip("，,:：、！! ")
+        text = re.sub(r"^" + re.escape(name) + r"(?:[，,:：、！!\s]+|$)", "", text, count=1)
+        text = re.sub(r"^(?:这位棋友|这位朋友|这位观众|棋友|朋友)[，,:：、！!\s]+", "", text)
         address = name + "，"
     budget = max(1, limit - len(address))
     sentences = re.findall(r"[^。！？!?]+[。！？!?]?", text)

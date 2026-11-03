@@ -31,6 +31,7 @@ class InteractionTextTests(unittest.TestCase):
         self.assertEqual(welcome_line("😀"), "欢迎新朋友进入直播间。")
         for answer in ("这位棋友，晚上好。", "晚上好。", "小王，晚上好。"):
             self.assertEqual(spoken_reply(answer, payload={"观众": "小王"}), "小王，晚上好。")
+        self.assertEqual(spoken_reply("棋友老张，晚上好。", payload={"观众": "棋友老张"}), "棋友老张，晚上好。")
         answer = spoken_reply("这位棋友，" + "这匹马要看住将门" * 9, payload={"观众": "睡懵的象棋小仙女🧜🏻‍♀️"})
         self.assertLessEqual(len(answer), 55)
         self.assertIn("这匹马", answer)

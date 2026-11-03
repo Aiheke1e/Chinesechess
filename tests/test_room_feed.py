@@ -246,7 +246,7 @@ class RoomFeedUITests(unittest.TestCase):
         errors = []
         self.root.report_callback_exception = lambda *args: errors.append(args)
         self.panel.append_speech({"kind": "reply", "text": "当前台词。", "data": {"kind": "弹幕回复"}})
-        for theme in ("雾蓝柔光", "午夜蓝", "云白青黛"):
+        for theme in ("清晰蓝白", "午夜蓝", "云白青黛"):
             self.panel.theme_name.set(theme)
             self.root.update_idletasks()
         self.assertIn("当前台词。", self.panel.live_log.get("1.0", "end"))

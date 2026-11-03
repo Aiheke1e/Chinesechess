@@ -4,6 +4,7 @@ import os
 import sys
 import traceback
 from datetime import datetime
+from desktop_display import enable_high_dpi
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -52,6 +53,7 @@ def acquire_single_instance():
 
 
 def main():
+    enable_high_dpi()
     os.chdir(HERE)
     write_log("桌面助手启动")
     lock = acquire_single_instance()

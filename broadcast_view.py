@@ -1,12 +1,12 @@
 """Viewer-facing comment display, shared by the workbench and capture window."""
 import tkinter as tk
 from tkinter import font as tkfont
-from soft_ui import SoftCard
+from soft_ui import SoftCard, ui_scale
 
 
 class BroadcastView(SoftCard):
     def __init__(self, parent, user, message, palette):
-        super().__init__(parent, palette, height=132, inset=7)
+        super().__init__(parent, palette, height=round(132 * ui_scale(parent)), inset=7)
         self.pack_propagate(False)
         self._layout_job = None
         self._variables = (user, message)
@@ -15,7 +15,7 @@ class BroadcastView(SoftCard):
         content = tk.Frame(self.content, bg=palette["panel"])
         content.pack(fill="both", expand=True, padx=12, pady=6)
         self.user_label = tk.Label(content, textvariable=user, bg=palette["panel"],
-            fg=palette["jade"], font=("Microsoft YaHei UI", 11, "bold"),
+            fg=palette["jade"], font=("Microsoft YaHei UI", 13, "bold"),
             width=1, anchor="w")
         self.user_label.pack(fill="x")
         self.message_font = tkfont.Font(root=self, family="Microsoft YaHei UI", size=22, weight="bold")

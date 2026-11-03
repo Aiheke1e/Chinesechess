@@ -30,7 +30,8 @@ from runtime_status import (heartbeat_age, read_runtime_status, rotate_log,
                             write_runtime_status)
 from console_format import styled_player_line
 from room_feed import room_message_entry
-from soft_ui import SoftCard, install_button_styles
+from soft_ui import SoftCard, install_button_styles, ui_scale, blend
+from desktop_display import enable_high_dpi
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STOP_FILE = os.path.join(HERE, "work", "stop.request")
@@ -66,17 +67,17 @@ RUNTIME_STAGE_LABELS = {
 TURN_LABEL_TO_CODE = {"自动判断": "auto", "红方": "r", "黑方": "b"}
 
 THEMES = {
-    "雾蓝柔光": {
-        "bg": "#e8edf5", "panel": "#eaf0f7", "panel2": "#e0e7f0",
-        "border": "#d5deea", "text": "#30485c", "muted": "#748295",
-        "jade": "#348468", "jade2": "#dcece5", "gold": "#a07b43",
-        "red": "#c16675", "blue": "#527fa7", "purple": "#8278a7",
-        "console": "#f2f5fa", "console_text": "#344b5f",
-        "editor": "#e2e9f2", "select": "#cddfdf",
-        "button": "#eaf0f7", "button_active": "#f2f6fb",
-        "ok_bg": "#dcece5", "ok_fg": "#32775e",
-        "wait_bg": "#f1e8d7", "wait_fg": "#8e713d",
-        "error_bg": "#f2e1e6", "error_fg": "#a84e60",
+    "清晰蓝白": {
+        "bg": "#e4ebf3", "panel": "#ffffff", "panel2": "#edf2f7",
+        "border": "#b9c9d9", "text": "#172d44", "muted": "#50667b",
+        "jade": "#16764f", "jade2": "#dcefe5", "gold": "#986015",
+        "red": "#bb3f50", "blue": "#205f9f", "purple": "#71539c",
+        "console": "#ffffff", "console_text": "#20364c",
+        "editor": "#f0f4f8", "select": "#c6e2f5",
+        "button": "#dfe8f2", "button_active": "#cbdced",
+        "ok_bg": "#dcefe5", "ok_fg": "#145e40",
+        "wait_bg": "#f6e8cb", "wait_fg": "#7e5210",
+        "error_bg": "#fae0e3", "error_fg": "#9f283c",
     },
     "云白青黛": {
         "bg": "#f2f5f7", "panel": "#ffffff", "panel2": "#edf2f5",
@@ -115,18 +116,18 @@ THEMES = {
         "error_bg": "#f9e7e3", "error_fg": "#a94a4a",
     },
 }
-THEME = dict(THEMES["雾蓝柔光"])
+THEME = dict(THEMES["清晰蓝白"])
 
 
 def load_ui_settings():
-    defaults = {"theme": "雾蓝柔光", "opacity": 100, "preview_visible": True}
+    defaults = {"theme": "清晰蓝白", "opacity": 100, "preview_visible": True}
     try:
         with open(UI_CFG, encoding="utf-8") as stream:
             saved = json.load(stream)
-        if saved.get("appearance_version", 0) < 1:
-            saved.update(theme="雾蓝柔光", opacity=100)
+        if saved.get("appearance_version", 0) < 2:
+            saved.update(opacity=100)
         name = {"青瓷清风": "云白青黛", "深海极光": "午夜蓝",
-                "墨玉流金": "暖砂茶"}.get(saved.get("theme"), saved.get("theme"))
+                "墨玉流金": "暖砂茶", "雾蓝柔光": "清晰蓝白"}.get(saved.get("theme"), saved.get("theme"))
         if name in THEMES:
             defaults["theme"] = name
         defaults["opacity"] = max(72, min(100, int(saved.get("opacity", 100))))
@@ -223,8 +224,11 @@ class ControlPanel:
         self.watchdog_recovery_started = False
         self.indicators = {}
         root.title("JJ 象棋直播助手")
-        root.geometry("1240x800")
-        root.minsize(1000, 680)
+        scale = ui_scale(root)
+        width = min(round(1240 * scale), root.winfo_screenwidth() - round(60 * scale))
+        height = min(round(800 * scale), root.winfo_screenheight() - round(90 * scale))
+        root.geometry(f"{width}x{height}")
+        root.minsize(min(round(1000 * scale), width), min(round(680 * scale), height))
         root.configure(bg=THEME["bg"])
         try:
             root.attributes("-alpha", ui["opacity"] / 100)
@@ -273,34 +277,34 @@ class ControlPanel:
 
         controls = self.controls = self._ui_card(self.root)
         controls.pack(fill="x", padx=16, pady=(0 if self.preview_visible else 12, 6))
-        actions = self.actionbar = ttk.Frame(controls.content, style="Card.TFrame", padding=(6, 2))
-        actions.pack(fill="x")
+        control_row = ttk.Frame(controls.content, style="Card.TFrame")
+        control_row.pack(fill="x")
+        actions = self.actionbar = ttk.Frame(control_row, style="Card.TFrame", padding=(4, 6))
+        actions.pack(side="left")
         self.start_button = ttk.Button(actions, text="▶ 开始", width=11,
             style="Action.Primary.TButton", command=self.prepare_and_wait)
         self.start_button.pack(side="left")
         self.stop_button = ttk.Button(actions, text="Ⅱ 暂停 F8", width=11,
             style="Action.Danger.TButton", command=self.stop)
         self.stop_button.pack(side="left", padx=(4, 12))
-        ttk.Label(actions, textvariable=self.session_summary, style="Muted.TLabel").pack(side="right", padx=12)
-
-        indicators = tk.Frame(controls.content, bg=THEME["panel"])
-        indicators.pack(fill="x", padx=14, pady=(8, 3))
+        indicators = tk.Frame(control_row, bg=THEME["panel"])
+        indicators.pack(side="left", fill="both", expand=True, padx=(12, 4), pady=2)
         self.monitor_labels = {}
         for i, (key, caption) in enumerate((("board", "对弈"), ("voice", "语音"), ("stream", "直播"))):
             indicators.columnconfigure(i, weight=1, uniform="monitor")
-            cell = tk.Frame(indicators, bg=THEME["panel"])
-            cell.grid(row=0, column=i, sticky="ew", padx=(0, 12 if i < 2 else 0))
+            cell = tk.Frame(indicators, bg=THEME["panel2"], padx=8, pady=6)
+            cell.grid(row=0, column=i, sticky="nsew", padx=(0, 6 if i < 2 else 0))
             cell.columnconfigure(2, weight=1)
-            dot = tk.Canvas(cell, width=10, height=10, bg=THEME["panel"], highlightthickness=0)
+            dot = tk.Canvas(cell, width=10, height=10, bg=THEME["panel2"], highlightthickness=0)
             dot.grid(row=0, column=0, padx=(0, 5))
             oval = dot.create_oval(2, 2, 8, 8, fill=THEME["muted"], outline=THEME["muted"])
-            tk.Label(cell, text=caption, bg=THEME["panel"], fg=THEME["muted"],
+            tk.Label(cell, text=caption, bg=THEME["panel2"], fg=THEME["muted"],
                      font=("Microsoft YaHei UI", 9)).grid(row=0, column=1, sticky="w", padx=(0, 10))
-            title = tk.Label(cell, text="待机", bg=THEME["panel"], fg=THEME["text"],
+            title = tk.Label(cell, text="待机", bg=THEME["panel2"], fg=THEME["text"],
                              font=("Microsoft YaHei UI", 10, "bold"), anchor="w")
             title.grid(row=0, column=2, sticky="ew")
-            detail = tk.Label(cell, text="", bg=THEME["panel"], fg=THEME["muted"],
-                              font=("Microsoft YaHei UI", 8), anchor="w")
+            detail = tk.Label(cell, text="", bg=THEME["panel2"], fg=THEME["muted"],
+                              font=("Microsoft YaHei UI", 9), anchor="w")
             detail.grid(row=1, column=1, columnspan=2, sticky="ew", pady=(3, 0))
             detail.bind("<Configure>", lambda event, target=detail:
                         target.configure(wraplength=max(120, event.width)))
@@ -317,6 +321,8 @@ class ControlPanel:
 
         footer = tk.Frame(self.root, bg=THEME["bg"])
         footer.pack(side="bottom", fill="x", padx=20, pady=(8, 12))
+        tk.Label(footer, textvariable=self.session_summary, bg=THEME["bg"], fg=THEME["muted"],
+                 font=("Microsoft YaHei UI", 9)).pack(side="right", padx=(16, 0))
         self.footer_status = tk.Label(footer, textvariable=self.status, anchor="w", justify="left",
             bg=THEME["bg"], fg=THEME["muted"], font=("Microsoft YaHei UI", 9))
         self.footer_status.pack(side="left", fill="x", expand=True)
@@ -349,8 +355,9 @@ class ControlPanel:
             return
         window = self.broadcast_window = tk.Toplevel(self.root)
         window.title("直播互动展示")
-        window.geometry("960x190")
-        window.minsize(480, 180)
+        scale = ui_scale(self.root)
+        window.geometry(f"{round(960 * scale)}x{round(190 * scale)}")
+        window.minsize(round(480 * scale), round(180 * scale))
         window.configure(bg=THEME["panel"])
         window.attributes("-alpha", 1.0)
         view = BroadcastView(window, self.interaction_user, self.interaction_message, THEME)
@@ -435,22 +442,22 @@ class ControlPanel:
             surface = panel.content
             surface.columnconfigure(0, weight=1)
             surface.rowconfigure(5, weight=1)
-            heading = ttk.Frame(surface, style="Card.TFrame", padding=(8, 2, 8, 8))
+            heading = ttk.Frame(surface, style=f"{key}.Log.TFrame", padding=(12, 9))
             heading.grid(row=0, column=0, sticky="ew")
-            ttk.Label(heading, text=title, style="Section.TLabel").pack(side="left")
+            ttk.Label(heading, text=title, style=f"{key}.Log.TLabel").pack(side="left")
             menu = tk.Menu(self.root, tearoff=False, bg=THEME["panel"], fg=THEME["text"])
             menu.add_command(label="跳过旧播报" if key == "live" else "回到最新",
                 command=self.jump_live_speech if key == "live" else lambda k=key: self._log_widget(k).see("end"))
             menu.add_checkbutton(label="跟随最新", variable=follow, command=lambda k=key: self._follow_latest(k))
             menu.add_separator()
             menu.add_command(label="清空显示", command=lambda k=key: self._clear_log_view(k))
-            ttk.Menubutton(heading, text="···", width=2, menu=menu, style="LogMenu.TMenubutton").pack(side="right")
+            ttk.Menubutton(heading, text="···", width=2, menu=menu, style=f"{key}.Log.TMenubutton").pack(side="right")
             log_frame = ttk.Frame(surface, style="Card.TFrame", padding=(2, 0, 2, 2))
             log_frame.grid(row=5, column=0, sticky="nsew")
             text = tk.Text(log_frame, bg=THEME["console"], fg=THEME["console_text"],
                 insertbackground=THEME["text"], selectbackground=THEME["select"],
-                font=("Microsoft YaHei UI", 10), wrap="word", state="disabled", relief="flat",
-                width=1, height=1, padx=8, pady=7, highlightthickness=0)
+                font=("Microsoft YaHei UI", 11), wrap="word", state="disabled", relief="flat",
+                width=1, height=1, padx=12, pady=12, highlightthickness=0)
             scroll = ttk.Scrollbar(log_frame, orient="vertical", command=text.yview, style="Slim.Vertical.TScrollbar")
             scroll.pack(side="right", fill="y")
             text.pack(side="left", fill="both", expand=True)
@@ -533,24 +540,28 @@ class ControlPanel:
         parent.columnconfigure(0, weight=1)
         surface = self._ui_card(parent)
         surface.grid(row=0, column=0, sticky="nsew")
-        actions = self.settings_actions = ttk.Frame(surface.content, style="Card.TFrame", padding=(14, 8))
-        actions.pack(fill="x")
+        form = ttk.Frame(surface.content, style="Card.TFrame", padding=(14, 14))
+        form.pack(fill="both", expand=True)
+        form.columnconfigure((1, 3, 5), weight=1, uniform="fields")
+        ttk.Label(form, text="直播间", style="Card.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 16))
+        connection_row = ttk.Frame(form, style="Card.TFrame")
+        connection_row.grid(row=0, column=1, columnspan=5, sticky="ew")
+        self.room_entry = ttk.Entry(connection_row, textvariable=self.live_room)
+        self.room_entry.pack(side="left", fill="x", expand=True, padx=(0, 12))
+        actions = self.settings_actions = ttk.Frame(connection_row, style="Card.TFrame")
+        actions.pack(side="right")
         self.live_connect_button = ttk.Button(actions, text="连接直播间", width=10,
             style="Primary.TButton", command=self.toggle_live_connection)
         self.live_connect_button.pack(side="left")
         self.interaction_button = ttk.Button(actions, text="开启互动", width=8, command=self.toggle_interaction)
         self.interaction_button.pack(side="left", padx=(6, 4))
-        form = ttk.Frame(surface.content, style="Card.TFrame", padding=(14, 12))
-        form.pack(fill="both", expand=True)
-        form.columnconfigure((1, 3, 5), weight=1, uniform="fields")
-        ttk.Label(form, text="直播间", style="Card.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 16))
-        ttk.Entry(form, textvariable=self.live_room).grid(row=0, column=1, columnspan=5, sticky="ew")
         row = ttk.Frame(form, style="Card.TFrame")
-        row.grid(row=1, column=1, columnspan=5, sticky="ew", pady=(6, 12))
+        row.grid(row=1, column=1, columnspan=5, sticky="ew", pady=(6, 18))
         ttk.Label(row, textvariable=self.live_status, style="Muted.TLabel").pack(side="left")
+        ttk.Label(row, textvariable=self.audience_text, style="Muted.TLabel").pack(side="right")
         ttk.Label(form, text="功能开关", style="Card.TLabel").grid(row=2, column=0, sticky="nw", pady=6)
-        row = self.toggle_group = ttk.Frame(form, style="Card.TFrame")
-        row.grid(row=2, column=1, columnspan=5, sticky="ew", pady=(0, 12))
+        row = self.toggle_group = ttk.Frame(form, style="SwitchGroup.TFrame", padding=12)
+        row.grid(row=2, column=1, columnspan=5, sticky="ew", pady=(0, 18))
         row.columnconfigure((0, 1, 2, 3), weight=1, uniform="toggles")
         save = lambda: self.save_live_settings(quiet=True)
         toggles = [("自动连局", self.continuous, None),
@@ -567,7 +578,7 @@ class ControlPanel:
         self.toggle_widgets = {}
         for index, (text, variable, command) in enumerate(toggles):
             switch = ttk.Checkbutton(row, text=text, variable=variable, command=command)
-            switch.grid(row=index // 4, column=index % 4, sticky="w", padx=(0, 12), pady=7)
+            switch.grid(row=index // 4, column=index % 4, sticky="w", padx=(0, 12), pady=9)
             self.toggle_widgets[text] = switch
         self.preview_toggle = self.toggle_widgets["顶部展示"]
         self.log_buttons = {key: (self.toggle_widgets[title], title)
@@ -593,7 +604,8 @@ class ControlPanel:
         ttk.Label(form, text="说话风格", style="Card.TLabel").grid(row=6, column=0, sticky="nw", pady=(12, 0))
         self.persona_text = tk.Text(form, height=3, width=1, wrap="word", bg=THEME["editor"],
             fg=THEME["text"], insertbackground=THEME["text"], selectbackground=THEME["select"],
-            relief="flat", padx=8, pady=6, font=("Microsoft YaHei UI", 9), undo=True)
+            relief="flat", highlightthickness=1, highlightbackground=THEME["border"],
+            highlightcolor=THEME["jade"], padx=10, pady=8, font=("Microsoft YaHei UI", 10), undo=True)
         self.persona_text.grid(row=6, column=1, columnspan=5, sticky="ew", pady=(12, 0))
         self.persona_text.insert("1.0", load_settings().persona)
         self.persona_text.bind("<FocusOut>", lambda event: self.save_live_settings(quiet=True))
@@ -634,11 +646,22 @@ class ControlPanel:
 
     def _configure_theme_styles(self):
         style = ttk.Style(self.root)
-        font = ("Microsoft YaHei UI", 10)
+        font = ("Microsoft YaHei UI", 11)
         style.configure(".", font=font, background=THEME["bg"],
                         foreground=THEME["text"])
         style.configure("App.TFrame", background=THEME["bg"])
         style.configure("Card.TFrame", background=THEME["panel"])
+        style.configure("SwitchGroup.TFrame", background=THEME["panel2"])
+        for key, accent in (("chess", "blue"), ("live", "jade"), ("room", "gold")):
+            color = "#%02x%02x%02x" % blend(THEME[accent], "#000000", .25)
+            style.configure(f"{key}.Log.TFrame", background=color)
+            style.configure(f"{key}.Log.TLabel", background=color, foreground="#ffffff",
+                            font=("Microsoft YaHei UI", 11, "bold"))
+            style.configure(f"{key}.Log.TMenubutton", background=color, foreground="#ffffff",
+                            padding=(6, 0), font=("Microsoft YaHei UI", 12, "bold"))
+            style.layout(f"{key}.Log.TMenubutton", [("Menubutton.padding", {"sticky": "nsew", "children": [
+                ("Menubutton.label", {"sticky": "nsew"})]})])
+            style.map(f"{key}.Log.TMenubutton", background=[("active", color)], foreground=[("active", "#ffffff")])
         style.configure("Workspace.TNotebook", background=THEME["bg"], borderwidth=0,
                         tabmargins=(0, 0, 0, 0), bordercolor=THEME["bg"],
                         lightcolor=THEME["bg"], darkcolor=THEME["bg"])
@@ -649,7 +672,7 @@ class ControlPanel:
                   expand=[("selected", (0, 0, 0, 0))],
                   padding=[("selected", (18, 10)), ("!selected", (18, 10))],
                   background=[("selected", THEME["panel"]), ("active", THEME["panel2"])],
-                  foreground=[("selected", THEME["jade"]), ("active", THEME["text"])])
+                  foreground=[("selected", "#ffffff"), ("active", THEME["text"])])
         style.configure("TScrollbar", background=THEME["border"], troughcolor=THEME["console"],
                         borderwidth=0, arrowsize=12, arrowcolor=THEME["muted"])
         for name, trough in (("Slim.Vertical.TScrollbar", THEME["console"]),
@@ -753,9 +776,9 @@ class ControlPanel:
             ("Switch.indicator", {"side": "left", "sticky": "w"}),
             ("Checkbutton.focus", {"side": "left", "sticky": "w", "children": [
                 ("Checkbutton.label", {"sticky": "nswe"})]})]})])
-        style.configure("TCheckbutton", background=THEME["panel"], foreground=THEME["text"])
+        style.configure("TCheckbutton", background=THEME["panel2"], foreground=THEME["text"])
         style.map("TCheckbutton", foreground=[("disabled", THEME["muted"]), ("active", THEME["text"])],
-                  background=[("active", THEME["panel"])])
+                  background=[("active", THEME["panel2"])])
 
     def _change_theme(self, *_):
         name = self.theme_name.get()
@@ -835,7 +858,7 @@ class ControlPanel:
             os.makedirs(os.path.dirname(UI_CFG), exist_ok=True)
             with open(UI_CFG, "w", encoding="utf-8") as stream:
                 json.dump({"theme": self.theme_name.get(),
-                           "appearance_version": 1,
+                           "appearance_version": 2,
                            "opacity": int(self.opacity.get()),
                            "preview_visible": getattr(self, "preview_visible", True)},
                           stream, ensure_ascii=False, indent=2)
@@ -996,7 +1019,8 @@ class ControlPanel:
         window = tk.Toplevel(self.root)
         self._issue_window = window
         window.title("当前异常")
-        window.geometry("620x300")
+        scale = ui_scale(self.root)
+        window.geometry(f"{round(620 * scale)}x{round(300 * scale)}")
         window.configure(bg=THEME["panel"])
         text = tk.Text(window, wrap="word", bg=THEME["panel"], fg=THEME["text"],
             relief="flat", padx=18, pady=18, font=("Microsoft YaHei UI", 10))
@@ -1042,7 +1066,7 @@ class ControlPanel:
         if not hasattr(self, "live_log"):
             return
         self.live_log.tag_configure("speech_meta", foreground=THEME["muted"],
-            font=("Microsoft YaHei UI", 9), lmargin1=10, lmargin2=10, rmargin=10,
+            font=("Microsoft YaHei UI", 10), lmargin1=10, lmargin2=10, rmargin=10,
             spacing1=9, spacing3=4)
         self.live_log.tag_configure("speech_body", foreground=THEME["console_text"],
             font=("Microsoft YaHei UI", 12, "bold"), lmargin1=10, lmargin2=10,
@@ -1100,7 +1124,7 @@ class ControlPanel:
         for tag, color in (("room_meta", "muted"), ("room_user", "jade"),
                            ("room_gift", "gold"), ("room_body", "console_text")):
             self.room_log.tag_configure(tag, foreground=THEME[color],
-                font=("Microsoft YaHei UI", 9 if tag == "room_meta" else 10,
+                font=("Microsoft YaHei UI", 10 if tag == "room_meta" else 11,
                       "bold" if tag in ("room_user", "room_gift") else "normal"),
                 spacing1=4, spacing3=5)
 
@@ -2223,6 +2247,7 @@ class ControlPanel:
 
 
 def main():
+    enable_high_dpi()
     parser = argparse.ArgumentParser()
     parser.add_argument("--autostart", action="store_true",
                         help="启动模拟器/JJ，并等待标准棋盘后自动对弈")

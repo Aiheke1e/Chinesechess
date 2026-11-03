@@ -1,7 +1,11 @@
-"""Rounded native Tk surfaces; small cached assets, no drawing in the game loop."""
+"""Crisp native Tk surfaces with bounded, cached assets."""
 import tkinter as tk
 from tkinter import ttk
-from PIL import Image, ImageColor, ImageDraw, ImageFilter, ImageTk
+from PIL import Image, ImageColor, ImageDraw, ImageTk
+
+
+def ui_scale(widget):
+    return max(1.0, widget.winfo_fpixels("1i") / 96)
 
 
 def blend(first, second, amount):
@@ -10,20 +14,13 @@ def blend(first, second, amount):
     return tuple(round(x * (1 - amount) + y * amount) for x, y in zip(a, b))
 
 
-def surface_image(size, background, fill, *, inset=8, radius=18, pressed=False):
+def surface_image(size, background, fill, *, inset=8, radius=10, border=None):
     width, height = size
     result = Image.new("RGB", size, background)
-    shadow = Image.new("RGBA", size)
-    draw = ImageDraw.Draw(shadow)
-    offset = 1 if pressed else 3
     bounds = (inset, inset, width - inset - 1, height - inset - 1)
-    draw.rounded_rectangle(tuple(v + offset for v in bounds), radius,
-                           fill=(*blend(background, "#50607a", .28), 75))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(max(3, inset / 1.4)))
-    result.paste(shadow, mask=shadow.getchannel("A"))
     draw = ImageDraw.Draw(result)
     draw.rounded_rectangle(bounds, radius, fill=fill,
-                           outline=blend(fill, "#ffffff", .35), width=1)
+                           outline=border or blend(fill, "#50607a", .25), width=1)
     return result
 
 
@@ -40,7 +37,7 @@ class SoftCard(tk.Frame):
         self.canvas.place(x=0, y=0, relwidth=1, relheight=1)
         self._image_item = self.canvas.create_image(0, 0, anchor="nw")
         self.content = tk.Frame(self, bg=palette["panel"], bd=0)
-        self.content.pack(fill="both", expand=True, padx=inset + 8, pady=inset + 8)
+        self.content.pack(fill="both", expand=True, padx=inset + 9, pady=inset + 9)
         self.bind("<Configure>", self._schedule_paint)
         self.bind("<Destroy>", self._surface_cleanup)
 
@@ -53,12 +50,12 @@ class SoftCard(tk.Frame):
         width, height = self.winfo_width(), self.winfo_height()
         if width < 2 * self.inset + 4 or height < 2 * self.inset + 4:
             return
-        key = (width, height, self.palette["bg"], self.palette["panel"])
+        key = (width, height, self.palette["bg"], self.palette["panel"], self.palette["border"])
         if key == self._paint_key:
             return
         self._paint_key = key
-        self._image = ImageTk.PhotoImage(surface_image((width, height), *key[2:],
-            inset=self.inset, radius=22), master=self)
+        self._image = ImageTk.PhotoImage(surface_image((width, height), key[2], key[3],
+            inset=self.inset, radius=10, border=key[4]), master=self)
         self.canvas.itemconfigure(self._image_item, image=self._image)
 
     def set_palette(self, palette):
@@ -77,15 +74,15 @@ class SoftCard(tk.Frame):
 def install_button_styles(root, palette):
     """Nine-slice images keep ordinary ttk focus, keyboard and disabled states."""
     style = ttk.Style(root)
-    scale = max(1, root.winfo_fpixels("1i") / 96)
+    scale = ui_scale(root)
     # Keep only the current image set when switching themes.
     generation = getattr(root, "_soft_style_generation", 0) + 1
     root._soft_style_generation = generation
     images = []
     specs = {
         "TButton": (palette["button"], palette["text"]),
-        "Primary.TButton": (palette["button"], palette["jade"]),
-        "Action.Primary.TButton": (palette["jade2"], palette["jade"]),
+        "Primary.TButton": (palette["jade"], "#ffffff"),
+        "Action.Primary.TButton": (palette["jade"], "#ffffff"),
         "Danger.TButton": (palette["error_bg"], palette["error_fg"]),
         "Action.Danger.TButton": (palette["red"], "#ffffff"),
         "LogToggle.TButton": (palette["jade2"], palette["jade"]),
@@ -97,8 +94,7 @@ def install_button_styles(root, palette):
                      blend(fill, palette["bg"], .45) if mode == "disabled" else
                      blend(fill, "#50607a", .08) if mode == "pressed" else fill)
             asset = surface_image((round(90 * scale), round(38 * scale)), palette["panel"],
-                                  color, inset=round(5 * scale), radius=round(12 * scale),
-                                  pressed=mode == "pressed")
+                                  color, inset=round(3 * scale), radius=round(7 * scale))
             states.append(ImageTk.PhotoImage(asset, master=root))
         images.extend(states)
         element = f"Soft{generation}_{index}.button"
@@ -113,8 +109,8 @@ def install_button_styles(root, palette):
                         font=("Microsoft YaHei UI", 10, "bold" if "Action" in name else "normal"))
         style.map(name, foreground=[("disabled", palette["muted"])])
     tab_images = [ImageTk.PhotoImage(surface_image((round(120 * scale), round(36 * scale)),
-        palette["bg"], fill, inset=round(5 * scale), radius=round(12 * scale)), master=root)
-        for fill in (palette["bg"], palette["panel"])]
+        palette["bg"], fill, inset=round(3 * scale), radius=round(7 * scale)), master=root)
+        for fill in (palette["panel2"], blend(palette["blue"], "#000000", .35))]
     images.extend(tab_images)
     tab_element = f"Soft{generation}.tab"
     style.element_create(tab_element, "image", tab_images[0], ("selected", tab_images[1]),
