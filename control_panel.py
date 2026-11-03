@@ -158,6 +158,8 @@ class ControlPanel:
         self.opacity = tk.IntVar(value=ui["opacity"])
         self.current_palette = dict(THEME)
         self.preview_visible = ui.get("preview_visible", True)
+        self.preview_enabled = tk.BooleanVar(value=self.preview_visible)
+        self.broadcast_visible = tk.BooleanVar(value=False)
         self.monitor_issues = MonitorIssues()
         self._monitor_job = None
         self._player_runtime = None
@@ -338,6 +340,8 @@ class ControlPanel:
 
     def open_broadcast_window(self):
         """Open a clean, opaque capture target that follows the same comment."""
+        if hasattr(self, "broadcast_visible"):
+            self.broadcast_visible.set(True)
         existing = getattr(self, "broadcast_window", None)
         if existing is not None and existing.winfo_exists():
             existing.deiconify()
@@ -352,11 +356,20 @@ class ControlPanel:
         view = BroadcastView(window, self.interaction_user, self.interaction_message, THEME)
         view.pack(fill="both", expand=True)
 
-        def close_display():
-            self.broadcast_window = None
-            window.destroy()
+        window.protocol("WM_DELETE_WINDOW", self.close_broadcast_window)
 
-        window.protocol("WM_DELETE_WINDOW", close_display)
+    def close_broadcast_window(self):
+        window, self.broadcast_window = getattr(self, "broadcast_window", None), None
+        if window is not None and window.winfo_exists():
+            window.destroy()
+        if hasattr(self, "broadcast_visible"):
+            self.broadcast_visible.set(False)
+
+    def toggle_broadcast_window(self):
+        if self.broadcast_visible.get():
+            self.open_broadcast_window()
+        else:
+            self.close_broadcast_window()
 
     def toggle_preview(self):
         self.preview_visible = not self.preview_visible
@@ -365,7 +378,8 @@ class ControlPanel:
         else:
             self.broadcast_view.pack_forget()
         self.controls.pack_configure(pady=(0 if self.preview_visible else 12, 6))
-        self.preview_toggle.configure(text="收起预览" if self.preview_visible else "展开预览")
+        if hasattr(self, "preview_enabled"):
+            self.preview_enabled.set(self.preview_visible)
         self._schedule_ui_save()
 
     def _scroll_page(self, title):
@@ -401,6 +415,7 @@ class ControlPanel:
 
     def _build_workspace(self, parent):
         self.log_visible = {"chess": True, "live": True, "room": False}
+        self.log_vars = {key: tk.BooleanVar(value=visible) for key, visible in self.log_visible.items()}
         self.log_buttons = {}
         self.body = tk.PanedWindow(parent, orient="horizontal", bg=THEME["bg"],
                                    sashwidth=8, sashrelief="flat", bd=0)
@@ -463,9 +478,8 @@ class ControlPanel:
         for pane in self.body.panes():
             self.body.forget(pane)
         visible = [key for key in self.log_panels if self.log_visible[key]]
-        for key, (button, title) in self.log_buttons.items():
-            button.configure(text=("隐藏" if self.log_visible[key] else "显示") + title,
-                             style="LogToggle.TButton" if self.log_visible[key] else "TButton")
+        for key, variable in self.log_vars.items():
+            variable.set(self.log_visible[key])
         if visible:
             self.logs_empty.pack_forget()
             self.body.pack(fill="both", expand=True)
@@ -522,15 +536,10 @@ class ControlPanel:
         actions = self.settings_actions = ttk.Frame(surface.content, style="Card.TFrame", padding=(14, 8))
         actions.pack(fill="x")
         self.live_connect_button = ttk.Button(actions, text="连接直播间", width=10,
-            style="Primary.TButton", command=self.connect_live)
+            style="Primary.TButton", command=self.toggle_live_connection)
         self.live_connect_button.pack(side="left")
-        ttk.Button(actions, text="断开", width=4, command=self.disconnect_live).pack(side="left", padx=(4, 12))
         self.interaction_button = ttk.Button(actions, text="开启互动", width=8, command=self.toggle_interaction)
-        self.interaction_button.pack(side="left", padx=(0, 4))
-        self.preview_toggle = ttk.Button(actions, text="收起预览" if self.preview_visible else "展开预览",
-                                        width=8, command=self.toggle_preview)
-        self.preview_toggle.pack(side="left", padx=(0, 4))
-        ttk.Button(actions, text="弹出展示", width=8, command=self.open_broadcast_window).pack(side="left")
+        self.interaction_button.pack(side="left", padx=(6, 4))
         form = ttk.Frame(surface.content, style="Card.TFrame", padding=(14, 12))
         form.pack(fill="both", expand=True)
         form.columnconfigure((1, 3, 5), weight=1, uniform="fields")
@@ -539,14 +548,30 @@ class ControlPanel:
         row = ttk.Frame(form, style="Card.TFrame")
         row.grid(row=1, column=1, columnspan=5, sticky="ew", pady=(6, 12))
         ttk.Label(row, textvariable=self.live_status, style="Muted.TLabel").pack(side="left")
-        ttk.Label(form, text="运行开关", style="Card.TLabel").grid(row=2, column=0, sticky="w")
-        row = ttk.Frame(form, style="Card.TFrame")
-        row.grid(row=2, column=1, columnspan=5, sticky="w", pady=(0, 12))
-        for text, variable, command in (("自动连局", self.continuous, None),
+        ttk.Label(form, text="功能开关", style="Card.TLabel").grid(row=2, column=0, sticky="nw", pady=6)
+        row = self.toggle_group = ttk.Frame(form, style="Card.TFrame")
+        row.grid(row=2, column=1, columnspan=5, sticky="ew", pady=(0, 12))
+        row.columnconfigure((0, 1, 2, 3), weight=1, uniform="toggles")
+        save = lambda: self.save_live_settings(quiet=True)
+        toggles = [("自动连局", self.continuous, None),
                 ("解说", self.live_commentary, self.toggle_live_commentary),
-                ("语音", self.live_speech, self.toggle_live_speech)):
-            ttk.Checkbutton(row, text=text, variable=variable, command=command).pack(
-                side="left", padx=(0, 24))
+                ("语音", self.live_speech, self.toggle_live_speech),
+                ("欢迎进场", self.live_welcome, save),
+                ("礼物答谢", self.live_gifts, save),
+                ("沙盘演示", self.live_sandtable, save),
+                ("延伸讲解", self.live_queen_commentary, save),
+                ("顶部展示", self.preview_enabled, self.toggle_preview),
+                ("独立展示", self.broadcast_visible, self.toggle_broadcast_window)]
+        toggles.extend((title, self.log_vars[key], lambda k=key: self.toggle_log(k))
+                       for key, title in (("chess", "棋局记录"), ("live", "解说记录"), ("room", "直播间消息")))
+        self.toggle_widgets = {}
+        for index, (text, variable, command) in enumerate(toggles):
+            switch = ttk.Checkbutton(row, text=text, variable=variable, command=command)
+            switch.grid(row=index // 4, column=index % 4, sticky="w", padx=(0, 12), pady=7)
+            self.toggle_widgets[text] = switch
+        self.preview_toggle = self.toggle_widgets["顶部展示"]
+        self.log_buttons = {key: (self.toggle_widgets[title], title)
+                            for key, title in (("chess", "棋局记录"), ("live", "解说记录"), ("room", "直播间消息"))}
         for i, (label, variable, values) in enumerate((
                 ("音色", self.live_voice, available_voices()),
                 ("解说频率", self.live_density, ("安静", "自然", "热闹")),
@@ -560,12 +585,6 @@ class ControlPanel:
         ttk.Label(form, text="思考毫秒", style="Card.TLabel").grid(row=4, column=0, sticky="w", pady=16)
         time_entry = ttk.Entry(form, textvariable=self.movetime, width=12)
         time_entry.grid(row=4, column=1, sticky="w")
-        row = ttk.Frame(form, style="Card.TFrame")
-        row.grid(row=4, column=2, columnspan=4, sticky="w", padx=16)
-        for label, variable in (("欢迎进场", self.live_welcome), ("礼物答谢", self.live_gifts),
-                                ("沙盘演示", self.live_sandtable), ("延伸讲解", self.live_queen_commentary)):
-            ttk.Checkbutton(row, text=label, variable=variable,
-                            command=lambda: self.save_live_settings(quiet=True)).pack(side="left", padx=(0, 16))
         ttk.Label(form, text="弹幕互动", style="Card.TLabel").grid(row=5, column=0, sticky="w")
         row = ttk.Frame(form, style="Card.TFrame")
         row.grid(row=5, column=1, columnspan=5, sticky="ew")
@@ -579,13 +598,6 @@ class ControlPanel:
         self.persona_text.insert("1.0", load_settings().persona)
         self.persona_text.bind("<FocusOut>", lambda event: self.save_live_settings(quiet=True))
 
-        ttk.Label(form, text="日志显示", style="Card.TLabel").grid(row=7, column=0, sticky="w", pady=(12, 0))
-        row = ttk.Frame(form, style="Card.TFrame")
-        row.grid(row=7, column=1, columnspan=5, sticky="w", pady=(12, 0))
-        for key, title in (("chess", "棋局记录"), ("live", "解说记录"), ("room", "直播间消息")):
-            button = ttk.Button(row, command=lambda k=key: self.toggle_log(k))
-            button.pack(side="left", padx=(0, 6))
-            self.log_buttons[key] = (button, title)
         self._layout_logs()
 
         self.tools_menu = tk.Menu(self.root, tearoff=False, bg=THEME["panel"], fg=THEME["text"],
@@ -893,6 +905,7 @@ class ControlPanel:
                 self.connection_state = "disconnected"
         if "异常" in speech or "失败" in speech:
             self._note_issue("播报", speech)
+        self._sync_connection_button()
         self._queue_monitor()
 
     def _note_issue(self, source, text, level="error"):
@@ -1353,6 +1366,22 @@ class ControlPanel:
             self.live_controller.pipeline.clear(stop_audio=False)
             self.append_live("系统", "直播解说已关闭，只自动下棋，不调用棋局语言模型和 TTS。")
 
+    def toggle_live_connection(self):
+        if (getattr(self, "live_connect_request", None) is not None
+                or getattr(self, "connection_state", "disconnected") in ("connected", "connecting")):
+            self.disconnect_live()
+        else:
+            self.connect_live()
+
+    def _sync_connection_button(self):
+        if not hasattr(self, "live_connect_button"):
+            return
+        state = getattr(self, "connection_state", "disconnected")
+        text = ("断开直播间" if state == "connected" else "取消连接" if (
+            state == "connecting" or getattr(self, "live_connect_request", None) is not None)
+            else "连接直播间")
+        self.live_connect_button.configure(state="normal", text=text)
+
     def connect_live(self):
         if getattr(self, "live_connect_request", None) is not None:
             return
@@ -1360,7 +1389,8 @@ class ControlPanel:
             return
         room = self.live_room.get()
         request = self.live_connect_request = object()
-        self.live_connect_button.configure(state="disabled", text="连接中…")
+        self.connection_state = "connecting"
+        self._sync_connection_button()
         self.live_status.set("正在解析直播间分享链接…")
         controller = self.live_controller
 
@@ -1377,7 +1407,8 @@ class ControlPanel:
 
     def disconnect_live(self):
         self.live_connect_request = None
-        self.live_connect_button.configure(state="normal", text="连接直播间")
+        self.connection_state = "disconnected"
+        self._sync_connection_button()
         if self.live_controller:
             self.live_controller.disconnect()
         self._clear_issue("直播")
@@ -2090,10 +2121,11 @@ class ControlPanel:
                     if item[1] is not getattr(self, "live_connect_request", None):
                         continue
                     self.live_connect_request = None
-                    self.live_connect_button.configure(state="normal", text="连接直播间")
                     if item[2]:
+                        self.connection_state = "error"
                         self.live_status.set("连接失败：" + item[2])
                         self.append_live("连接失败", item[2])
+                    self._sync_connection_button()
                 elif isinstance(item, tuple) and item[0] == "live_event":
                     record = item[1]
                     kind = record.get("kind", "status")
@@ -2118,6 +2150,7 @@ class ControlPanel:
                         elif self.connection_state == "ended":
                             self._clear_issue("直播")
                         self.live_status.set(text)
+                        self._sync_connection_button()
                         if record.get("data", {}).get("state") in ("disconnected", "ended", "error"):
                             self.room_metrics = {}
                             self.audience_text.set("在线人数 · 待获取")

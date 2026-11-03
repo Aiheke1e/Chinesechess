@@ -152,6 +152,35 @@ class RoomFeedUITests(unittest.TestCase):
         self.assertFalse(controls & switches)
         self.assertTrue(switches <= settings)
 
+    def test_all_stateful_options_use_the_same_switch_group(self):
+        self.assertEqual(len(self.panel.toggle_widgets), 12)
+        for widget in self.panel.toggle_widgets.values():
+            self.assertIsInstance(widget, tk.ttk.Checkbutton)
+            self.assertIs(widget.master, self.panel.toggle_group)
+        actions = [widget for widget in self.panel.settings_actions.winfo_children()
+                   if isinstance(widget, tk.ttk.Button)]
+        self.assertEqual(set(actions), {self.panel.live_connect_button, self.panel.interaction_button})
+
+    def test_display_switches_follow_actual_visibility_and_external_window_close(self):
+        self.panel.preview_toggle.invoke()
+        self.assertTrue(self.panel.preview_visible)
+        self.assertTrue(self.panel.preview_enabled.get())
+        self.panel.preview_toggle.invoke()
+        self.assertFalse(self.panel.preview_visible)
+        self.assertFalse(self.panel.preview_enabled.get())
+        self.panel.toggle_widgets["独立展示"].invoke()
+        window = self.panel.broadcast_window
+        window.withdraw()
+        self.assertTrue(self.panel.broadcast_visible.get())
+        self.root.tk.call(window.protocol("WM_DELETE_WINDOW"))
+        self.assertFalse(self.panel.broadcast_visible.get())
+        self.assertIsNone(self.panel.broadcast_window)
+        self.connection()
+        self.assertTrue(self.panel.log_vars["room"].get())
+        self.panel.toggle_widgets["直播间消息"].invoke()
+        self.assertFalse(self.panel.log_vars["room"].get())
+        self.assertFalse(self.panel.log_visible["room"])
+
     def test_shared_interaction_button_pauses_and_resumes_without_starting_a_game(self):
         self.controller.suspended = False
         self.controller.enabled = True

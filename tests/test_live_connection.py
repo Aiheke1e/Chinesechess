@@ -79,7 +79,7 @@ class LiveConnectionTests(unittest.TestCase):
             panel.connect_live()
             self.assertLess(time.monotonic() - before, 0.2)
             self.assertTrue(started.wait(1))
-            panel.live_connect_button.configure.assert_called_with(state="disabled", text="连接中…")
+            panel.live_connect_button.configure.assert_called_with(state="normal", text="取消连接")
             panel.connect_live()
             panel.live_controller.connect.assert_called_once()
             self.assertNotEqual(worker_threads[0], main_thread)
@@ -88,7 +88,7 @@ class LiveConnectionTests(unittest.TestCase):
         result = panel.output.get(timeout=1)
         panel.output.put(result)
         panel._poll()
-        panel.live_connect_button.configure.assert_called_with(state="normal", text="连接直播间")
+        panel.live_connect_button.configure.assert_called_with(state="normal", text="取消连接")
 
     def test_parse_failure_is_shown_on_the_page_and_button_becomes_available(self):
         panel = self.panel()
@@ -100,6 +100,36 @@ class LiveConnectionTests(unittest.TestCase):
         panel.live_status.set.assert_called_with("连接失败：短链接解析超时")
         panel.append_live.assert_called_with("连接失败", "短链接解析超时")
         self.assertIsNone(panel.live_connect_request)
+
+    def test_same_connection_control_cancels_an_inflight_request_and_ignores_its_late_result(self):
+        panel = self.panel()
+        started, release = threading.Event(), threading.Event()
+        panel.live_controller.connect.side_effect = lambda *args, **kwargs: (started.set(), release.wait(2))
+        try:
+            panel.toggle_live_connection()
+            self.assertTrue(started.wait(1))
+            panel.toggle_live_connection()
+            panel.live_controller.disconnect.assert_called_once()
+            self.assertIsNone(panel.live_connect_request)
+            panel.live_connect_button.configure.assert_called_with(state="normal", text="连接直播间")
+        finally:
+            release.set()
+        result = panel.output.get(timeout=1)
+        panel.output.put(result)
+        panel._poll()
+        self.assertEqual(panel.connection_state, "disconnected")
+        panel.live_connect_button.configure.assert_called_with(state="normal", text="连接直播间")
+
+    def test_connected_control_disconnects_without_creating_another_connection(self):
+        panel = self.panel()
+        panel.connection_state = "connected"
+        panel._sync_connection_button()
+        panel.live_connect_button.configure.assert_called_with(state="normal", text="断开直播间")
+        panel.toggle_live_connection()
+        panel.live_controller.disconnect.assert_called_once()
+        panel.live_controller.connect.assert_not_called()
+        self.assertEqual(panel.connection_state, "disconnected")
+        panel.live_connect_button.configure.assert_called_with(state="normal", text="连接直播间")
 
     def test_disconnect_during_resolution_prevents_a_late_connector_process(self):
         controller = self.controller()
@@ -151,6 +181,7 @@ class LiveConnectionTests(unittest.TestCase):
         process = Mock(stdout=io.StringIO("CHESS_LIVE_EVENT " + json.dumps(event) + "\n"))
         controller._read_connector(process, 3)
         self.assertIn("sign.js", controller._notify.call_args.args[1])
+        self.assertEqual(controller._notify.call_args.args[2]["state"], "error")
         self.assertEqual(controller.receive.call_args.args[0]["connector_epoch"], 3)
 
     def test_connector_exit_preserves_ended_room_explanation(self):

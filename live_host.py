@@ -2113,7 +2113,8 @@ class LiveController:
                 self._reset_chat_room()
                 self._notify("connection", ended_text or ("连接已停止：" + last_error if last_error
                              else "抖音连接器已停止，请重新连接"),
-                             {"connector_epoch": epoch, **({"state": "ended"} if ended_text else {})})
+                             {"connector_epoch": epoch,
+                              "state": "ended" if ended_text else "error" if last_error else "disconnected"})
 
     def disconnect(self, silent=False):
         with self.connector_lock:
@@ -2123,7 +2124,7 @@ class LiveController:
         self._terminate_connector(process)
         if not silent:
             self._notify("connection", "已断开抖音直播间",
-                         {"connector_epoch": self.connector_epoch})
+                         {"connector_epoch": self.connector_epoch, "state": "disconnected"})
 
     @staticmethod
     def _terminate_connector(process):
