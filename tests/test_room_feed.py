@@ -205,7 +205,7 @@ class RoomFeedUITests(unittest.TestCase):
         self.assertEqual(self.panel.interaction_message.get(), "")
 
     def test_all_stateful_options_use_the_same_switch_group(self):
-        self.assertEqual(len(self.panel.toggle_widgets), 12)
+        self.assertEqual(len(self.panel.toggle_widgets), 10)
         for widget in self.panel.toggle_widgets.values():
             self.assertIsInstance(widget, tk.ttk.Checkbutton)
             self.assertIs(widget.master, self.panel.toggle_group)
@@ -424,12 +424,13 @@ class RoomFeedUITests(unittest.TestCase):
             self.assertEqual(self.panel.area_a_avatar_path, "")
             self.assertEqual(window.geometry(), geometry)
 
-    def test_all_five_built_in_avatars_can_be_selected_without_changing_current_comment(self):
+    def test_all_built_in_avatars_can_be_selected_without_changing_current_comment(self):
         self.panel.interaction_user.set("真实观众")
         self.panel.interaction_message.set("请保留这条原始弹幕")
         self.panel.avatar_presets_button.invoke()
         picker = self.panel.avatar_picker_window
-        self.assertEqual(len(picker._buttons), 5)
+        self.assertEqual(len(AVATAR_PRESETS), 10)
+        self.assertEqual(len(picker._buttons), len(AVATAR_PRESETS))
         for (button, preset), (_, expected) in zip(picker._buttons, AVATAR_PRESETS):
             self.assertEqual(preset, expected)
             button.invoke()

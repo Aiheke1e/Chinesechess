@@ -10,6 +10,11 @@ APP_TITLE = f"{CHANNEL_NAME} · AI直播助手"
 AREA_A_TITLE = f"{CHANNEL_NAME} · A区"
 DEFAULT_AVATAR = Path(__file__).resolve().parent / "assets" / "doubao-chess-red-scarf-v3.png"
 AVATAR_PRESETS = (
+    ("水墨国风", DEFAULT_AVATAR.with_name("doubao-chess-ink-v4.png")),
+    ("黏土Q版", DEFAULT_AVATAR.with_name("doubao-chess-clay-v4.png")),
+    ("国潮剪纸", DEFAULT_AVATAR.with_name("doubao-chess-papercut-v4.png")),
+    ("像素棋手", DEFAULT_AVATAR.with_name("doubao-chess-pixel-v4.png")),
+    ("耳机主播", DEFAULT_AVATAR.with_name("doubao-chess-headset-v4.png")),
     ("红围脖手绘", DEFAULT_AVATAR),
     ("日常外套", DEFAULT_AVATAR.with_name("doubao-chess-casual-avatar-v2.png")),
     ("长发头像", DEFAULT_AVATAR.with_name("xiaoyi-douyin-avatar-v1.png")),

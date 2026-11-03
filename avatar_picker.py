@@ -55,7 +55,9 @@ class AvatarPicker(tk.Toplevel):
         self._on_select = on_select
         grid = tk.Frame(self, bg=palette["panel"], padx=16, pady=16)
         grid.pack(fill="both", expand=True)
-        size = round(116 * ui_scale(self))
+        scale = ui_scale(self)
+        size = round(104 * scale)
+        columns = min(5, max(2, (self.winfo_screenwidth() - round(48 * scale)) // round(140 * scale)))
         for index, (caption, path) in enumerate(AVATAR_PRESETS):
             with Image.open(path) as source:
                 thumbnail = ImageOps.contain(ImageOps.exif_transpose(source).convert("RGBA"),
@@ -67,7 +69,7 @@ class AvatarPicker(tk.Toplevel):
                 activeforeground=palette["text"], font=("Microsoft YaHei UI", 10),
                 padx=10, pady=8, bd=0, relief="flat", highlightthickness=2, cursor="hand2",
                 command=lambda target=path: self._choose(str(target)))
-            button.grid(row=index // 3, column=index % 3, padx=5, pady=5, sticky="nsew")
+            button.grid(row=index // columns, column=index % columns, padx=5, pady=5, sticky="nsew")
             self._buttons.append((button, path))
         actions = ttk.Frame(self, padding=(20, 0, 20, 16))
         actions.pack(fill="x")

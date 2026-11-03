@@ -1,0 +1,47 @@
+水墨国风
+文件：assets/doubao-chess-ink-v4.png
+制作方式：内置imagegen，新生成，非拼图。
+
+Use case: stylized-concept
+Asset type: one finished square profile avatar for an independently operated AI Chinese-chess livestream named 豆包象棋. One original clearly adult female chess-host character in her mid-twenties with dark brown hair, a distinctive red knit scarf and modest everyday navy/ivory clothing, shoulders and chest fully covered. Friendly, lively, clever expression. Include one large round ivory Chinese Xiangqi chess piece engraved with a single clear red Chinese character “帅”. Face, red scarf and chess piece must all read at 64-pixel circular avatar size, with generous circular crop safety. No account title or text other than the chess character; no official badge, application icon, existing brand mascot, watermark or collage. Do not imitate the official Doubao mascot. Produce a single square raster illustration with a fully opaque background.
+Style: a fresh Chinese ink-and-watercolor portrait with airy expressive brushwork and rice-paper texture. An adult woman with a loose dark hair bun and simple side fringe, a vermilion scarf and a modest ink-blue traditional casual jacket over ivory knitwear. She holds the chess piece beside her cheek with a gentle confident smile. Warm ivory paper backdrop with a restrained dark-teal ink wash, distant mountain mist and a few fine Xiangqi board lines. Bold face and scarf shapes with clear outlines; painterly rather than photographic, uncluttered, elegant and approachable.
+
+============================================================
+
+黏土Q版
+文件：assets/doubao-chess-clay-v4.png
+制作方式：内置imagegen，新生成，非拼图。
+
+Use case: stylized-concept
+Asset type: one finished square profile avatar for an independently operated AI Chinese-chess livestream named 豆包象棋. One original clearly adult female chess-host character in her mid-twenties with dark brown hair, a distinctive red knit scarf and modest everyday navy/ivory clothing, shoulders and chest fully covered. Friendly, lively, clever expression. Include one large round ivory Chinese Xiangqi chess piece engraved with a single clear red Chinese character “帅”. Face, red scarf and chess piece must all read at 64-pixel circular avatar size, with generous circular crop safety. No account title or text other than the chess character; no official badge, application icon, existing brand mascot, watermark or collage. Do not imitate the official Doubao mascot. Produce a single square raster illustration with a fully opaque background.
+Style: premium handmade stop-motion clay figurine portrait, tactile soft matte clay and wool scarf texture, rounded sculpted forms, warm studio lighting. A clearly adult stylized female host with a chestnut short bob swept to one side, expressive almond-shaped eyes and a playful confident smile, natural mature facial proportions despite simplified clay design. Cozy ivory sweater, navy coat and a chunky bright-red scarf. She hugs an oversized ivory chess piece at shoulder level. Plain muted teal studio backdrop and soft cream circular light. Face fills the center; distinctly 3D clay and toy-like, no glossy photorealistic skin, no child or school-uniform styling.
+
+============================================================
+
+国潮剪纸
+文件：assets/doubao-chess-papercut-v4.png
+制作方式：内置imagegen，新生成，非拼图。
+
+Use case: stylized-concept
+Asset type: one finished square profile avatar for an independently operated AI Chinese-chess livestream named 豆包象棋. One original clearly adult female chess-host character in her mid-twenties with dark brown hair, a distinctive red knit scarf and modest everyday navy/ivory clothing, shoulders and chest fully covered. Friendly, lively, clever expression. Include one large round ivory Chinese Xiangqi chess piece engraved with a single clear red Chinese character “帅”. Face, red scarf and chess piece must all read at 64-pixel circular avatar size, with generous circular crop safety. No account title or text other than the chess character; no official badge, application icon, existing brand mascot, watermark or collage. Do not imitate the official Doubao mascot. Produce a single square raster illustration with a fully opaque background.
+Style: bold contemporary Chinese layered paper-cut portrait with crisp cut edges, clean flat shapes and subtle paper-layer shadows. A confident adult woman in three-quarter view, dark hair in a neat low ponytail, a vivid vermilion scarf flowing into one dynamic curved shape, modest ivory and dark-navy clothing. She lifts the ivory chess piece in front of one shoulder, smiling. Use a striking limited palette of vermilion red, warm cream and deep ink navy, with restrained geometric Xiangqi grid lines and simple cloud curls in the background. Graphic, distinctive silhouette, large readable facial features, rich red-and-navy color blocking, absolutely not a realistic portrait.
+
+============================================================
+
+像素棋手
+文件：assets/doubao-chess-pixel-v4.png
+制作方式：内置imagegen，新生成，非拼图。
+
+Use case: stylized-concept
+Asset type: one finished square profile avatar for an independently operated AI Chinese-chess livestream named 豆包象棋. One original clearly adult female chess-host character in her mid-twenties with dark brown hair, a distinctive red knit scarf and modest everyday navy/ivory clothing, shoulders and chest fully covered. Friendly, lively, clever expression. Include one large round ivory Chinese Xiangqi chess piece engraved with a single clear red Chinese character “帅”. Face, red scarf and chess piece must all read at 64-pixel circular avatar size, with generous circular crop safety. No account title or text other than the chess character; no official badge, application icon, existing brand mascot, watermark or collage. Do not imitate the official Doubao mascot. Produce a single square raster illustration with a fully opaque background.
+Style: deliberate crisp 32-bit pixel-art game portrait made of visible square pixel clusters, hard stepped edges and controlled pixel shading, not a painting with a pixel filter. One adult female strategist with short chestnut hair, warm brown eyes, a small confident smile, a red scarf and modest ivory/navy jacket. She holds a round Chinese chess piece near her scarf; keep the single “帅” character large, simple and readable. Dark midnight-blue pixel backdrop with a small amount of teal grid detail and sparse warm-gold pixel highlights. Iconic strong silhouette, face and scarf occupy most of the image. Pixel clusters remain obvious at full size, no smooth rendering or glossy 3D.
+
+============================================================
+
+耳机主播
+文件：assets/doubao-chess-headset-v4.png
+制作方式：内置imagegen，新生成，非拼图。
+
+Use case: stylized-concept
+Asset type: one finished square profile avatar for an independently operated AI Chinese-chess livestream named 豆包象棋. One original clearly adult female chess-host character in her mid-twenties with dark brown hair, a distinctive red knit scarf and modest everyday navy/ivory clothing, shoulders and chest fully covered. Friendly, lively, clever expression. Include one large round ivory Chinese Xiangqi chess piece engraved with a single clear red Chinese character “帅”. Face, red scarf and chess piece must all read at 64-pixel circular avatar size, with generous circular crop safety. No account title or text other than the chess character; no official badge, application icon, existing brand mascot, watermark or collage. Do not imitate the official Doubao mascot. Produce a single square raster illustration with a fully opaque background.
+Style: energetic clean cel-shaded character illustration for a gaming livestream avatar, confident ink outlines and bright simple color blocks. A clearly adult friendly female chess commentator with shoulder-length dark-brown hair, red knitted scarf, navy over-ear headphones with a tiny microphone, an ivory crew-neck top and a navy casual hoodie. Bright lively eyes and a witty smile, no glamour makeup. One hand holds the chess piece near the microphone side; simplified chessboard silhouettes sit low in the background. Deep teal/navy backdrop with a restrained warm coral accent and soft cream highlights. Tight face-and-shoulders composition, highly readable at small size, modern animated illustration rather than realistic or clay style.

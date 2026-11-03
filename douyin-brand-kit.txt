@@ -1,4 +1,4 @@
-豆包象棋 · 账号与解说包装 v3
+豆包象棋 · 账号与解说包装 v4
 整理日期：2026-11-03
 
 账号昵称（推荐）
@@ -64,7 +64,8 @@ A区只保留头像与“观众名字：弹幕内容”，独立窗口没有标�
 形象：原创成年女性，齐肩深棕发、红色针织围脖、米白针织上衣配蓝色日常外套，深青蓝背景与象棋棋子。完整遮盖肩部和胸口，使用温暖、亲切的二维手绘插画风格。
 制作：内置imagegen编辑；生成提示词随 assets/doubao-chess-red-scarf-v3.prompt.txt 保存。
 直接使用原PNG上传；重要面部和棋子在圆形裁切时仍可识别。
-设置页“A区头像 → 默认头像”可预览选择全部5张内置图片：红围脖手绘、日常外套、长发头像、电脑前下棋、初版棋手。
+设置页“A区头像 → 默认头像”可预览选择全部10张内置图片。新增5张：水墨国风、黏土Q版、国潮剪纸、像素棋手、耳机主播；保留原有的红围脖手绘、日常外套、长发头像、电脑前下棋、初版棋手。
+新增图片保存于assets/doubao-chess-ink-v4.png、doubao-chess-clay-v4.png、doubao-chess-papercut-v4.png、doubao-chess-pixel-v4.png、doubao-chess-headset-v4.png，生成提示词集合为assets/avatar-collection-v4.prompts.txt，制作方式为内置imagegen。
 “上传图片”支持PNG、JPG、WebP，会把原文件复制到本地work/avatars保存。个人已选的头像会记忆，后台预览与独立弹窗同步切换。
 
 命名与发布说明

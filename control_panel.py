@@ -717,8 +717,6 @@ class ControlPanel:
                 ("语音", self.live_speech, self.toggle_live_speech),
                 ("沙盘演示", self.live_sandtable, save),
                 ("延伸讲解", self.live_queen_commentary, save))),
-            (3, "互动", (("欢迎进场", self.live_welcome, save),
-                ("礼物答谢", self.live_gifts, save))),
             (4, "A区", (("顶部A区", self.preview_enabled, self.toggle_preview),
                 ("弹出A区", self.broadcast_visible, self.toggle_broadcast_window))),
             (6, "日志", tuple((title, self.log_vars[key], lambda k=key: self.toggle_log(k))
@@ -735,11 +733,6 @@ class ControlPanel:
         self.preview_toggle = self.toggle_widgets["顶部A区"]
         self.log_buttons = {key: (self.toggle_widgets[title], title)
             for key, title in (("chess", "棋局记录"), ("live", "解说记录"), ("room", "直播间消息"))}
-
-        interaction_row = ttk.Frame(form, style="Card.TFrame")
-        interaction_row.grid(row=3, column=3, columnspan=3, sticky="ew")
-        ttk.Label(interaction_row, textvariable=self.interaction_state, style="Muted.TLabel").pack(side="left", padx=(0, 10))
-        ttk.Label(interaction_row, textvariable=self.chat_sampling_text, style="Muted.TLabel").pack(side="left")
 
         size_row = ttk.Frame(form, style="Card.TFrame")
         size_row.grid(row=4, column=3, columnspan=3, sticky="w")
