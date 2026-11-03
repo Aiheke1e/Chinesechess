@@ -1,4 +1,6 @@
 import json
+from pathlib import Path
+import tempfile
 import threading
 import time
 import unittest
@@ -151,7 +153,7 @@ class InteractionPriorityTests(unittest.TestCase):
             pipeline.submit(3, "弹幕回复", {"观众": "小王", "弹幕": "主播晚上好"})
             self.assertTrue(chat_heard.wait(.5))
 
-    def test_unstarted_move_waits_for_chat_and_extends_only_its_priority_wait(self):
+    def test_slow_chat_generation_does_not_block_an_ordinary_move_call(self):
         generating, release, acknowledged = (threading.Event() for _ in range(3))
         order = []
         def llm(*args, **kwargs):
@@ -168,10 +170,8 @@ class InteractionPriorityTests(unittest.TestCase):
                 self.assertTrue(generating.wait(1))
                 pipeline.prepare_move("关键走棋解说", {"speech_token": "move"}, "马二进三。")
                 pipeline.commit_move("move", deadline=time.monotonic() + .05)
-                self.assertFalse(acknowledged.wait(.09))
-                release.set()
                 self.assertTrue(acknowledged.wait(1))
-                self.assertEqual(order[:2], ["弹幕回复", "关键走棋解说"])
+                self.assertEqual(order[0], "关键走棋解说")
             finally:
                 release.set()
 
@@ -194,27 +194,89 @@ class InteractionPriorityTests(unittest.TestCase):
             self.assertTrue(chat_heard.wait(1))
             self.assertLess(order.index("绝杀播完"), order.index("弹幕回复"))
 
-    def test_player_waits_through_chat_without_accepting_a_wrong_move_token(self):
-        clock = [100.0]
+    def test_player_skips_unstarted_ordinary_speech_instead_of_waiting_for_chat(self):
         def marker(path):
             if path == player.SPEECH_PREPARING_PATH:
                 return {"token": "move", "enabled": True}
-            return {"token": "move" if clock[0] >= 100.12 else "old", "status": "started"}
-        def advance(seconds):
-            clock[0] += seconds
+            return {"token": "old", "status": "started"}
         with patch.object(player, "_speech_enabled", return_value=True), patch.object(
                 player, "_read_speech_marker", side_effect=marker), patch.object(
-                player, "_chat_priority_active", side_effect=lambda: clock[0] < 100.12), patch.object(
-                player.time, "monotonic", side_effect=lambda: clock[0]), patch.object(
-                player.time, "sleep", side_effect=advance):
-            self.assertTrue(player.wait_for_speech_start("move", audio_timeout=.06, priority_timeout=.3))
+                player, "_chat_priority_active", return_value=True), patch.object(
+                player, "_skip_ordinary_speech") as skipped:
+            self.assertFalse(player.wait_for_speech_start("move", audio_timeout=.06))
+            skipped.assert_called_once_with("move")
 
-    def test_priority_wait_has_a_limit_and_never_allows_an_unplayed_move(self):
+    def test_chat_cannot_bypass_the_verified_finisher_completion(self):
         with patch.object(player, "_speech_enabled", return_value=True), patch.object(
-                player, "_read_speech_marker", return_value={"token": "move", "enabled": True}), patch.object(
-                player, "_chat_priority_active", return_value=True):
+                player, "_read_speech_marker", return_value={"token": "move", "enabled": True,
+                                                             "wait_finished": True}), patch.object(
+                player, "_chat_priority_active", return_value=True), patch.object(
+                player, "_skip_ordinary_speech") as skipped:
             with self.assertRaises(player.SpeechSyncError):
-                player.wait_for_speech_start("move", audio_timeout=.02, priority_timeout=.03)
+                player.wait_for_speech_start("move", audio_timeout=.02)
+            skipped.assert_not_called()
+
+    def test_chat_model_does_not_cut_current_audio_before_a_reply_is_ready(self):
+        generating, release, move_heard, chat_heard = (threading.Event() for _ in range(4))
+        def llm(*args, **kwargs):
+            generating.set()
+            release.wait(2)
+            return "当前弹幕的回复。"
+        def notify(kind, text, data):
+            if kind == "reply":
+                (chat_heard if data["kind"] == "弹幕回复" else move_heard).set()
+        pipeline = self.pipeline(notify, llm)
+        with patch.object(pipeline, "_audio_duration", side_effect=lambda path: .01 if "当前弹幕" in path else 2):
+            try:
+                pipeline.prepare_move("关键走棋解说", {"speech_token": "move"}, "马二进三。")
+                pipeline.commit_move("move")
+                self.assertTrue(move_heard.wait(1))
+                pipeline.submit(3, "弹幕回复", {"观众": "小王", "弹幕": "晚上好"})
+                self.assertTrue(generating.wait(1))
+                self.assertFalse(chat_heard.wait(.06))
+                self.assertFalse(any(call.args[0] is None for call in self.sound.call_args_list))
+                release.set()
+                self.assertTrue(chat_heard.wait(1))
+            finally:
+                release.set()
+
+    def test_nearly_finished_short_call_can_finish_before_chat_takes_audio(self):
+        move_heard, chat_heard = threading.Event(), threading.Event()
+        def notify(kind, text, data):
+            if kind == "reply":
+                (chat_heard if data["kind"] == "弹幕回复" else move_heard).set()
+        pipeline = self.pipeline(notify)
+        with patch.object(pipeline, "_audio_duration", return_value=.16):
+            pipeline.prepare_move("关键走棋解说", {"speech_token": "move"}, "马二进三。")
+            pipeline.commit_move("move")
+            self.assertTrue(move_heard.wait(1))
+            pipeline.submit(3, "弹幕回复", {"观众": "小王", "弹幕": "晚上好"})
+            self.assertFalse(chat_heard.wait(.04))
+            self.assertTrue(chat_heard.wait(1))
+            self.assertFalse(any(call.args[0] is None for call in self.sound.call_args_list))
+
+    def test_skipped_move_is_not_spoken_after_its_tts_finishes(self):
+        heard, ready, done = threading.Event(), threading.Event(), threading.Event()
+        pipeline = self.pipeline(lambda kind, text, data: heard.set() if kind == "reply" else None)
+        pipeline.tts = lambda *args: ready.set() or "late.wav"
+        original = pipeline._prepare_move_worker
+        def worker(*args):
+            try:
+                original(*args)
+            finally:
+                done.set()
+        with tempfile.TemporaryDirectory() as folder, patch("live_host.SPEECH_SKIPPED", Path(folder) / "skip.json"), patch.object(
+                player, "SPEECH_SKIPPED_PATH", str(Path(folder) / "skip.json")), patch.object(
+                pipeline, "_prepare_move_worker", side_effect=worker), patch.object(
+                pipeline, "_mark_speech_started") as acknowledged:
+            pipeline.prepare_move("关键走棋解说", {"speech_token": "skip-this-move"}, "马二进三。")
+            self.assertTrue(ready.wait(1))
+            player._skip_ordinary_speech("skip-this-move")
+            pipeline.commit_move("skip-this-move")
+            self.assertTrue(done.wait(1))
+            self.assertFalse(heard.is_set())
+            acknowledged.assert_not_called()
+            self.sound.assert_not_called()
 
 
 if __name__ == "__main__":

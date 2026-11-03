@@ -29,6 +29,7 @@ LIVE_CFG_PATH = os.path.join(HERE, "live_config.json")
 SPEECH_PREPARING_PATH = os.path.join(HERE, "work", "speech_preparing.json")
 SPEECH_STARTED_PATH = os.path.join(HERE, "work", "speech_started.json")
 SPEECH_PRIORITY_PATH = os.path.join(HERE, "work", "speech_priority.json")
+SPEECH_SKIPPED_PATH = os.path.join(HERE, "work", "speech_skipped.json")
 DEFAULT_CFG = {
     "my_color": "r",
     "orientation": "auto",
@@ -115,9 +116,24 @@ def _chat_priority_active():
         return False
 
 
+def _skip_ordinary_speech(token):
+    temporary = f"{SPEECH_SKIPPED_PATH}.{os.getpid()}.tmp"
+    try:
+        os.makedirs(os.path.dirname(SPEECH_SKIPPED_PATH), exist_ok=True)
+        with open(temporary, "w", encoding="utf-8") as stream:
+            json.dump({"token": token, "reason": "chat_priority", "created": time.time()}, stream)
+        os.replace(temporary, SPEECH_SKIPPED_PATH)
+    except OSError as error:
+        raise SpeechSyncError("无法取消本手普通播报，未发送点击") from error
+    finally:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+
+
 def wait_for_speech_start(token, plan_timeout=2.0, audio_timeout=15.0,
-                          cancelled=None, deadline=None, finish_timeout=40.0,
-                          priority_timeout=45.0):
+                          cancelled=None, deadline=None, finish_timeout=40.0):
     """Require matching audio start; verified finishers must finish before input."""
     if token.endswith(":sandbox"):
         return False
@@ -146,14 +162,8 @@ def wait_for_speech_start(token, plan_timeout=2.0, audio_timeout=15.0,
     wait_finished = bool(plan.get("wait_finished"))
     completion_deadline = None
     heartbeat_at = time.monotonic() + 1.0
-    last_check, priority_delay = time.monotonic(), 0.0
     while True:
         now = time.monotonic()
-        if not wait_finished and _chat_priority_active():
-            extension = min(now - last_check, max(0, priority_timeout - priority_delay))
-            deadline += extension
-            priority_delay += extension
-        last_check = now
         if now >= (completion_deadline or deadline):
             break
         if cancelled and cancelled():
@@ -169,9 +179,14 @@ def wait_for_speech_start(token, plan_timeout=2.0, audio_timeout=15.0,
                     return True
                 if completion_deadline is None:
                     completion_deadline = time.monotonic() + max(0.0, finish_timeout)
+        if not wait_finished and _chat_priority_active():
+            # Chat owns the audio channel, not the board clock. Explicitly
+            # cancel this unstarted clip instead of delaying a legal move.
+            _skip_ordinary_speech(token)
+            return False
         if time.monotonic() >= heartbeat_at:
             write_runtime_status("speech_waiting", "绝杀收尾播报中，说完后落子" if wait_finished
-                                 else "弹幕互动优先，等待本手播报" if priority_delay else "等待本手播报确认",
+                                 else "等待本手播报确认",
                                  details={"speech_token": token})
             heartbeat_at = time.monotonic() + 1.0
         time.sleep(0.03)

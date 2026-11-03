@@ -15,6 +15,11 @@ from board import Board, START_FEN
 
 
 class SpeechSyncTests(unittest.TestCase):
+    def setUp(self):
+        self.priority = patch.object(player, "_chat_priority_active", return_value=False)
+        self.priority.start()
+        self.addCleanup(self.priority.stop)
+
     def _config(self, folder, enabled=True):
         path = Path(folder) / "live_config.json"
         path.write_text(json.dumps({

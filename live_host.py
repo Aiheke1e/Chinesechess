@@ -39,6 +39,7 @@ LIVE_LOG = HERE / "work" / "live_events.jsonl"
 SPEECH_STARTED = HERE / "work" / "speech_started.json"
 SPEECH_PREPARING = HERE / "work" / "speech_preparing.json"
 SPEECH_PRIORITY = HERE / "work" / "speech_priority.json"
+SPEECH_SKIPPED = HERE / "work" / "speech_skipped.json"
 CHESS_SPEECH_KINDS = {
     "我方走棋播报", "我方走棋解说", "对手走棋播报", "对手走棋解说",
     "关键走棋解说", "关键应手解说", "等待期长讲解", "应手预判",
@@ -244,10 +245,9 @@ class SpeechPipeline:
         self.playback_state_lock = threading.Lock()
         self.current_playback = None
         self.active_chat = False
+        self.chat_ready = False
         self.active_chat_payload = None
         self.active_chat_cancel_epoch = 0
-        self.chat_priority_total = 0.0
-        self.chat_priority_started = None
         self.high_mates = 0
         self.chat_epoch = 0
         self.idle_lock = threading.Lock()
@@ -287,9 +287,9 @@ class SpeechPipeline:
                 if self.active_chat or any(job[4] == kind for job in self.jobs):
                     return False
                 self.active_chat = True
+                self.chat_ready = False
                 self.active_chat_payload = payload
                 self.active_chat_cancel_epoch = self.cancel_epoch
-                self.chat_priority_started = time.monotonic()
             self.sequence += 1
             job = (priority, self.sequence, time.monotonic(), self.cancel_epoch,
                    kind, payload, direct_text)
@@ -346,7 +346,7 @@ class SpeechPipeline:
 
     def _chat_busy(self):
         with self.condition:
-            return bool(self.active_chat and self.active_chat_cancel_epoch == self.cancel_epoch
+            return bool(self.active_chat and self.chat_ready and self.active_chat_cancel_epoch == self.cancel_epoch
                         and self._chat_valid("弹幕回复", self.active_chat_payload or {}))
 
     def _has_turn(self, kind, payload):
@@ -359,22 +359,23 @@ class SpeechPipeline:
                 and not self.closed.is_set() and not getattr(self, "suspended", False)
                 and not (state.get("cancel") and state["cancel"].is_set())
                 and not ("chess_epoch" in state and getattr(self, "chess_suspended", False))
-                and state.get("chess_epoch", self.chess_epoch) == self.chess_epoch)
+                and state.get("chess_epoch", self.chess_epoch) == self.chess_epoch
+                and not self._move_skipped(state))
+
+    @staticmethod
+    def _move_skipped(state):
+        token = state.get("speech_token")
+        if not token or SpeechPipeline._is_mate(state.get("kind")):
+            return False
+        try:
+            marker = json.loads(SPEECH_SKIPPED.read_text(encoding="utf-8"))
+            return isinstance(marker, dict) and marker.get("token") == token
+        except (OSError, ValueError):
+            return False
 
     def _wait_turn(self, kind, payload, state):
-        state.setdefault("priority_clock", self._chat_priority_clock())
         while self._state_live(state) and self._chat_valid(kind, payload):
             now = time.monotonic()
-            # Pause the ordinary move's start timeout only for the chat turn,
-            # with a bounded budget. Never acknowledge an unplayed move.
-            clock = self._chat_priority_clock()
-            if kind != "弹幕回复" and not self._is_mate(kind, payload):
-                extension = min(max(0, clock - state["priority_clock"]),
-                                max(0, 45 - state.get("priority_delay", 0)))
-                if "deadline" in state:
-                    state["deadline"] += extension
-                state["priority_delay"] = state.get("priority_delay", 0) + extension
-            state["priority_clock"] = clock
             if now >= state.get("deadline", float("inf")):
                 return False
             if self._has_turn(kind, payload):
@@ -408,16 +409,8 @@ class SpeechPipeline:
     def _mark_chat_priority(self, active):
         self._write_speech_marker(SPEECH_PRIORITY, {"active": bool(active), "created": time.time()})
 
-    def _chat_priority_clock(self):
-        with self.condition:
-            return self.chat_priority_total + (time.monotonic() - self.chat_priority_started
-                if self.chat_priority_started is not None else 0)
-
     def _finish_chat_priority(self):
         with self.condition:
-            if self.chat_priority_started is not None:
-                self.chat_priority_total += time.monotonic() - self.chat_priority_started
-                self.chat_priority_started = None
             self._mark_chat_priority(False)
 
     def _chat_worker(self, job):
@@ -428,6 +421,7 @@ class SpeechPipeline:
                 if self.active_chat_payload is job[5]:
                     self._finish_chat_priority()
                     self.active_chat = False
+                    self.chat_ready = False
                     self.active_chat_payload = None
                 self.condition.notify_all()
 
@@ -450,6 +444,7 @@ class SpeechPipeline:
             heapq.heapify(self.jobs)
             self._finish_chat_priority()
             self.active_chat = False
+            self.chat_ready = False
             self.active_chat_payload = None
             self.condition.notify_all()
 
@@ -577,10 +572,13 @@ class SpeechPipeline:
     def _play_synced_audio(self, audio, payload, state, text, kind, acknowledge=True):
         # Caller owns the playback lock.  Publish the acknowledgement only
         # AFTER Windows accepts playback; never before waiting for the lock.
+        until = None
         valid = lambda: (self._state_live(state)
                          and self.settings.speech_enabled
                          and self._chat_valid(kind, payload)
-                         and self._has_turn(kind, payload))
+                         and (self._has_turn(kind, payload) or (
+                             until is not None and until - time.monotonic() <= .6
+                             and not self._mate_busy() and self._chat_busy())))
         if (not valid() or not self._chat_valid(kind, payload)
                 or time.monotonic() >= state.get("deadline", float("inf"))):
             return False
@@ -679,7 +677,8 @@ class SpeechPipeline:
         if not token or not self._ensure_worker():
             return False
         state = {"decision": threading.Event(), "approved": None,
-                 "epoch": self.cancel_epoch, "chess_epoch": self.chess_epoch, "kind": kind}
+                 "epoch": self.cancel_epoch, "chess_epoch": self.chess_epoch, "kind": kind,
+                 "speech_token": token}
         with self.prepared_lock:
             if (self.closed.is_set() or getattr(self, "suspended", False)
                     or getattr(self, "chess_suspended", False)):
@@ -767,7 +766,6 @@ class SpeechPipeline:
                 state = self.prepared.get(str(token))
                 if state is not None:
                     state["deadline"] = float(deadline)
-                    state["priority_clock"] = self._chat_priority_clock()
         return self._decide_move(token, True)
 
     def discard_move(self, token):
@@ -977,11 +975,19 @@ class SpeechPipeline:
             if self.settings.speech_enabled and not payload.get("测试输入"):
                 self.notify("speech_status", "正在生成百炼语音", payload)
                 audio = self.tts(text, self.settings.voice)
+                if kind == "弹幕回复":
+                    with self.condition:
+                        if self.active_chat_payload is payload:
+                            self.chat_ready = True
                 mode = "low" if kind in CHESS_SPEECH_KINDS else "interaction"
                 if not self._play_in_turn(audio, payload, state, text, kind, mode):
                     return
                 self._prune_audio(Path(audio).parent)
             else:
+                if kind == "弹幕回复":
+                    with self.condition:
+                        if self.active_chat_payload is payload:
+                            self.chat_ready = True
                 if not self._wait_turn(kind, payload, state):
                     return
                 self.notify("reply", text, {"kind": kind, **payload})
