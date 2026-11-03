@@ -349,7 +349,16 @@ class ControlPanel:
         self.live_settings_page = self._scroll_page("  设置  ")
         self._build_workspace(workspace)
         self._build_live_settings(self.live_settings_page)
+        self.workspace_display_controls = ttk.Frame(self.pages, style="App.TFrame")
+        ttk.Label(self.workspace_display_controls, text="互动展示", style="Page.TLabel").pack(side="left", padx=(0, 12))
+        self.workspace_preview_toggle = ttk.Checkbutton(self.workspace_display_controls,
+            text="顶部预览", variable=self.preview_enabled, command=self.toggle_preview, style="Page.TCheckbutton")
+        self.workspace_preview_toggle.pack(side="left", padx=(0, 16))
+        self.workspace_popup_toggle = ttk.Checkbutton(self.workspace_display_controls,
+            text="独立窗口", variable=self.broadcast_visible, command=self.toggle_broadcast_window, style="Page.TCheckbutton")
+        self.workspace_popup_toggle.pack(side="left")
         self.pages.bind("<<NotebookTabChanged>>", self._layout_preview_for_page, add="+")
+        self._layout_preview_for_page()
         self.root.bind("<F8>", lambda event: self.stop())
         self.root.bind("<MouseWheel>", self._scroll_settings, add="+")
         self.broadcaster_open = True
@@ -428,7 +437,7 @@ class ControlPanel:
 
     def choose_area_a_avatar(self, parent=None):
         parent = parent or self.root
-        path = filedialog.askopenfilename(parent=parent, title="上传A区头像",
+        path = filedialog.askopenfilename(parent=parent, title="上传互动展示头像",
             filetypes=[("图片", "*.png *.jpg *.jpeg *.webp"), ("所有文件", "*.*")])
         if not path:
             return
@@ -524,13 +533,19 @@ class ControlPanel:
         self._schedule_ui_save()
 
     def _layout_preview_for_page(self, event=None):
-        on_workspace = not hasattr(self, "pages") or self.pages.index(self.pages.select()) == 0
-        visible = self.preview_visible and on_workspace
+        visible = self.preview_visible
         if visible:
             self.broadcast_view.pack(anchor="center", padx=16, pady=(12, 10), before=self.controls)
         else:
             self.broadcast_view.pack_forget()
         self.controls.pack_configure(pady=(0 if visible else 12, 6))
+        if hasattr(self, "workspace_display_controls"):
+            if self.pages.index(self.pages.select()) == 0:
+                self.workspace_display_controls.place(relx=1, x=-round(8 * ui_scale(self.root)),
+                    y=round(3 * ui_scale(self.root)), anchor="ne")
+                self.workspace_display_controls.lift()
+            else:
+                self.workspace_display_controls.place_forget()
 
     def _scroll_page(self, title):
         page = ttk.Frame(self.pages, style="App.TFrame")
@@ -717,8 +732,8 @@ class ControlPanel:
                 ("语音", self.live_speech, self.toggle_live_speech),
                 ("沙盘演示", self.live_sandtable, save),
                 ("延伸讲解", self.live_queen_commentary, save))),
-            (4, "A区", (("顶部A区", self.preview_enabled, self.toggle_preview),
-                ("弹出A区", self.broadcast_visible, self.toggle_broadcast_window))),
+            (4, "互动展示", (("顶部预览", self.preview_enabled, self.toggle_preview),
+                ("独立窗口", self.broadcast_visible, self.toggle_broadcast_window))),
             (6, "日志", tuple((title, self.log_vars[key], lambda k=key: self.toggle_log(k))
                 for key, title in (("chess", "棋局记录"), ("live", "解说记录"), ("room", "直播间消息")))),
         )
@@ -730,7 +745,7 @@ class ControlPanel:
                     command=command, style="Settings.TCheckbutton")
                 switch.grid(row=number, column=column, sticky="w", padx=(0, 8), pady=8)
                 self.toggle_widgets[title] = switch
-        self.preview_toggle = self.toggle_widgets["顶部A区"]
+        self.preview_toggle = self.toggle_widgets["顶部预览"]
         self.log_buttons = {key: (self.toggle_widgets[title], title)
             for key, title in (("chess", "棋局记录"), ("live", "解说记录"), ("room", "直播间消息"))}
 
@@ -749,7 +764,7 @@ class ControlPanel:
             entry.bind("<Return>", self.apply_broadcast_size)
             entry.bind("<FocusOut>", self.apply_broadcast_size)
 
-        label("A区头像", 5)
+        label("展示头像", 5)
         avatar_row = ttk.Frame(form, style="Card.TFrame")
         avatar_row.grid(row=5, column=1, columnspan=3, sticky="w", pady=5)
         self.area_a_avatar_name = tk.StringVar(master=self.root, value=avatar_caption(self.area_a_avatar_path))
@@ -958,6 +973,9 @@ class ControlPanel:
                   background=[("active", THEME["panel2"])])
         style.configure("Settings.TCheckbutton", background=THEME["panel"])
         style.map("Settings.TCheckbutton", background=[("active", THEME["panel"])])
+        style.configure("Page.TCheckbutton", background=THEME["bg"])
+        style.map("Page.TCheckbutton", background=[("active", THEME["bg"])])
+        style.configure("Page.TLabel", background=THEME["bg"], foreground=THEME["muted"])
 
     def _change_theme(self, *_):
         name = self.theme_name.get()

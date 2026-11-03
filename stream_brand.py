@@ -7,7 +7,7 @@ CHANNEL_NAME = "豆包象棋"
 ACCOUNT_NAME = "豆包象棋"
 AI_DISCLOSURE = "AI虚拟主播"
 APP_TITLE = f"{CHANNEL_NAME} · AI直播助手"
-AREA_A_TITLE = f"{CHANNEL_NAME} · A区"
+AREA_A_TITLE = f"{CHANNEL_NAME} · 互动展示"
 DEFAULT_AVATAR = Path(__file__).resolve().parent / "assets" / "doubao-chess-red-scarf-v3.png"
 AVATAR_PRESETS = (
     ("水墨国风", DEFAULT_AVATAR.with_name("doubao-chess-ink-v4.png")),

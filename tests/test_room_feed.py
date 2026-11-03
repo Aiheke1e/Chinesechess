@@ -220,7 +220,7 @@ class RoomFeedUITests(unittest.TestCase):
         self.panel.preview_toggle.invoke()
         self.assertFalse(self.panel.preview_visible)
         self.assertFalse(self.panel.preview_enabled.get())
-        self.panel.toggle_widgets["弹出A区"].invoke()
+        self.panel.toggle_widgets["独立窗口"].invoke()
         window = self.panel.broadcast_window
         window.withdraw()
         self.assertTrue(self.panel.broadcast_visible.get())
@@ -274,24 +274,35 @@ class RoomFeedUITests(unittest.TestCase):
         self.root.update_idletasks()
         self.assertFalse(errors)
 
-    def test_settings_use_preview_space_without_hiding_the_independent_capture_window(self):
-        self.panel.preview_toggle.invoke()
+    def test_both_pages_can_hide_the_shared_preview_without_hiding_the_capture_window(self):
+        self.panel.workspace_preview_toggle.invoke()
         self.panel.open_broadcast_window()
         window = self.panel.broadcast_window
         self.panel.interaction_user.set("真实观众")
         self.panel.interaction_message.set("原始弹幕")
         self.panel.pages.select(1)
         self.root.update()
-        self.assertEqual(self.panel.broadcast_view.winfo_manager(), "")
+        self.assertEqual(self.panel.broadcast_view.winfo_manager(), "pack")
         self.assertTrue(self.panel.preview_visible)
         self.assertTrue(self.panel.preview_enabled.get())
         self.assertEqual(window.state(), "normal")
+        self.panel.preview_toggle.invoke()
+        self.assertEqual(self.panel.broadcast_view.winfo_manager(), "")
+        self.assertFalse(self.panel.preview_enabled.get())
         self.panel.pages.select(0)
         self.root.update()
+        self.assertEqual(self.panel.broadcast_view.winfo_manager(), "")
+        self.panel.workspace_preview_toggle.invoke()
         self.assertEqual(self.panel.broadcast_view.winfo_manager(), "pack")
         self.assertIs(self.panel.broadcast_window, window)
         self.assertEqual(self.panel.interaction_user.get(), "真实观众")
         self.assertEqual(self.panel.interaction_message.get(), "原始弹幕")
+        self.panel.workspace_popup_toggle.invoke()
+        self.assertEqual(window.state(), "withdrawn")
+        self.panel.pages.select(1)
+        self.panel.toggle_widgets["独立窗口"].invoke()
+        self.assertIs(self.panel.broadcast_window, window)
+        self.assertEqual(window.state(), "normal")
 
     def test_enabling_interaction_after_stop_displays_replies_without_reviving_board_workers(self):
         canceled = self.panel.task_cancel

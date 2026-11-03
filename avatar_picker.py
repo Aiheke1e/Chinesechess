@@ -45,7 +45,7 @@ def import_avatar(path):
 class AvatarPicker(tk.Toplevel):
     def __init__(self, parent, selected, on_select, on_upload, palette):
         super().__init__(parent)
-        self.title("A区头像")
+        self.title("互动展示头像")
         self.transient(parent)
         self.configure(bg=palette["panel"])
         self.resizable(False, False)
