@@ -95,11 +95,11 @@ class CommentaryStyleTests(unittest.TestCase):
                 config.write_text.assert_not_called()
 
     def test_custom_style_migration_does_not_rewrite_tool_or_viewer_references(self):
-        custom = "你叫豆包，严肃讲棋，不讲笑话。观众豆包爱下棋；以后考虑接豆包语音。"
-        expected = f"你叫{HOST_NAME}，严肃讲棋，不讲笑话。观众豆包爱下棋；以后考虑接豆包语音。"
+        custom = "你叫小弈，严肃讲棋，不讲笑话。观众小弈爱下棋；以后考虑接豆包语音。"
+        expected = f"你叫{HOST_NAME}，严肃讲棋，不讲笑话。观众小弈爱下棋；以后考虑接豆包语音。"
         with patch("live_host.CONFIG_PATH") as config:
             config.read_text.return_value = json.dumps({"persona": custom,
-                "introduction": "我是豆包，有问题直接聊。", "voice": "Maia"})
+                "introduction": "我是小弈，有问题直接聊。", "voice": "Maia"})
             settings = load_settings()
             self.assertEqual(settings.persona, expected)
             self.assertEqual(settings.introduction, f"我是{HOST_NAME}，有问题直接聊。")

@@ -630,7 +630,7 @@ class SpeechPipeline:
         """Keep internal side facts, but never read them like a neutral robot."""
         cleaned = cls._clean_text(text)
         labels = "|".join(re.escape(label) for label in
-                          (CHANNEL_NAME, HOST_NAME, "棋小雅", "豆包象棋", "豆包", "主播", "解说"))
+                          (CHANNEL_NAME, HOST_NAME, "棋小雅", "小弈象棋", "小弈", "主播", "解说"))
         cleaned = re.sub(rf"^(?:{labels})\s*[：:]\s*", "", cleaned)
         own = cls._own_side(payload)
         other = "黑方" if own == "红方" else "红方" if own == "黑方" else ""
