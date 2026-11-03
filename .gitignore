@@ -27,6 +27,7 @@ data/opening_book*.json.gz
 !templates/*.png
 !fixture/*.png
 !assets/doubao-chess-avatar.png
+!assets/doubao-chess-computer.png
 
 # Pikafish runtime files are downloaded separately; keep only its licenses/docs.
 engine_bin/*.7z

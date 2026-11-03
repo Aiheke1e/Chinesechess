@@ -101,7 +101,7 @@ class BroadcastView(SoftCard):
         elif not self.brand_label.winfo_manager():
             self.brand_label.pack(pady=(2, 2))
         available = self.content.winfo_height() - (0 if compact else self.brand_label.winfo_reqheight() + 8)
-        size = max(round(28 * scale), min(round((42 if compact else 90) * scale), available))
+        size = max(round(28 * scale), min(round((42 if compact else 160) * scale), available))
         if self._avatar_source_image is not None and size != self._avatar_size:
             self._avatar_size = size
             self._avatar_image = ImageTk.PhotoImage(ImageOps.contain(self._avatar_source_image,

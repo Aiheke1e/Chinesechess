@@ -1,0 +1,4 @@
+Tool: built-in image_gen imagegen; transparent_background=true
+Reference: assets/doubao-chess-avatar.png
+
+undefined
