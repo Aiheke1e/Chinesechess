@@ -30,15 +30,35 @@ class PostgameTests(unittest.TestCase):
             self.assertFalse(dismiss_rank_promotion("device"))
         adb_mock.assert_not_called()
 
-    def test_nonboard_unity_interruption_uses_one_safe_back(self):
+    def test_unrecognized_animation_or_loading_page_never_sends_back(self):
         with patch("recognizer.recognize_position",
                    return_value=(None, None)), \
+             patch("postgame.read_ui_xml", return_value=""), \
+             patch("postgame.adb") as adb_mock, \
+             patch("postgame.time.sleep"):
+            for _ in range(4):
+                self.assertFalse(dismiss_nonboard_interruption(
+                    "device", np.zeros((1920, 1080, 3), dtype=np.uint8)))
+        adb_mock.assert_not_called()
+
+    def test_nonboard_rank_page_still_closes_with_explicit_text(self):
+        with patch("recognizer.recognize_position", return_value=(None, None)), \
+             patch("postgame.read_ui_xml", return_value='<node text="段位提升"/>'), \
              patch("postgame.adb") as adb_mock, \
              patch("postgame.time.sleep"):
             self.assertTrue(dismiss_nonboard_interruption(
                 "device", np.zeros((1920, 1080, 3), dtype=np.uint8)))
         adb_mock.assert_called_once_with(
             ["shell", "input", "keyevent", "4"], device="device")
+
+    def test_confirmation_modal_is_left_for_postgame_handler(self):
+        image = np.zeros((1920, 1080, 3), dtype=np.uint8)
+        cv2.rectangle(image, (410, 1000), (670, 1110), (40, 190, 60), -1)
+        with patch("postgame.read_ui_xml") as read_xml, \
+             patch("postgame.adb") as adb_mock:
+            self.assertFalse(dismiss_nonboard_interruption("device", image))
+        read_xml.assert_not_called()
+        adb_mock.assert_not_called()
 
     def test_nonboard_fallback_never_backs_out_of_recognized_board(self):
         squares = [None] * 90

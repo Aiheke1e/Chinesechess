@@ -320,9 +320,8 @@ def confirmed_move_candidate(pending, current, status):
 
 def postgame_image_visible(image):
     """Return true only when an image shows a trustworthy result control."""
-    from postgame import detect_large_action_button, detect_modal_close
-    return bool(image is not None and
-                (detect_large_action_button(image) or detect_modal_close(image)))
+    from postgame import has_actionable_postgame
+    return image is not None and has_actionable_postgame(image)
 
 
 def postgame_screen_visible(device, first_image=None, confirm_delay=0.3):
@@ -607,7 +606,7 @@ def main():
                     waited = total_waited - timeout_reported_at
                     if postgame_screen_visible(device, image):
                         result = "finished"
-                        print("[本局结束] 对方可能已投降，检测到 JJ 结算页面。")
+                        print("[本局结束] 检测到 JJ 结算页面，本局已结束。")
                         events.emit("game_over", result=result,
                                     reason="jj_result_screen", fen=b.to_fen())
                         break
@@ -636,9 +635,9 @@ def main():
                                 now - last_anomaly_report >= 15.0):
                             if anomaly_count == 3:
                                 try:
-                                    from postgame import (dismiss_nonboard_interruption,
-                                                          dismiss_rank_promotion)
-                                    promotion_closed = dismiss_rank_promotion(device)
+                                    from postgame import dismiss_nonboard_interruption
+                                    promotion_closed = dismiss_nonboard_interruption(
+                                        device, image, orientation)
                                 except Exception:
                                     promotion_closed = False
                                 if promotion_closed:
@@ -650,27 +649,12 @@ def main():
                                         reason="rank_promotion_screen",
                                         fen=b.to_fen())
                                     break
-                                try:
-                                    interruption_closed = dismiss_nonboard_interruption(
-                                        device, image, orientation)
-                                except Exception:
-                                    interruption_closed = False
-                                if interruption_closed:
-                                    print("[界面恢复] 检测到非棋盘全屏插页，已返回并重新识别。",
-                                          flush=True)
-                                    events.emit(
-                                        "ui_interruption_dismissed",
-                                        reason="nonboard_fullscreen",
-                                        fen=b.to_fen())
-                                    anomaly_count = 0
-                                    reference_image = screenshot(device)
-                                    continue
                             reason = {
                                 "retry": "棋盘偏差超过2格，正在重新截图",
                                 "illegal": "画面变化无法由合法走法反推",
                                 "screenshot_failed": "本次截图失败",
                             }[check_status]
-                            print(f"[识别告警] {reason}；已暂停落子，继续自动复核。",
+                            print(f"[识别告警] {reason}；暂不落子，等待棋盘或结算画面稳定。",
                                   flush=True)
                             events.emit(
                                 "recognition_warning", status=check_status,

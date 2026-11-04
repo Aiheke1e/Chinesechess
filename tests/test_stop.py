@@ -62,6 +62,20 @@ class StopTests(unittest.TestCase):
         panel.status.set.assert_not_called()
         panel.append.assert_not_called()
 
+    def test_postgame_completion_schedules_next_game_only_with_auto_continue(self):
+        for enabled in (True, False):
+            with self.subTest(auto_continue=enabled):
+                panel = self.panel()
+                panel.continuous = Mock(get=Mock(return_value=enabled))
+                panel._schedule_prepare = Mock()
+                panel.output.put(("done", 10, panel.process))
+                panel._poll()
+                self.assertFalse(panel.task_cancel.is_set())
+                if enabled:
+                    panel._schedule_prepare.assert_called_once_with()
+                else:
+                    panel._schedule_prepare.assert_not_called()
+
     def test_cancelled_screenshot_does_not_reach_recognition(self):
         panel = self.panel()
         panel._assistant_cfg = Mock(return_value={"jj_package": "cn.jj.chess"})
