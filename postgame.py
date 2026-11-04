@@ -4,6 +4,8 @@ import re
 import subprocess
 import time
 import xml.etree.ElementTree as ET
+from functools import lru_cache
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -21,6 +23,54 @@ MATCH_MODE_X = {
     "15分钟": 0.60,
     "超快": 0.81,
 }
+
+
+@lru_cache(maxsize=1)
+def _rank_templates():
+    folder = Path(__file__).resolve().parent / "assets"
+    result = []
+    for name in ("title", "back"):
+        try:
+            image = cv2.imdecode(np.frombuffer(
+                (folder / f"jj-rank-{name}.png").read_bytes(), dtype=np.uint8),
+                cv2.IMREAD_GRAYSCALE)
+        except OSError:
+            return None
+        if image is None:
+            return None
+        result.append(image)
+    return result
+
+
+def detect_rank_promotion_dismiss(image):
+    """Recognize the fixed title AND return arrow, independent of rank art.
+
+    A blank click was ineffective on the observed page.  Its visible bottom
+    left return arrow is the only target; unrelated full-screen pages must
+    never acquire a generic blank-click/BACK fallback.
+    """
+    if image is None or image.ndim != 3:
+        return None
+    height, width = image.shape[:2]
+    if height < 800 or width < 450 or not .48 <= width / height <= .65:
+        return None
+    templates = _rank_templates()
+    if templates is None:
+        return None
+    gray = cv2.resize(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), (1080, 1920))
+    title_area = gray[25:190, 320:760]
+    back_area = gray[1750:1900, 30:155]
+    matches = []
+    for template, area in zip(templates, (title_area, back_area)):
+        scores = cv2.matchTemplate(area, template, cv2.TM_CCOEFF_NORMED)
+        _, score, _, point = cv2.minMaxLoc(scores)
+        if score < .82:
+            return None
+        matches.append(point)
+    x, y = matches[1]
+    arrow = templates[1]
+    return (round((30 + x + arrow.shape[1] / 2) * width / 1080),
+            round((1750 + y + arrow.shape[0] / 2) * height / 1920))
 
 
 def parse_action_nodes(xml_text):
@@ -294,7 +344,8 @@ def postgame_action(image):
     """Return one visual action, with modal controls ahead of replay."""
     for label, detect in (("关闭奖励弹窗", detect_modal_close),
                           ("结算确认", detect_confirmation_button),
-                          ("结算页主按钮", detect_large_action_button)):
+                          ("结算页主按钮", detect_large_action_button),
+                          ("关闭段位提升", detect_rank_promotion_dismiss)):
         point = detect(image)
         if point:
             return label, *point
@@ -371,9 +422,10 @@ def handle_postgame(device, timeout=20.0, max_actions=8):
                              squares is not None and
                              sum(piece is not None for piece in squares) >= 4)
             if board_visible:
-                if actions:
+                if actions and actions[-1] != "关闭段位提升":
                     break
-                # The mate/resignation animation may still cover its controls.
+                # Closing the rank page can expose the just-finished board
+                # before its replay control appears; it is not a new game.
                 time.sleep(0.12)
                 continue
             if detect_match_mode_button(before) or detect_rules_overlay_dismiss(before):
