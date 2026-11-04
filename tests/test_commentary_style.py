@@ -46,16 +46,34 @@ class CommentaryStyleTests(unittest.TestCase):
     def test_jokes_rotate_themes_without_becoming_permanently_silent(self):
         style = CommentaryStyle()
         lines, families = [], []
+        base = "车八进一，吃掉一辆车。"
         for _ in range(25):
-            text = style.decorate("关键走棋解说", "车九平二。", {"我方计划走法": "红方 车九平二"}, DEFAULT_PERSONA)
+            text = style.decorate("关键走棋解说", base, {"我方计划走法": "红方 车八进一，吃车"}, DEFAULT_PERSONA)
             lines.append(text)
-            if text != "车九平二。" and style.recent_families[-1]:
+            if text != base and style.recent_families[-1]:
                 families.append(style.recent_families[-1])
             style.remember(text)
         self.assertGreaterEqual(len(set(lines)), 4)
-        self.assertTrue(any(text != "车九平二。" for text in lines[-5:]))
+        self.assertTrue(any(text != base for text in lines[-5:]))
         self.assertTrue(all(a != b for a, b in zip(families, families[1:])))
-        self.assertLessEqual(sum(text != "车九平二。" for text in lines), 9)
+        self.assertLessEqual(sum(text != base for text in lines), 9)
+
+    def test_quiet_moves_and_check_escape_are_not_automatically_given_a_joke(self):
+        style = CommentaryStyle()
+        for _ in range(10):
+            self.assertEqual(style.decorate("关键走棋解说", "马二进三。", {
+                "我方计划走法": "红方 马二进三"}, DEFAULT_PERSONA), "马二进三。")
+            self.assertEqual(style.decorate("关键走棋解说", "仕六进五，先把将解开。", {
+                "我方计划走法": "红方 仕六进五", "QUEEN式证据": {
+                    "选择理由": ["先解除将军"]}}, DEFAULT_PERSONA), "仕六进五，先把将解开。")
+
+    def test_exchange_does_not_get_a_celebratory_free_piece_joke(self):
+        style = CommentaryStyle()
+        text = "车八进一，吃掉一辆车。"
+        for _ in range(8):
+            self.assertEqual(style.decorate("关键走棋解说", text, {
+                "我方计划走法": "红方 车八进一，吃车",
+                "QUEEN式证据": {"应手回吃本子": True}}, DEFAULT_PERSONA), text)
 
     def test_serious_persona_and_unproven_followups_keep_factual_copy(self):
         style = CommentaryStyle()

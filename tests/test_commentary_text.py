@@ -10,7 +10,7 @@ class CommentaryTextTests(unittest.TestCase):
     def test_followup_explains_next_capture_without_repeating_current_capture(self):
         text = waiting_note({"选择理由": ["吃掉卒", "炮横向换线"],
                              "最可能应手": "黑方 车1平6",
-                             "主线参考": ["黑方 车1平6", "红方 炮九平五，吃马"]})
+                             "主线参考": ["黑方 车1平6", "红方 炮九平五，吃马"]}, allow_reply=True)
         self.assertIn("如果对面车1平6", text)
         self.assertIn("炮九平五吃马", text)
         self.assertNotIn("吃卒", text)
@@ -24,13 +24,14 @@ class CommentaryTextTests(unittest.TestCase):
         self.assertEqual(text, "")
 
     def test_own_move_effects_take_precedence_over_reply_predictions(self):
-        effect = "这辆车现在瞄着对面的马。"
+        effect = "这辆车盯住了对面的三路马。"
         evidence = {"本手作用": [effect], "最可能应手": "黑方 车1平6"}
         self.assertEqual(waiting_note(evidence), effect)
         self.assertEqual(LiveController._idle_move_text("红方 车九进一", evidence), effect)
         self.assertEqual(waiting_note(evidence, used=[effect]), "")
         text = LiveController._synced_move_text("红方 车九进一", effects=[effect])
-        self.assertIn(effect, text)
+        self.assertIn("盯住了对面的三路马", text)
+        self.assertNotIn("这辆车", text)
         self.assertNotIn("对手可能", text)
 
     def test_missing_new_fact_means_no_filler(self):
@@ -64,7 +65,7 @@ class CommentaryTextTests(unittest.TestCase):
     def test_two_confirmed_captures_by_same_piece_can_be_linked(self):
         current, previous, reply = self.events(self.position(45, 36, 27),
                                                (45, 36), (4, 3), (36, 27))
-        self.assertEqual(connected_move_note(current, previous, reply), "这辆车再吃一门炮。")
+        self.assertEqual(connected_move_note(current, previous, reply), "车九进一，再吃一门炮。")
         current["number"] = 14
         self.assertEqual(connected_move_note(current, previous, reply), "")
 
@@ -78,7 +79,7 @@ class CommentaryTextTests(unittest.TestCase):
     def test_two_actual_checks_can_be_linked(self):
         current, previous, reply = self.events(self.position(41),
                                                (41, 40), (4, 3), (40, 39))
-        self.assertEqual(connected_move_note(current, previous, reply), "这辆车继续将军。")
+        self.assertEqual(connected_move_note(current, previous, reply), "车五平六，继续将军。")
 
     def test_only_applied_move_is_saved_as_confirmed_commentary_context(self):
         controller = object.__new__(LiveController)
@@ -179,10 +180,11 @@ class CommentaryTextTests(unittest.TestCase):
 
     def test_recapture_note_names_the_piece_and_only_calls_it_recapture_with_evidence(self):
         evidence = {"最可能应手": "红方 车八平三，吃卒"}
-        ordinary = waiting_note(evidence)
+        self.assertEqual(waiting_note(evidence), "")
+        ordinary = waiting_note(evidence, allow_reply=True)
         self.assertIn("咱们一枚卒", ordinary)
         self.assertNotIn("吃回", ordinary)
-        recapture = waiting_note({**evidence, "应手回吃本子": True})
+        recapture = waiting_note({**evidence, "应手回吃本子": True}, allow_reply=True)
         self.assertIn("吃回这枚卒", recapture)
         self.assertNotIn("这枚子", recapture)
 

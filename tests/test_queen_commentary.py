@@ -16,8 +16,9 @@ class QueenCommentaryTests(unittest.TestCase):
 
     def test_new_attack_and_defence_are_grounded_in_the_moved_piece(self):
         for side in ("r", "b"):
-            for target, phrase in (("r", "瞄着对面的车"), ("N", "照应咱们的马")):
-                board = self.position(((81, "R"), (75, target)), side)
+            for target, phrase in (("r", "盯住了对面的四路车"), ("N", "六路马补上保护")):
+                pieces = ((81, "R"), (75, target)) + (((57, "r"),) if target == "N" else ())
+                board = self.position(pieces, side)
                 move = (81, 72) if side == "r" else (8, 17)
                 original = board.to_fen()
                 self.assertIn(phrase, "".join(move_effects(board, move)))
@@ -25,14 +26,20 @@ class QueenCommentaryTests(unittest.TestCase):
 
     def test_cannon_cannot_claim_an_attack_without_a_screen(self):
         board = self.position(((81, "C"), (75, "r")))
-        self.assertNotIn("瞄着", "".join(move_effects(board, (81, 72))))
+        self.assertNotIn("盯住", "".join(move_effects(board, (81, 72))))
         board.sq[74] = "P"
-        self.assertIn("瞄着对面的车", "".join(move_effects(board, (81, 72))))
+        self.assertIn("盯住了对面的四路车", "".join(move_effects(board, (81, 72))))
 
     def test_escape_claim_requires_the_original_attack_to_disappear(self):
         board = self.position(((72, "R"), (54, "r")))
-        self.assertIn("直接攻击落空", "".join(move_effects(board, (72, 73))))
-        self.assertNotIn("直接攻击落空", "".join(move_effects(board, (72, 63))))
+        self.assertIn("避开了对面的攻击", "".join(move_effects(board, (72, 73))))
+        self.assertNotIn("避开了对面的攻击", "".join(move_effects(board, (72, 63))))
+
+    def test_unthreatened_defence_and_routine_opening_mobility_are_not_filler(self):
+        board = self.position(((81, "R"), (75, "N")))
+        self.assertEqual(move_effects(board, (81, 72)), [])
+        board = Board.from_fen(START_FEN)
+        self.assertEqual(move_effects(board, Board.from_ucci("b0c2")), [])
 
     def test_compares_existing_multipv_without_new_search(self):
         board = Board.from_fen(START_FEN)

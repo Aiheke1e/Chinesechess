@@ -2,7 +2,7 @@
 import re
 
 from board import Board
-from notation import PIECE_NAMES
+from notation import PIECE_NAMES, move_notation
 from commentary_style import piece_amount
 
 
@@ -25,12 +25,14 @@ def complete_note(text, limit=56):
     return result
 
 
-def waiting_note(evidence, used=()):
+def waiting_note(evidence, used=(), *, allow_reply=False):
     """Add one new consequence, instead of explaining a capture as 'to capture'."""
     evidence = evidence or {}
     for effect in evidence.get("本手作用") or ():
         if effect not in used:
             return complete_note(effect)
+    if not allow_reply:
+        return ""
     route = list(evidence.get("主线参考") or [])
     reply = spoken_move(evidence.get("最可能应手"))
     if route and spoken_move(route[0]) == reply and len(route) >= 2:
@@ -99,6 +101,7 @@ def connected_move_note(current, previous, reply):
         if first[1] != move[0] or board.sq[move[0]] != piece or move not in board.legal_moves():
             return ""
         captured = board.sq[move[1]]
+        action = move_notation(board, move, include_side=False)
         board.apply(move)
         checking = board.in_check(board.turn)
         names = {"R": "这辆车", "C": "这门炮", "N": "这匹马"}
@@ -107,9 +110,10 @@ def connected_move_note(current, previous, reply):
             return ""
         if captured and first_capture:
             target = PIECE_NAMES[captured]
-            return f"{name}再吃{piece_amount(target)}" + ("，同时将军。" if checking else "。")
+            return f"{action}，再吃{piece_amount(target)}" + ("，同时将军。" if checking else "。")
         if checking and previous_check:
-            return f"{name}继续将军。"
+            capture = f"吃掉{piece_amount(PIECE_NAMES[captured])}，" if captured else ""
+            return f"{action}，{capture}继续将军。"
     except (KeyError, TypeError, ValueError, IndexError, AttributeError):
         return ""
     return ""

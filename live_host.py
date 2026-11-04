@@ -1545,15 +1545,23 @@ class LiveController:
     def _sandbox_speech(cls, plan):
         target = cls._spoken_notation(plan["target"]).replace("，吃", "吃")
         if plan.get("kind") == "mate":
-            return complete_note(f"来，把{plan.get('pattern', '组合将杀')}这条杀棋路线摆完整。沿这条接法走到{target}，最后演示吃将收尾。")
+            return complete_note(f"这路{plan.get('pattern', '组合将杀')}，咱们摆给大家看。沿这条变化走到{target}，再摆一步吃将收尾。")
+        route = [cls._spoken_notation(item.get("notation", "")).replace("，吃", "吃")
+                 for item in plan.get("route", [])[:2]]
+        if len(route) < 2 or not all(route):
+            return complete_note(f"来，摆一下{target}这段接法。")
         reason = plan.get("reason", "")
         if "交换" in reason:
-            return complete_note(f"来，把这轮交换摆清楚。沿这条接法走，咱们接着{target}。")
-        if "解将" in reason:
-            return complete_note(f"先解将，再看子怎么接上。来，沙盘里接着摆到{target}。")
-        if "将军" in reason:
-            return complete_note(f"来，把这声将军的后续摆清楚。对手按这条线应，咱们接着{target}。")
-        return complete_note(f"来，把这段取子的接法摆清楚。对手照这条线应，咱们接着{target}。")
+            intro = "这轮交换，摆给大家看。"
+        elif "解将" in reason:
+            intro = "解将以后，还有这段接法。"
+        elif "将军" in reason:
+            intro = "这声将军怎么接，摆一下。"
+        elif "吃大子后的" in reason:
+            intro = "吃完以后怎么接，咱们摆一下。"
+        else:
+            intro = "看这段取子的接法，摆一下。"
+        return complete_note(f"{intro}对面要是{route[0]}，咱们接着{route[1]}。")
 
 
 
@@ -1590,14 +1598,19 @@ class LiveController:
                 return f"{base_move}，吃{captured}带将。"
             return f"{base_move}，{calls[index]}。"
         if effects and not {"先解除将军", "形成将军"}.intersection(reasons):
-            return complete_note(f"{base_move}，{effects[0]}")
+            effect = cls._effect_phrase(effects[0])
+            return complete_note(f"{base_move}，{effect}")
         return cls._quiet_move_text(base_move, number, reasons)
+
+    @staticmethod
+    def _effect_phrase(effect):
+        return re.sub(r"^(?:这辆车|这门炮|这匹马|这枚[相象仕士兵卒]|咱们的[帅将])", "", str(effect))
 
     @staticmethod
     def _fact_phrase(fact):
         return {
-            "争夺中路": "把子力往中路集中",
-            "马向中路靠拢": "马往中路靠一靠",
+            "争夺中路": "转到中路",
+            "马向中路靠拢": "往中路靠一靠",
             "马向前跃进": "马向前跳出",
             "马回撤调整": "回马调整位置",
             "车横向换线": "平车换线",
@@ -1615,14 +1628,16 @@ class LiveController:
             "飞象调整防线": "飞象调整防线",
             "补仕守住宫门": "补仕照看宫门",
             "补士守住宫门": "补士照看宫门",
-            "先解除将军": "先解将，保住将帅",
-            "形成将军": "这手将军，对面得先解将",
+            "先解除将军": "先把将解开",
+            "形成将军": "将军",
         }.get(str(fact), "")
 
     @classmethod
     def _quiet_move_text(cls, move, number=0, reasons=()):
         """One move call plus a visible fact; never invent a tactical purpose."""
         reasons = tuple(str(item) for item in reasons)
+        if {"先解除将军", "形成将军"}.issubset(reasons):
+            return f"{move}，解将，顺势反将。"
         for fact in ("先解除将军", "形成将军", "争夺中路"):
             if fact in reasons:
                 return f"{move}，{cls._fact_phrase(fact)}。"
@@ -1936,10 +1951,9 @@ class LiveController:
             self.reply_context = None
             self.pipeline.cancel_idle()
             return
-        reply_context = getattr(self, "reply_context", None)
-        if reply_context:
-            payload["上一手预判复盘"] = reply_context
-            self.reply_context = None
+        # An old forecast is not a new fact about the move being played.  Do
+        # not let styling/model context replace this turn's verified content.
+        self.reply_context = None
         payload["最近已讲话题"] = list(getattr(self, "recent_chess_topics", ()))
         sandtable = (self._sandtable_plan(event)
                      if getattr(getattr(self, "settings", None),
@@ -1957,14 +1971,6 @@ class LiveController:
         evidence = event.get("queen_evidence") or {}
         factual_reasons = list(evidence.get("选择理由") or [])
         effects = list(evidence.get("本手作用") or [])
-        current_tactic = ("，吃" in notation or
-                          bool({"形成将军", "先解除将军"}.intersection(factual_reasons)) or
-                          (event.get("analysis") or {}).get("score_type") == "mate")
-        if current_tactic:
-            # A previous opponent move must not displace this move's capture,
-            # check or escape. Its context is consumed, never replayed later.
-            reply_context = None
-            payload.pop("上一手预判复盘", None)
         if sandtable:
             importance = max(importance, 10)
             reasons.append("沙盘推演")
@@ -2035,7 +2041,8 @@ class LiveController:
                 self.pipeline.submit(1, kind, important_payload,
                                      direct_text=direct)
             settings = getattr(self, "settings", None)
-            used = [effect for effect in effects if effect.rstrip("。") in str(direct)]
+            used = [effect for effect in effects
+                    if self._effect_phrase(effect).rstrip("。") in str(direct)]
             note = (waiting_note(evidence, used=used) if settings is not None and
                     getattr(settings, "queen_commentary_enabled", True) and
                     not sandtable and evidence.get("值得展开") else "")
@@ -2044,12 +2051,6 @@ class LiveController:
                     **payload,
                     "要求": "只补充已验证路线中的新看点，不重复报招，不强行比较候选；最多两句。",
                 }, kind="QUEEN式等待期解说", direct_text=note)
-            elif reply_context:
-                self.pipeline.prepare_idle({
-                    **self._reply_review_payload(payload, reply_context),
-                    "要求": "只用上一手预判复盘的事实，轻轻回应一次；不编棋局影响",
-                }, kind="QUEEN式等待期解说",
-                    direct_text=self._prediction_followup(reply_context))
             self._remember_chess_topic(notation)
             return
         if (token and getattr(getattr(self, "settings", None), "speech_enabled", False)
@@ -2057,16 +2058,11 @@ class LiveController:
             self.pipeline.prepare_move("我方走棋播报", payload,
                                        direct_text=self._synced_move_text(
                                            notation, factual_reasons, event.get("number", 0), effects=effects))
-        if reply_context and not effects:
-            self.pipeline.prepare_idle(self._reply_review_payload(payload, reply_context),
-                kind="QUEEN式等待期解说",
-                direct_text=self._prediction_followup(reply_context))
-            self._remember_chess_topic(notation)
-            return
         prediction_route = event.get("pv", [])
         predicted_reply = (prediction_route[1]
                            if len(prediction_route) >= 2 else None)
-        if (not effects and not sandtable and not near_win and predicted_reply and
+        forecast = waiting_note(evidence, allow_reply=True) if not effects else ""
+        if (forecast and not sandtable and not near_win and predicted_reply and
                 self._prediction_due(event.get("number"))):
             self.pending_prediction = {
                 "ucci": str(predicted_reply.get("ucci") or ""),
@@ -2077,8 +2073,7 @@ class LiveController:
                 **payload,
                 "引擎预测应手": predicted_reply.get("notation"),
                 "预测依据": "Pikafish主变化中的第一应手",
-            }, kind="应手预判", direct_text=self._engine_prediction_text(
-                predicted_reply.get("notation"), self.prediction_count))
+            }, kind="应手预判", direct_text=forecast)
             self._remember_chess_topic(notation)
             return
         self.quiet_move_count = getattr(self, "quiet_move_count", 0) + 1

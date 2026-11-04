@@ -187,6 +187,8 @@ class LiveHostTests(unittest.TestCase):
             "summary": "局面均势", "analysis": {
                 "score_type": "cp", "score": 20, "depth": 18},
             "candidates": [], "speech_token": "predict",
+            "queen_evidence": {"最可能应手": "黑方 马8进7",
+                "主线参考": ["黑方 马8进7", "红方 炮五进四，吃卒"]},
             "pv": [
                 {"ucci": "h0g2", "notation": "红方 马二进三"},
                 {"ucci": "h9g7", "notation": "黑方 马8进7"},
@@ -327,7 +329,7 @@ class LiveHostTests(unittest.TestCase):
             "我方计划走法": "红方 马二进三"}, DEFAULT_PERSONA)
         self.assertIn("马二进三", text)
         self.assertNotIn("我方", text)
-        self.assertTrue("跳马" in text or "马儿" in text or "这匹马" in text)
+        self.assertEqual(text, "马二进三。")
 
     def test_large_cp_advantage_does_not_claim_a_forced_win(self):
         submitted = []
@@ -504,6 +506,7 @@ class LiveHostTests(unittest.TestCase):
             "queen_evidence": {
                 "最终选择": "红方 炮五进四，吃马",
                 "选择理由": ["吃掉马"],
+                "本手作用": ["这门炮盯住了对面的七路马。"],
                 "候选取舍": [{"走法": "马三进五", "取舍": "较慢"}],
                 "最可能应手": "黑方 车9平8",
                 "主线参考": ["黑方 车9平8", "红方 炮五平七，吃炮"],
@@ -647,11 +650,11 @@ class LiveHostTests(unittest.TestCase):
         self.assertEqual(
             LiveController._synced_move_text(
                 "红方 马七退五", ["争夺中路", "马向中路靠拢"], 6),
-            "马七退五，把子力往中路集中。")
+            "马七退五，转到中路。")
         self.assertEqual(
             LiveController._synced_move_text(
                 "红方 马二进三", ["马向中路靠拢"], 2),
-            "马二进三，马往中路靠一靠。")
+            "马二进三，往中路靠一靠。")
         self.assertEqual(
             LiveController._synced_move_text(
                 "红方 炮二退一", ["炮回撤调整"], 7),

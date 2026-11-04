@@ -8,7 +8,7 @@ engine search to the move-critical path.
 from __future__ import annotations
 
 from board import BLACK, RED, Board, color_of
-from notation import PIECE_NAMES, move_description
+from notation import PIECE_NAMES, file_name, move_description
 
 
 PIECE_VALUE = {"K": 0, "A": 2, "B": 2, "N": 4, "R": 9, "C": 4.5, "P": 1}
@@ -82,7 +82,7 @@ def _defended(board, origin):
     side = color_of(board.sq[origin])
     targets = set()
     for index, piece in enumerate(board.sq):
-        if index == origin or not piece or color_of(piece) != side or piece.upper() not in "RNCPAB":
+        if index == origin or not piece or color_of(piece) != side or piece.upper() not in "RNC":
             continue
         probe = board.copy()
         probe.sq[index] = piece.swapcase()
@@ -91,9 +91,34 @@ def _defended(board, origin):
     return targets
 
 
+def _attackers(board, target, enemy):
+    return {move[0] for move in board.gen_moves(enemy)
+            if move[1] == target and move in _legal_from(board, move[0])}
+
+
 def _attacked(board, target, enemy):
-    return any(move[1] == target and move in _legal_from(board, move[0])
-               for move in board.gen_moves(enemy))
+    return bool(_attackers(board, target, enemy))
+
+
+def _important_attack(board, target, enemy):
+    """Do not call a normal defended, equal-or-better exchange an escape."""
+    attackers = _attackers(board, target, enemy)
+    if not attackers:
+        return False
+    piece = board.sq[target]
+    if any(PIECE_VALUE[board.sq[source].upper()] < PIECE_VALUE[piece.upper()]
+           for source in attackers):
+        return True
+    probe = board.copy()
+    probe.sq[target] = piece.swapcase()
+    return not _attacked(probe, target, color_of(piece))
+
+
+def _piece_label(board, index):
+    piece = board.sq[index]
+    number = file_name(color_of(piece), index % 9).translate(
+        str.maketrans("123456789", "一二三四五六七八九"))
+    return number + "路" + PIECE_NAMES[piece]
 
 
 def move_effects(board, move):
@@ -115,18 +140,20 @@ def move_effects(board, move):
                    after.sq[target].upper() in "RNC" and target not in old_targets]
     if new_targets:
         target = max(new_targets, key=lambda index: PIECE_VALUE[after.sq[index].upper()])
-        effects.append(f"{subject}现在瞄着对面的{PIECE_NAMES[after.sq[target]]}。")
+        effects.append(f"{subject}盯住了对面的{_piece_label(after, target)}。")
     protected = _defended(after, destination) - _defended(board, origin)
+    # A new geometric connection to an unthreatened piece is not a reason to
+    # speak.  Explain protection only when a real attack makes it relevant.
+    protected = {target for target in protected if _important_attack(board, target, enemy)
+                 and _attacked(after, target, enemy)}
     if protected:
         target = max(protected, key=lambda index: PIECE_VALUE[after.sq[index].upper()])
-        effects.append(f"{subject}过来照应咱们的{PIECE_NAMES[after.sq[target]]}。")
-    if piece.upper() in "RNC" and _attacked(board, origin, enemy) and not _attacked(after, destination, enemy):
-        effects.append(f"{subject}挪开后，对面原来的直接攻击落空了。")
+        effects.append(f"{subject}给正在受攻的{_piece_label(after, target)}补上保护。")
+    if piece.upper() in "RNC" and _important_attack(board, origin, enemy) and not _attacked(after, destination, enemy):
+        effects.append(f"{subject}避开了对面的攻击。")
     from_row, to_row = origin // 9, destination // 9
     if piece.upper() == "P" and (from_row == 5 and to_row == 4 if side == RED else from_row == 4 and to_row == 5):
         effects.append(f"{subject}刚过河，之后也能横着走了。")
-    if piece.upper() in "RNC" and len(before_moves) <= 2 and len(after_moves) >= len(before_moves) + 3:
-        effects.append(f"{subject}能走的格子比刚才多了。")
     return effects
 
 
