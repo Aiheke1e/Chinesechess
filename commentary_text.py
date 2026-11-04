@@ -53,6 +53,22 @@ def waiting_note(evidence, used=(), *, allow_reply=False):
     return ""
 
 
+def opponent_wait_note(status, number=0, *, playful=True):
+    if status == "disconnected":
+        if not playful:
+            return "对面显示断线了，先等他重连。"
+        lines = (
+            "对面显示断线了，信号先溜了。咱们等他连回来。",
+            "对面断线了，别是这步棋把信号吓跑了。先给他一点重连时间。",
+            "对面掉线了，咱们只下棋，可没碰他网线。等他回来再接着下。",
+        )
+        return lines[int(number) % len(lines)]
+    if status == "waiting_long":
+        return ("对面这手还没走，咱们先等等。手别急，棋盘又不会自己跑。" if playful else
+                "对面暂时还没落子，继续等他这一步。")
+    return ""
+
+
 def confirmed_win_note(event, last_move):
     """Describe the final tactic only when a confirmed terminal board proves it."""
     if event.get("result") != "won" or event.get("reason") != "no_legal_moves" or not last_move:

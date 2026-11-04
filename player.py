@@ -23,6 +23,7 @@ from session_state import (block_position, infer_turn_from_standard,
 from runtime_status import write_runtime_status
 from queen_commentary import build_queen_evidence
 from game_control import auto_continue_enabled
+from opponent_status import OpponentWaitMonitor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(HERE, "player_config.json")
@@ -578,6 +579,7 @@ def main():
     result = "stopped"
     from game_sandbox import SandboxCadence
     sandbox_cadence = SandboxCadence()
+    opponent_wait = OpponentWaitMonitor()
     # JJ 会给移动后的棋子换字形。这里保存这些可信占位，只放宽字形，
     # 仍严格检查颜色、空格和合法的一步转移。
     try:
@@ -591,6 +593,7 @@ def main():
                             after_move_number=n)
                 got, waited, total_waited = False, 0.0, 0.0
                 wait_started = time.monotonic()
+                opponent_wait.begin_wait()
                 timeout_reported_at = 0.0
                 pending_opponent_move = None
                 anomaly_count = 0
@@ -617,6 +620,12 @@ def main():
                         events.emit("game_over", result=result,
                                     reason="jj_result_screen", fen=b.to_fen())
                         break
+                    presence = opponent_wait.observe_screen(image)
+                    if presence:
+                        events.emit("opponent_status", status=presence,
+                                    fen=b.to_fen(), after_move_number=n,
+                                    waited_seconds=round(total_waited, 1),
+                                    evidence="avatar_disconnect_label")
                     current_candidate, difference_count = resolve_move_from_change(
                         b, reference_image, image, orientation)
                     if current_candidate is not None:
@@ -634,6 +643,13 @@ def main():
                                 b, image, orientation, occupancy_history))
                         if check_status == "unchanged":
                             reference_image = image
+                    presence = opponent_wait.observe_board(
+                        check_status == "unchanged" and current_candidate is None)
+                    if presence:
+                        events.emit("opponent_status", status=presence,
+                                    fen=b.to_fen(), after_move_number=n,
+                                    waited_seconds=round(total_waited, 1),
+                                    evidence="stable_board_wait")
                     if check_status in ("retry", "illegal", "screenshot_failed"):
                         pending_opponent_move = None
                         anomaly_count += 1

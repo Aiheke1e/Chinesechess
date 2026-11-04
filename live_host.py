@@ -22,7 +22,8 @@ import wave
 from bailian_tts import available_voices, synthesize
 from glm_client import DEFAULT_MODEL, respond
 from opening_library import load_opening_library
-from commentary_text import complete_note, connected_move_note, waiting_note, confirmed_win_note
+from commentary_text import (complete_note, connected_move_note, waiting_note,
+                             confirmed_win_note, opponent_wait_note)
 from mate_patterns import build_finisher, confirmed_finisher_note, finisher_copy, MATE_OPENINGS
 from chat_selection import ChatSelector, viewer_key
 from speech_balance import SpeechBalance
@@ -45,7 +46,7 @@ CHESS_SPEECH_KINDS = {
     "我方走棋播报", "我方走棋解说", "对手走棋播报", "对手走棋解说",
     "关键走棋解说", "关键应手解说", "等待期长讲解", "应手预判",
     "开局定式解说", "绝杀长解说",
-    "沙盘推演解说", "QUEEN式等待期解说", "收官解说", "获胜收官", "结算收官",
+    "沙盘推演解说", "QUEEN式等待期解说", "收官解说", "获胜收官", "结算收官", "对手状态解说",
 }
 INTERACTION_SPEECH_KINDS = {"弹幕回复", "欢迎观众", "礼物答谢"}
 OWN_SPEECH_KINDS = {
@@ -943,9 +944,11 @@ class SpeechPipeline:
         self.notify("speech_status", "已进入等待落子空窗", state["payload"])
         return True
 
-    def cancel_idle(self):
+    def cancel_idle(self, *, kind=None):
         with self.idle_lock:
             state = self.idle_state
+        if kind is not None and (state is None or state.get("kind") != kind):
+            return False
         if state is not None:
             state["cancel"].set()
             state["window"].set()
@@ -1704,6 +1707,10 @@ class LiveController:
         if not getattr(getattr(self, "settings", None),
                        "commentary_enabled", True):
             return
+        if event.get("event") in ("start", "move_selected", "opponent_move", "game_over"):
+            self.opponent_wait_scope = None
+            if event.get("event") != "game_over":
+                self.opponent_disconnected = False
         if event.get("event") == "start":
             self._reset_opening()
             self.pending_prediction = None
@@ -1713,6 +1720,7 @@ class LiveController:
             self.commentary_analyses = {}
             self.last_confirmed_analysis = None
             self.last_commentary_reply = None
+            self.last_offline_notice_at = float("-inf")
             return
         if event.get("event") == "game_sandbox":
             action = event.get("action")
@@ -1798,11 +1806,53 @@ class LiveController:
                        "rank_promotion_screen")):
                 self.pipeline.submit(
                     0, "结算收官", event,
-                    direct_text="这盘已经结束，等下一局棋盘。")
+                    direct_text=("对面断线后，这局已经结束了。" if getattr(
+                        self, "opponent_disconnected", False) else "这盘已经结束，等下一局棋盘。"))
+            self.opponent_disconnected = False
             return
         notation = str(event.get("notation") or "").strip()
         if event.get("event") == "waiting_for_opponent":
+            scope = (event.get("fen"), event.get("after_move_number", 0))
+            if scope != getattr(self, "opponent_wait_scope", None):
+                self.opponent_wait_notices = set()
+            self.opponent_wait_scope = scope
             self.pipeline.open_idle_window()
+            return
+        if event.get("event") == "opponent_status":
+            scope = (event.get("fen"), event.get("after_move_number", 0))
+            if not event.get("fen") or scope != getattr(self, "opponent_wait_scope", None):
+                return
+            status = event.get("status")
+            if status == "cleared":
+                self.opponent_disconnected = False
+                self.pipeline.cancel_idle(kind="对手状态解说")
+                return
+            if status not in ("disconnected", "waiting_long"):
+                return
+            evidence = event.get("evidence")
+            if (status == "disconnected" and evidence != "avatar_disconnect_label"
+                    or status == "waiting_long" and evidence != "stable_board_wait"):
+                return
+            if status == "disconnected":
+                self.opponent_disconnected = True
+            notices = getattr(self, "opponent_wait_notices", set())
+            if status in notices:
+                return
+            notices.add(status)
+            self.opponent_wait_notices = notices
+            now = time.monotonic()
+            if status == "disconnected" and now - getattr(self, "last_offline_notice_at", float("-inf")) < 90:
+                return
+            count = getattr(self, "opponent_wait_line_count", 0)
+            text = opponent_wait_note(status, count, playful=humor_enabled(
+                getattr(getattr(self, "settings", None), "persona", DEFAULT_PERSONA)))
+            payload = {**event, "解说对应手数": None, "解说对应走法": None,
+                       "_expires_at": now + 12}
+            if self.pipeline.prepare_idle(payload, kind="对手状态解说", direct_text=text):
+                self.pipeline.open_idle_window()
+                if status == "disconnected":
+                    self.last_offline_notice_at = now
+                    self.opponent_wait_line_count = count + 1
             return
         if not notation:
             return
@@ -2407,7 +2457,7 @@ class ChessEventTailer(threading.Thread):
                                 "move_selected", "move_command", "move_applied", "move_rejected", "speech_cancelled",
                                 "move_preview", "engine_analysis", "opponent_move",
                                 "game_sandbox",
-                                "waiting_for_opponent", "game_over"):
+                                "waiting_for_opponent", "opponent_status", "game_over"):
                             self.callback(event)
                     position = stream.tell()
                 if not found:
