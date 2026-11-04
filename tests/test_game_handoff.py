@@ -64,7 +64,9 @@ class GameHandoffTests(unittest.TestCase):
              patch("postgame.handle_postgame", return_value=["结算确认"]) as handler, \
              patch.object(panel.task_cancel, "wait", return_value=False):
             panel._prepare_worker("auto", panel.task_cancel)
-        handler.assert_called_once_with("mock")
+        handler.assert_called_once()
+        self.assertEqual(handler.call_args.args, ("mock",))
+        self.assertTrue(handler.call_args.kwargs["continue_allowed"]())
         self.assertEqual(resume.call_count, 2)
         self.assertTrue(all(call.kwargs["first_image"] is board_image for call in resume.call_args_list))
 

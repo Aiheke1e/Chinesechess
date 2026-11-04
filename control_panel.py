@@ -36,6 +36,7 @@ from room_feed import room_message_entry
 from soft_ui import SoftCard, install_button_styles, ui_scale, blend
 from desktop_display import enable_high_dpi
 from stream_brand import APP_TITLE, AREA_A_TITLE
+from game_control import CONTROL_PATH as GAME_CONTROL_PATH, write_auto_continue
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STOP_FILE = os.path.join(HERE, "work", "stop.request")
@@ -126,7 +127,7 @@ THEME = dict(THEMES["清晰蓝白"])
 def load_ui_settings():
     defaults = {"theme": "清晰蓝白", "opacity": 100, "preview_visible": True,
                 "broadcast_width": 600, "broadcast_height": 160, "broadcast_sized": False,
-                "area_a_avatar_path": ""}
+                "area_a_avatar_path": "", "auto_continue": True}
     try:
         with open(UI_CFG, encoding="utf-8") as stream:
             saved = json.load(stream)
@@ -138,6 +139,7 @@ def load_ui_settings():
             defaults["theme"] = name
         defaults["opacity"] = max(72, min(100, int(saved.get("opacity", 100))))
         defaults["preview_visible"] = bool(saved.get("preview_visible", True))
+        defaults["auto_continue"] = saved.get("auto_continue", True) is True
         defaults["broadcast_width"] = max(260, min(1600, int(saved.get("broadcast_width", 600))))
         defaults["broadcast_height"] = max(110, min(600, int(saved.get("broadcast_height", 160))))
         defaults["broadcast_sized"] = "broadcast_width" in saved and "broadcast_height" in saved
@@ -188,12 +190,16 @@ class ControlPanel:
         self.room_feed_epoch = None
         self.status = tk.StringVar(value="正在检查设备…")
         self.dry = tk.BooleanVar(value=True)
-        self.continuous = tk.BooleanVar(value=True)
+        self.continuous = tk.BooleanVar(value=ui.get("auto_continue", True))
         self.movetime = tk.StringVar(value="800")
         self.max_moves = tk.StringVar(value="150")
         self.turn_choice = tk.StringVar(value="自动判断")
         self.auto_retry = autostart
         self.waiting_for_board = False
+        self.waiter_automatic = False
+        self.chess_session_requested = False
+        self._prepare_job = None
+        self._prepare_generation = 0
         self.task_cancel = threading.Event()
         self.closing = False
         self.live_controller = None
@@ -266,7 +272,7 @@ class ControlPanel:
         root.after(1500, self._watchdog_tick)
         root.protocol("WM_DELETE_WINDOW", self.close)
         if autostart:
-            self._schedule_prepare(delay=400)
+            self._schedule_prepare(delay=400, automatic=False)
 
     def _build(self):
         style = ttk.Style(self.root)
@@ -711,7 +717,7 @@ class ControlPanel:
 
         save = lambda: self.save_live_settings(quiet=True)
         rows = (
-            (2, "对弈", (("自动连局", self.continuous, None),
+            (2, "对弈", (("自动连局", self.continuous, self.toggle_auto_continue),
                 ("解说", self.live_commentary, self.toggle_live_commentary),
                 ("语音", self.live_speech, self.toggle_live_speech),
                 ("沙盘演示", self.live_sandtable, save),
@@ -1039,6 +1045,7 @@ class ControlPanel:
                            "appearance_version": 2,
                            "opacity": int(self.opacity.get()),
                            "preview_visible": getattr(self, "preview_visible", True),
+                           "auto_continue": bool(self.continuous.get()),
                            "broadcast_width": self._broadcast_dimensions()[0],
                            "broadcast_height": self._broadcast_dimensions()[1],
                            "area_a_avatar_path": getattr(self, "area_a_avatar_path", "")},
@@ -1853,7 +1860,49 @@ class ControlPanel:
             pass
         return cfg
 
-    def prepare_and_wait(self):
+    def _publish_auto_continue(self, enabled):
+        try:
+            write_auto_continue(enabled, path=GAME_CONTROL_PATH)
+            return True
+        except OSError as error:
+            self.append(f"[自动连局] 设置同步失败：{error}\n")
+            return False
+
+    def toggle_auto_continue(self):
+        enabled = bool(self.continuous.get())
+        self.auto_retry = enabled
+        synced = self._publish_auto_continue(enabled)
+        self._save_ui_settings()
+        if not enabled:
+            self._cancel_scheduled_prepare()
+            if self.waiting_for_board and getattr(self, "waiter_automatic", False):
+                self.task_cancel.set()
+                self.waiting_for_board = False
+                if self.live_controller:
+                    self.live_controller.stop_chess_tasks()
+                self.status.set("自动连局已关闭，已取消下一局等待")
+            if synced:
+                self.append("[自动连局] 已关闭：本局照常下完，结束后不再点击继续或开启下一局。\n")
+        elif synced:
+            running = bool(self.process and self.process.poll() is None)
+            if (getattr(self, "chess_session_requested", False) and not running
+                    and not self.waiting_for_board and not self.closing):
+                # This session was explicitly started before it was paused by
+                # the switch.  Enabling it again authorizes a fresh waiter,
+                # not revival of a cancelled callback or old worker token.
+                self.task_cancel.set()
+                self.task_cancel = threading.Event()
+                self._schedule_prepare()
+                self.status.set("自动连局已开启，正在继续下一局…")
+                self.append("[自动连局] 已开启：正在恢复下一局等待。\n")
+            elif running or self.waiting_for_board:
+                self.append("[自动连局] 已开启：本局结束后继续下一局。\n")
+            else:
+                self.append("[自动连局] 已开启：点击开始下棋后生效。\n")
+
+    def prepare_and_wait(self, *, automatic=False):
+        if automatic and not (self.auto_retry and bool(self.continuous.get())):
+            return
         self.append("[控制指令] 一键准备并等待新棋\n")
         if self.waiting_for_board:
             self.status.set("正在等待新棋或残局，无需重复点击")
@@ -1861,7 +1910,10 @@ class ControlPanel:
         if self.process and self.process.poll() is None:
             messagebox.showinfo("正在运行", "当前已经有对弈任务")
             return
+        self._cancel_scheduled_prepare()
+        self.chess_session_requested = True
         self.waiting_for_board = True
+        self.waiter_automatic = automatic
         self.task_cancel.set()
         self.task_cancel = threading.Event()
         if self.live_controller:
@@ -1941,7 +1993,9 @@ class ControlPanel:
                         if (confirm is not None and
                                 has_actionable_postgame(confirm)):
                             publish(("status", "已连续确认结算页面，正在自动进入下一局…"))
-                            actions = handle_postgame(device)
+                            actions = handle_postgame(device, continue_allowed=lambda:
+                                not cancel.is_set() and (not getattr(self, "waiter_automatic", False)
+                                                        or self.auto_retry))
                             if actions:
                                 publish(("status", "结算已处理，正在识别下一局棋盘"))
                                 waiting_started = time.monotonic()
@@ -2151,10 +2205,15 @@ class ControlPanel:
         except ValueError:
             messagebox.showerror("参数错误", "思考时间应为 50–30000 毫秒，步数应为 1–500")
             return
-        if not once:
-            self.auto_retry = bool(self.continuous.get())
+        self.auto_retry = bool(self.continuous.get()) and not once
+        if not self._publish_auto_continue(bool(self.continuous.get()) and not once):
+            self.status.set("自动连局设置未同步，本次未启动")
+            return
+        self._cancel_scheduled_prepare()
+        self.chess_session_requested = not once
         args = ["player.py", "--engine", "pikafish", "--movetime", str(movetime),
-                "--max-moves", str(max_moves), "--stop-file", STOP_FILE]
+                "--max-moves", str(max_moves), "--stop-file", STOP_FILE,
+                "--control-file", str(GAME_CONTROL_PATH)]
         chosen_turn = initial_turn or TURN_LABEL_TO_CODE.get(
             self.turn_choice.get(), "auto")
         if chosen_turn == "auto":
@@ -2169,6 +2228,9 @@ class ControlPanel:
         self._launch(args, "只读检查中…" if self.dry.get() else "自动对弈运行中…")
 
     def stop(self):
+        self._cancel_scheduled_prepare()
+        self._publish_auto_continue(False)
+        self.chess_session_requested = False
         self.task_cancel.set()
         self.waiting_for_board = False
         self.auto_retry = False
@@ -2201,14 +2263,31 @@ class ControlPanel:
         if process.poll() is None:
             process.kill()
 
-    def _schedule_prepare(self, delay=120):
+    def _cancel_scheduled_prepare(self):
+        self._prepare_generation = getattr(self, "_prepare_generation", 0) + 1
+        job = getattr(self, "_prepare_job", None)
+        self._prepare_job = None
+        if job is not None:
+            try:
+                self.root.after_cancel(job)
+            except tk.TclError:
+                pass
+
+    def _schedule_prepare(self, delay=120, *, automatic=True):
+        self._cancel_scheduled_prepare()
         cancel = self.task_cancel
+        generation = self._prepare_generation
 
         def restart():
-            if not cancel.is_set() and not self.closing:
-                self.prepare_and_wait()
+            if (cancel.is_set() or self.closing or cancel is not self.task_cancel
+                    or generation != self._prepare_generation):
+                return
+            self._prepare_job = None
+            if automatic and not (self.auto_retry and bool(self.continuous.get())):
+                return
+            self.prepare_and_wait(automatic=automatic)
 
-        self.root.after(delay, restart)
+        self._prepare_job = self.root.after(delay, restart)
 
     def _poll(self):
         try:
@@ -2241,6 +2320,7 @@ class ControlPanel:
                             self.append("[任务结束] 程序已正常停止。\n")
                     elif item[1] == 15:
                         self.auto_retry = False
+                        self.chess_session_requested = False
                         self.waiting_for_board = False
                         if self.live_controller:
                             self.live_controller.stop_chess_tasks()
@@ -2248,11 +2328,13 @@ class ControlPanel:
                         self.append("[语音同步] 已取消待播台词。检查语音后重新开始，程序会核对原局面。\n")
                     elif item[1] == 12:
                         self.auto_retry = False
+                        self.chess_session_requested = False
                         self.waiting_for_board = False
                         self.status.set("引擎拒绝当前识别局面，已安全停止")
                         self.append("[助手] 当前画面中的棋子类型存在矛盾；没有判负，也没有点击结算页。请等待高亮消失后重新开始。\n")
                     elif item[1] == 13:
                         self.auto_retry = False
+                        self.chess_session_requested = False
                         self.waiting_for_board = False
                         self.status.set("落子未确认，当前局面已锁定")
                         self.append("[助手] 为防止重复点击，持续下棋已暂停；当前局面变化或进入新一局后再手动开始。\n")
@@ -2273,6 +2355,9 @@ class ControlPanel:
                     self.append("[助手] " + item[1] + "\n")
                 elif isinstance(item, tuple) and item[0] == "autostart":
                     if self.task_cancel.is_set() or not self.waiting_for_board:
+                        continue
+                    if getattr(self, "waiter_automatic", False) and not (
+                            self.auto_retry and bool(self.continuous.get())):
                         continue
                     self.waiting_for_board = False
                     details = item[1]
@@ -2414,6 +2499,9 @@ class ControlPanel:
 
     def close(self):
         self.closing = True
+        self._cancel_scheduled_prepare()
+        self._publish_auto_continue(False)
+        self.task_cancel.set()
         self._save_ui_settings()
         self._cancel_sandtable_jobs()
         self.waiting_for_board = False

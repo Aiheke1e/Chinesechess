@@ -22,6 +22,7 @@ from session_state import (block_position, infer_turn_from_standard,
                            match_live_session, save_session)
 from runtime_status import write_runtime_status
 from queen_commentary import build_queen_evidence
+from game_control import auto_continue_enabled
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(HERE, "player_config.json")
@@ -475,6 +476,8 @@ def main():
                     help="允许接管的最低棋子数")
     ap.add_argument("--stop-file", default=None,
                     help="存在此文件时安全停止（供控制面板使用）")
+    ap.add_argument("--control-file", default=None,
+                    help="控制面板实时发布的自动连局开关")
     args = ap.parse_args()
 
     cfg = load_cfg()
@@ -492,6 +495,10 @@ def main():
 
     def stop_requested():
         return bool(args.stop_file and os.path.exists(args.stop_file))
+
+    def continue_allowed():
+        return (not args.once and not stop_requested() and auto_continue_enabled(
+            args.control_file, default=cfg.get("auto_continue_after_game", True)))
 
     write_runtime_status("starting", "正在连接模拟器")
     devs = list_devices()
@@ -1010,11 +1017,11 @@ def main():
             if diagnostic:
                 print("[故障截图] 已保存现场：" + diagnostic)
         if (result in ("won", "lost", "finished") and not cfg["dry_run"] and
-                cfg.get("auto_continue_after_game", True)):
+                continue_allowed()):
             print("[结算处理] 正在等待“继续/再来一局”按钮……")
             try:
                 from postgame import handle_postgame
-                continued_actions = handle_postgame(device)
+                continued_actions = handle_postgame(device, continue_allowed=continue_allowed)
             except Exception as error:
                 print(f"[结算处理] 自动点击异常：{error}")
                 diagnostic = capture_diagnostic(

@@ -376,13 +376,15 @@ def screen_difference(first, second):
     return float(np.mean(cv2.absdiff(*frames)))
 
 
-def wait_for_screen_change(device, before, timeout=4.0):
+def wait_for_screen_change(device, before, timeout=4.0, *, continue_allowed=None):
     if before is None:
         time.sleep(0.12)
         return True
     action = postgame_action(before)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if continue_allowed is not None and not continue_allowed():
+            return False
         time.sleep(0.12)
         after = screenshot(device)
         if after is None:
@@ -397,12 +399,14 @@ def wait_for_screen_change(device, before, timeout=4.0):
     return False
 
 
-def handle_postgame(device, timeout=20.0, max_actions=8):
+def handle_postgame(device, timeout=20.0, max_actions=8, *, continue_allowed=None):
     """Click result-page continuation controls; return labels that were clicked."""
     deadline = time.monotonic() + timeout
     actions = []
     last_xml = float("-inf")
     while time.monotonic() < deadline and len(actions) < max_actions:
+        if continue_allowed is not None and not continue_allowed():
+            break
         before = screenshot(device)
         action = postgame_action(before)
         if action:
@@ -447,9 +451,13 @@ def handle_postgame(device, timeout=20.0, max_actions=8):
             action = nodes[0]
             before = current
         label, x, y = action
+        # Recheck after screenshots/XML, immediately before submitting input.
+        # The desktop can turn off auto-continue while any of them is running.
+        if continue_allowed is not None and not continue_allowed():
+            break
         tap(x, y, device=device)
         actions.append(label)
-        if not wait_for_screen_change(device, before):
+        if not wait_for_screen_change(device, before, continue_allowed=continue_allowed):
             break
         if label == "结算页主按钮" or any(word in label for word in ACTION_TEXTS[:4]):
             # Matching/loading belongs to the fast board watcher.  Do not hold

@@ -79,7 +79,9 @@ class GameOverDetectionTests(unittest.TestCase):
                 self.assertEqual(player.main(), 10)
         adb.assert_not_called()
         move.assert_not_called()
-        handler.assert_called_once_with("mock")
+        handler.assert_called_once()
+        self.assertEqual(handler.call_args.args, ("mock",))
+        self.assertTrue(handler.call_args.kwargs["continue_allowed"]())
         names = [call.args[0] for call in events.emit.call_args_list]
         self.assertIn("recognition_warning", names)
         self.assertIn("game_over", names)
