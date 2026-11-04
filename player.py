@@ -324,7 +324,7 @@ def postgame_image_visible(image):
     return image is not None and has_actionable_postgame(image)
 
 
-def postgame_screen_visible(device, first_image=None, confirm_delay=0.3):
+def postgame_screen_visible(device, first_image=None, confirm_delay=0.08):
     """Require two consecutive result-screen frames before allowing clicks."""
     first = screenshot(device) if first_image is None else first_image
     if not postgame_image_visible(first):

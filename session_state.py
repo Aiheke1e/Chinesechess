@@ -8,7 +8,8 @@ import time
 from adb_bridge import screenshot
 from board import Board, START_FEN
 from recognizer import recognize_occupancy, recognize_presence_occupancy
-from state import resolve_legal_sequence_by_occupancy, validate_board
+from state import (occupancy_difference_count, resolve_legal_sequence_by_occupancy,
+                   validate_board)
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -78,41 +79,41 @@ def load_session(path=SESSION_PATH):
     return data
 
 
-def match_live_session(device, path=SESSION_PATH, stable_delay=0.35):
-    """Return trusted session advanced by at most one opponent move."""
+def match_live_session(device, path=SESSION_PATH, stable_delay=0.12, *, first_image=None):
+    """Confirm two matching frames and recover up to two legal plies."""
     data = load_session(path)
     if data is None:
         return None
-    frames = []
-    images = []
-    for attempt in range(2):
-        image = screenshot(device)
-        if image is None:
-            return None
-        images.append(image)
-        frames.append(recognize_occupancy(image, data["orientation"]))
-        if attempt == 0:
-            time.sleep(stable_delay)
-    if frames[0] != frames[1]:
-        return None
-    observed = frames[1]
     board = data["board"]
-    inferred_moves = resolve_legal_sequence_by_occupancy(
-        board, observed, max_plies=2)
+    first = screenshot(device) if first_image is None else first_image
+    if first is None:
+        return None
+
+    def propose(observed, mismatches=0):
+        # Two legal plies can change at most four occupancy cells.  Reject a
+        # loading screen or unrelated new game before spending another capture.
+        if observed is None or occupancy_difference_count(board.sq, observed) > 4 + mismatches:
+            return None
+        return resolve_legal_sequence_by_occupancy(
+            board, observed, max_plies=2, max_mismatches=mismatches)
+
+    observed = recognize_occupancy(first, data["orientation"])
+    inferred_moves = propose(observed)
+    presence = None
     if inferred_moves is None:
         # A persistent last-move glow can hide a real glyph from the strong
         # matcher.  Presence-only frames are accepted only when stable and a
         # unique 0..2-ply legal sequence explains them with at most one stray
         # hint/highlight intersection.
-        presence_frames = [
-            recognize_presence_occupancy(image, data["orientation"])
-            for image in images]
-        if (presence_frames[0] is not None and
-                presence_frames[0] == presence_frames[1]):
-            inferred_moves = resolve_legal_sequence_by_occupancy(
-                board, presence_frames[1], max_plies=2,
-                max_mismatches=1)
+        presence = recognize_presence_occupancy(first, data["orientation"])
+        inferred_moves = propose(presence, mismatches=1)
     if inferred_moves is None:
+        return None
+    time.sleep(stable_delay)
+    second = screenshot(device)
+    if second is None or recognize_occupancy(second, data["orientation"]) != observed:
+        return None
+    if presence is not None and recognize_presence_occupancy(second, data["orientation"]) != presence:
         return None
     for move in inferred_moves:
         board.apply(move)

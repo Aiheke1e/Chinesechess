@@ -1,4 +1,6 @@
 import inspect
+import itertools
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -10,7 +12,7 @@ from postgame import (detect_confirmation_button, detect_large_action_button,
                       dismiss_nonboard_interruption, dismiss_rank_promotion,
                       detect_rules_overlay_dismiss,
                       handle_postgame, has_actionable_postgame,
-                      parse_action_nodes)
+                      parse_action_nodes, read_ui_xml, wait_for_screen_change)
 
 
 class PostgameTests(unittest.TestCase):
@@ -152,8 +154,8 @@ class PostgameTests(unittest.TestCase):
         squares = [None] * 90
         for index in range(32):
             squares[index] = "P"
-        with (patch("postgame.screenshot", side_effect=[button, board]),
-              patch("postgame.read_ui_xml", return_value=""),
+        with (patch("postgame.screenshot", side_effect=[button, button, board]),
+              patch("postgame.read_ui_xml") as read_xml,
               patch("postgame.tap"),
               patch("postgame.wait_for_screen_change", return_value=True),
               patch("postgame.time.sleep"),
@@ -161,6 +163,73 @@ class PostgameTests(unittest.TestCase):
                     return_value=(squares, "red_bottom"))):
             self.assertEqual(handle_postgame("device", timeout=20),
                              ["结算页主按钮"])
+        read_xml.assert_not_called()
+
+    def test_confirm_and_replay_bypass_xml_and_return_on_new_board(self):
+        modal = np.zeros((1920, 1080, 3), dtype=np.uint8)
+        cv2.rectangle(modal, (410, 1000), (670, 1110), (40, 190, 60), -1)
+        replay = np.zeros_like(modal)
+        cv2.rectangle(replay, (330, 1580), (750, 1700), (40, 190, 60), -1)
+        board = np.full_like(modal, 160)
+        squares = ["P"] * 32 + [None] * 58
+        with patch("postgame.screenshot", side_effect=[modal, modal, replay,
+                   replay, replay, board, board]), \
+             patch("postgame.read_ui_xml") as xml, \
+             patch("postgame.tap") as tap, patch("postgame.time.sleep"), \
+             patch("recognizer.recognize_position", return_value=(squares, "red_bottom")):
+            self.assertEqual(handle_postgame("mock"), ["结算确认", "结算页主按钮"])
+        xml.assert_not_called()
+        self.assertEqual(tap.call_count, 2)
+
+    def test_mode_page_does_not_wait_out_the_postgame_timeout(self):
+        replay = np.zeros((1920, 1080, 3), dtype=np.uint8)
+        cv2.rectangle(replay, (330, 1580), (750, 1700), (40, 190, 60), -1)
+        with patch("postgame.screenshot", side_effect=[replay, replay, self._gold_mode_page()]), \
+             patch("postgame.read_ui_xml") as xml, \
+             patch("postgame.tap"), patch("postgame.time.sleep"), \
+             patch("postgame.wait_for_screen_change", return_value=True), \
+             patch("recognizer.recognize_position", return_value=(None, None)):
+            self.assertEqual(handle_postgame("mock"), ["结算页主按钮"])
+        xml.assert_not_called()
+
+    def test_successful_replay_hands_off_before_loading_or_another_dump(self):
+        replay = np.zeros((1920, 1080, 3), dtype=np.uint8)
+        cv2.rectangle(replay, (330, 1580), (750, 1700), (40, 190, 60), -1)
+        with patch("postgame.screenshot", side_effect=[replay, replay]) as shots, \
+             patch("postgame.read_ui_xml") as xml, \
+             patch("postgame.tap"), patch("postgame.time.sleep"), \
+             patch("postgame.wait_for_screen_change", return_value=True):
+            self.assertEqual(handle_postgame("mock"), ["结算页主按钮"])
+        self.assertEqual(shots.call_count, 2)
+        xml.assert_not_called()
+
+    def test_transient_control_disappearance_never_clicks_a_new_board(self):
+        replay = np.zeros((1920, 1080, 3), dtype=np.uint8)
+        cv2.rectangle(replay, (330, 1580), (750, 1700), (40, 190, 60), -1)
+        board = np.full_like(replay, 160)
+        frames = iter([replay])
+        with patch("postgame.screenshot", side_effect=lambda *a: next(frames, board)), \
+             patch("postgame.time.monotonic", side_effect=itertools.count(0, .1)), \
+             patch("postgame.time.sleep"), patch("postgame.tap") as tap, \
+             patch("recognizer.recognize_position", return_value=(["P"] * 90, "red_bottom")):
+            self.assertEqual(handle_postgame("mock", timeout=.4), [])
+        tap.assert_not_called()
+
+    def test_background_animation_does_not_acknowledge_an_unchanged_button(self):
+        modal = np.zeros((1920, 1080, 3), dtype=np.uint8)
+        cv2.rectangle(modal, (410, 1000), (670, 1110), (40, 190, 60), -1)
+        animated = modal.copy()
+        animated[:600] = 160
+        with patch("postgame.screenshot", side_effect=[animated, np.full_like(modal, 160)]) as shots, \
+             patch("postgame.time.sleep"):
+            self.assertTrue(wait_for_screen_change("mock", modal))
+        self.assertEqual(shots.call_count, 2)
+
+    def test_xml_timeout_returns_to_screen_polling_without_reading_stale_dump(self):
+        with patch("postgame.adb", side_effect=subprocess.TimeoutExpired("adb", 2)) as adb:
+            self.assertEqual(read_ui_xml("mock"), "")
+        self.assertEqual(adb.call_count, 1)
+        self.assertLessEqual(adb.call_args.kwargs["timeout"], 2)
 
     def test_postgame_allows_chained_reward_popups(self):
         default = inspect.signature(__import__("postgame").handle_postgame).parameters[

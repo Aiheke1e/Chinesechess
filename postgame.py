@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import time
 import xml.etree.ElementTree as ET
 
@@ -71,10 +72,17 @@ def parse_close_nodes(xml_text):
 
 
 def read_ui_xml(device):
-    adb(["shell", "uiautomator", "dump", "/sdcard/jj_window.xml"],
-        timeout=15, device=device)
-    result = adb(["exec-out", "cat", "/sdcard/jj_window.xml"],
-                 timeout=15, device=device)
+    # This is a fallback for unknown controls, never the visual fast path.
+    # Some Unity screens cannot be dumped; do not block screen polling for 30s.
+    try:
+        dumped = adb(["shell", "uiautomator", "dump", "/sdcard/jj_window.xml"],
+                     timeout=2, device=device)
+        if dumped.returncode != 0:
+            return ""
+        result = adb(["exec-out", "cat", "/sdcard/jj_window.xml"],
+                     timeout=1, device=device)
+    except subprocess.TimeoutExpired:
+        return ""
     return ("" if result.returncode != 0 else
             result.stdout.decode("utf-8", "ignore"))
 
@@ -282,6 +290,17 @@ def detect_modal_close(image):
     return (cx, cy) if positive and negative else None
 
 
+def postgame_action(image):
+    """Return one visual action, with modal controls ahead of replay."""
+    for label, detect in (("关闭奖励弹窗", detect_modal_close),
+                          ("结算确认", detect_confirmation_button),
+                          ("结算页主按钮", detect_large_action_button)):
+        point = detect(image)
+        if point:
+            return label, *point
+    return None
+
+
 def has_actionable_postgame(image):
     """Return whether a known, safe JJ postgame control is visible.
 
@@ -289,24 +308,40 @@ def has_actionable_postgame(image):
     the actual click handler cannot drift apart when JJ introduces another
     result-page layer.
     """
-    return bool(detect_modal_close(image) or
-                detect_confirmation_button(image) or
-                detect_large_action_button(image))
+    return postgame_action(image) is not None
+
+
+def same_action(first, second):
+    return bool(first and second and first[0] == second[0] and
+                abs(first[1] - second[1]) <= 16 and
+                abs(first[2] - second[2]) <= 16)
+
+
+def screen_difference(first, second):
+    if first is None or second is None:
+        return float("inf")
+    frames = [cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (160, 284))
+              for frame in (first, second)]
+    return float(np.mean(cv2.absdiff(*frames)))
 
 
 def wait_for_screen_change(device, before, timeout=4.0):
     if before is None:
-        time.sleep(1.0)
+        time.sleep(0.12)
         return True
-    baseline = cv2.resize(cv2.cvtColor(before, cv2.COLOR_BGR2GRAY), (160, 284))
+    action = postgame_action(before)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        time.sleep(0.5)
+        time.sleep(0.12)
         after = screenshot(device)
         if after is None:
             continue
-        current = cv2.resize(cv2.cvtColor(after, cv2.COLOR_BGR2GRAY), (160, 284))
-        if float(np.mean(cv2.absdiff(baseline, current))) > 5.0:
+        if action:
+            # Confetti/countdowns move while the same button remains visible.
+            # Only a control transition acknowledges that our tap took effect.
+            if not same_action(action, postgame_action(after)):
+                return True
+        elif screen_difference(before, after) > 5.0:
             return True
     return False
 
@@ -315,53 +350,57 @@ def handle_postgame(device, timeout=20.0, max_actions=8):
     """Click result-page continuation controls; return labels that were clicked."""
     deadline = time.monotonic() + timeout
     actions = []
+    last_xml = float("-inf")
     while time.monotonic() < deadline and len(actions) < max_actions:
         before = screenshot(device)
-        xml_text = read_ui_xml(device)
-        close_nodes = parse_close_nodes(xml_text)
-        close_point = (None if close_nodes else detect_modal_close(before))
-        if close_nodes or close_point:
-            if close_nodes:
-                label, x, y = close_nodes[0]
-            else:
-                label, (x, y) = "关闭奖励弹窗", close_point
-            tap(x, y, device=device)
-            actions.append(label)
-            if not wait_for_screen_change(device, before):
-                break
-            time.sleep(0.6)
-            continue
-        confirm_point = detect_confirmation_button(before)
-        if confirm_point:
-            label, (x, y) = "结算确认", confirm_point
-            tap(x, y, device=device)
-            actions.append(label)
-            if not wait_for_screen_change(device, before):
-                break
-            time.sleep(0.6)
-            continue
-        nodes = parse_action_nodes(xml_text)
-        if nodes:
-            label, x, y = nodes[0]
-        else:
-            point = detect_large_action_button(before)
-            if point is None:
-                # The result control has disappeared and a real board is now
-                # visible: return immediately so the watcher can take over
-                # before the opponent moves.
-                if actions and before is not None:
-                    from recognizer import recognize_position
-                    squares, orientation = recognize_position(before, "auto")
-                    if (orientation in ("red_bottom", "black_bottom") and
-                            squares is not None and
-                            sum(piece is not None for piece in squares) >= 4):
-                        break
-                time.sleep(0.75)
+        action = postgame_action(before)
+        if action:
+            # Confirm the actual control, not just any result-looking frame.
+            time.sleep(0.08)
+            confirmed = screenshot(device)
+            if not same_action(action, postgame_action(confirmed)):
                 continue
-            label, (x, y) = "结算页主按钮", point
+            before = confirmed
+        else:
+            if before is None:
+                time.sleep(0.12)
+                continue
+            from recognizer import recognize_position
+            squares, orientation = recognize_position(before, "auto")
+            board_visible = (orientation in ("red_bottom", "black_bottom") and
+                             squares is not None and
+                             sum(piece is not None for piece in squares) >= 4)
+            if board_visible:
+                if actions:
+                    break
+                # The mate/resignation animation may still cover its controls.
+                time.sleep(0.12)
+                continue
+            if detect_match_mode_button(before) or detect_rules_overlay_dismiss(before):
+                break  # Let the watcher choose the configured match mode now.
+            if time.monotonic() - last_xml < 3.0:
+                time.sleep(0.12)
+                continue
+            xml_text = read_ui_xml(device)
+            last_xml = time.monotonic()
+            nodes = parse_close_nodes(xml_text) or parse_action_nodes(xml_text)
+            if not nodes:
+                time.sleep(0.12)
+                continue
+            # A slow dump must not apply stale coordinates to a newly started
+            # game.  Re-enter visual polling whenever the scene has changed.
+            current = screenshot(device)
+            if screen_difference(before, current) > 3.0:
+                continue
+            action = nodes[0]
+            before = current
+        label, x, y = action
         tap(x, y, device=device)
         actions.append(label)
         if not wait_for_screen_change(device, before):
             break
-        time.sleep(0.6)
+        if label == "结算页主按钮" or any(word in label for word in ACTION_TEXTS[:4]):
+            # Matching/loading belongs to the fast board watcher.  Do not hold
+            # it behind the remaining 20s postgame budget or another XML dump.
+            break
     return actions

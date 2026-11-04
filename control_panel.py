@@ -1927,33 +1927,16 @@ class ControlPanel:
             last_rules_dismiss = 0.0
             rules_dismiss_attempted = False
             while not self.closing and self.waiting_for_board and not cancel.is_set():
-                resumed = match_live_session(device)
-                if resumed is not None:
-                    clear_blocked_position()
-                    publish(("autostart", {
-                        "turn": resumed["board"].turn,
-                        "pieces": resumed["board"].attacker_count(),
-                        "standard": False,
-                        "resume": True,
-                    }))
-                    return
                 image = screenshot(device)
                 if cancel.is_set():
                     return
-                squares, orientation = ((None, None) if image is None else
-                                        recognize_position(image, "auto"))
-                visible_pieces = sum(
-                    piece is not None for piece in (squares or []))
-                live_board_visible = (
-                    orientation in ("red_bottom", "black_bottom") and
-                    visible_pieces >= int(cfg.get("endgame_min_pieces", 4)))
                 if image is not None:
                     from postgame import (detect_match_mode_button,
                                           detect_rules_overlay_dismiss,
                                           handle_postgame,
                                           has_actionable_postgame)
                     if has_actionable_postgame(image):
-                        time.sleep(0.35)
+                        cancel.wait(0.08)
                         confirm = screenshot(device)
                         if (confirm is not None and
                                 has_actionable_postgame(confirm)):
@@ -1968,8 +1951,29 @@ class ControlPanel:
                                     extra={"stage": "handle_postgame"}, image=confirm)
                             stable = 0
                             last_signature = None
-                            time.sleep(0.5)
-                            continue
+                        # A modal cannot be used as evidence for session
+                        # recovery, even if pieces are visible behind it.
+                        continue
+                resumed = match_live_session(device, first_image=image)
+                if cancel.is_set():
+                    return
+                if resumed is not None:
+                    clear_blocked_position()
+                    publish(("autostart", {
+                        "turn": resumed["board"].turn,
+                        "pieces": resumed["board"].attacker_count(),
+                        "standard": False,
+                        "resume": True,
+                    }))
+                    return
+                squares, orientation = ((None, None) if image is None else
+                                        recognize_position(image, "auto"))
+                visible_pieces = sum(
+                    piece is not None for piece in (squares or []))
+                live_board_visible = (
+                    orientation in ("red_bottom", "black_bottom") and
+                    visible_pieces >= int(cfg.get("endgame_min_pieces", 4)))
+                if image is not None:
                     # Result controls are checked first.  A result page still
                     # contains a full board and its horizontal lines can look
                     # like the promotion-rules card; clicking the backdrop in
@@ -1979,7 +1983,7 @@ class ControlPanel:
                                    detect_rules_overlay_dismiss(image))
                     if (rules_point and not rules_dismiss_attempted and
                             time.monotonic() - last_rules_dismiss >= 8.0):
-                        time.sleep(0.35)
+                        cancel.wait(0.08)
                         confirm_rules = screenshot(device)
                         confirm_point = detect_rules_overlay_dismiss(confirm_rules)
                         if confirm_point:
@@ -1992,14 +1996,14 @@ class ControlPanel:
                                 "检测到晋级赛规则说明，已点击安全空白处关闭"))
                             stable = 0
                             last_signature = None
-                            time.sleep(0.8)
+                            cancel.wait(0.15)
                             continue
                     mode = cfg.get("match_mode", "15分钟")
                     mode_point = (None if live_board_visible else
                                   detect_match_mode_button(image, mode))
                     if (mode_point and
                             time.monotonic() - last_mode_click >= 8.0):
-                        time.sleep(0.35)
+                        cancel.wait(0.08)
                         confirm_mode = screenshot(device)
                         confirm_point = detect_match_mode_button(
                             confirm_mode, mode)
@@ -2015,7 +2019,7 @@ class ControlPanel:
                                 "status", f"检测到模式选择页，已选择{mode}，等待匹配…"))
                             stable = 0
                             last_signature = None
-                            time.sleep(1.0)
+                            cancel.wait(0.15)
                             continue
                     elif mode_point is None:
                         last_mode_click = 0.0
@@ -2046,7 +2050,7 @@ class ControlPanel:
                             extra={"pieces": pieces}, image=image)
                     stable = 0
                     last_signature = None
-                    time.sleep(1)
+                    cancel.wait(0.2)
                     continue
                 blocked_reported = False
                 acceptable = (
@@ -2079,7 +2083,7 @@ class ControlPanel:
                                "pieces": pieces, "orientation": orientation,
                                "valid_turns": turns}, image=image)
                     last_diagnostic = now
-                time.sleep(1)
+                cancel.wait(0.15)
         except TaskCancelled:
             return
         except Exception as error:
@@ -2197,7 +2201,7 @@ class ControlPanel:
         if process.poll() is None:
             process.kill()
 
-    def _schedule_prepare(self, delay=1200):
+    def _schedule_prepare(self, delay=120):
         cancel = self.task_cancel
 
         def restart():
