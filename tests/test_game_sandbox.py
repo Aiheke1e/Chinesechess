@@ -21,7 +21,7 @@ class GameSandboxTests(unittest.TestCase):
         self.assertEqual(plan["kind"], "tactic")
         self.assertEqual(plan["reason"], "关键交换")
         self.assertEqual(plan["phase"], "after_move")
-        self.assertEqual(len(plan["route"]), 3)
+        self.assertEqual(len(plan["route"]), 2)  # The exchange ends before the unrelated quiet move.
 
     def test_escape_from_check_can_be_demonstrated_without_a_winning_score(self):
         board = Board()
@@ -29,9 +29,9 @@ class GameSandboxTests(unittest.TestCase):
             board.sq[index] = piece
         self.assertTrue(board.in_check("r"))
         line, probe = [], board.copy()
-        moves = [Board.from_ucci("e0d0")]
-        for index in range(4):
-            move = moves[0] if index == 0 else probe.legal_moves()[0]
+        for ucci in ("e0d0", "e1d1", "d0d1", "e9e8"):
+            move = Board.from_ucci(ucci)
+            self.assertIn(move, probe.legal_moves())
             line.append((Board.ucci(move), move_description(probe, move)))
             probe.apply(move)
         plan = game_sandbox.build_plan(line[0][1], {}, line, line[0][0], board)
@@ -256,7 +256,7 @@ class GameSandboxTests(unittest.TestCase):
         self.assertFalse(result["opponent_move_interrupts"])
         self.assertEqual(result["completed"], 3)
 
-    def test_sandbox_retries_one_unconfirmed_route_step(self):
+    def test_sandbox_reads_again_before_repeating_an_unconfirmed_route_step(self):
         board = Board.from_fen(START_FEN)
         route = []
         probe = board.copy()
@@ -286,7 +286,7 @@ class GameSandboxTests(unittest.TestCase):
                 review_seconds=0)
         self.assertEqual(result["completed"], 3)
         self.assertIsNone(result["failed_step"])
-        self.assertGreaterEqual(tap_mock.call_count, 9)
+        self.assertEqual(tap_mock.call_count, 7)  # Open + 3 moves; no retry for a transient glow.
 
     def test_unconfirmed_entry_never_clicks_route(self):
         board = Board.from_fen(START_FEN)

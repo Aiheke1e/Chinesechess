@@ -81,10 +81,10 @@ class CommentaryRegressionTests(unittest.TestCase):
             "target": "黑方 马6进5，吃马", "route": [
                 {"notation": "红方 马七进五"}, {"notation": "黑方 马6进5，吃马"},
                 {"notation": "红方 炮五进四"}]})
-        self.assertIn("对面要是马七进五", text)
-        self.assertIn("咱们接着马6进5吃马", text)
+        self.assertIn("假设对面马七进五", text)
+        self.assertIn("咱们马6进5，吃马", text)
+        self.assertIn("对面炮五进四", text)
         self.assertNotIn("吃完以后", text)
-        self.assertLessEqual(len(text), 56)
 
 
 if __name__ == "__main__":

@@ -574,13 +574,13 @@ class LiveHostTests(unittest.TestCase):
         # Player owns JJ's real sandbox lifecycle.  The live host only prepares
         # synchronized speech and must not draw a fake mini-board.
         self.assertEqual(show, [])
-        self.assertEqual(len(prepared[0][1]["沙盘路线"]), 3)
+        self.assertEqual(len(prepared[0][1]["沙盘路线"]), 2)
         self.assertEqual(prepared[0][0], "沙盘推演解说")
-        self.assertEqual(prepared[0][1]["speech_token"], "sand-6:sandbox")
-        self.assertIn("卒5进1", prepared[0][2])
-        self.assertEqual(prepared[1][0], "关键走棋解说")
-        self.assertEqual(prepared[1][1]["speech_token"], "sand-6")
-        self.assertNotIn("收下这枚。", prepared[1][2])
+        self.assertEqual(prepared[0][1]["speech_token"], "sand-6:sandbox:intro")
+        self.assertTrue(any("卒5进1" in item[2] for item in prepared))
+        self.assertEqual(prepared[-1][0], "关键走棋解说")
+        self.assertEqual(prepared[-1][1]["speech_token"], "sand-6")
+        self.assertNotIn("收下这枚。", prepared[-1][2])
 
     def test_sandtable_kill_confidence_requires_depth(self):
         base = {"analysis": {"score_type": "cp", "score": 900, "depth": 18}}

@@ -24,6 +24,7 @@ from glm_client import DEFAULT_MODEL, respond
 from opening_library import load_opening_library
 from commentary_text import (complete_note, connected_move_note, waiting_note,
                              confirmed_win_note, opponent_wait_note)
+from sandbox_narration import cue_token, receipt as sandbox_receipt, script as sandbox_script
 from mate_patterns import build_finisher, confirmed_finisher_note, finisher_copy, MATE_OPENINGS
 from chat_selection import ChatSelector, viewer_key
 from speech_balance import SpeechBalance
@@ -367,6 +368,8 @@ class SpeechPipeline:
                              and getattr(self, "current_kind", None) == "弹幕回复")))
 
     def _has_turn(self, kind, payload):
+        if payload.get("_sandbox_cue"):
+            return True  # Entered-sandbox speech runs before a deferred mate call.
         if self._is_mate(kind, payload):
             return True
         if self._mate_busy():
@@ -536,6 +539,8 @@ class SpeechPipeline:
 
     @staticmethod
     def _mark_speech_started(payload):
+        if sandbox_receipt(payload, "started"):
+            return
         token = str(payload.get("speech_token") or "").strip()
         if not token or token.endswith(":sandbox"):
             return
@@ -544,12 +549,16 @@ class SpeechPipeline:
 
     @staticmethod
     def _mark_speech_failed(payload, reason):
+        if sandbox_receipt(payload, "failed"):
+            return
         if payload.get("speech_token") and not str(payload["speech_token"]).endswith(":sandbox"):
             SpeechPipeline._write_speech_marker(SPEECH_STARTED, {
                 "token": payload["speech_token"], "status": "failed", "message": str(reason)})
 
     @staticmethod
     def _mark_speech_finished(payload):
+        if sandbox_receipt(payload, "finished"):
+            return
         token = str(payload.get("speech_token") or "").strip()
         if token and not token.endswith(":sandbox"):
             SpeechPipeline._write_speech_marker(SPEECH_STARTED, {
@@ -557,6 +566,8 @@ class SpeechPipeline:
 
     @staticmethod
     def _mark_speech_preparing(payload, enabled):
+        if sandbox_receipt(payload, "preparing"):
+            return
         token = str(payload.get("speech_token") or "").strip()
         if not token or token.endswith(":sandbox"):
             return
@@ -628,7 +639,7 @@ class SpeechPipeline:
                 self.closed.wait(min(0.03, max(0, until - time.monotonic())))
             if not valid():
                 return False
-            if acknowledge and payload.get("绝杀长播报"):
+            if acknowledge and (payload.get("绝杀长播报") or payload.get("_sandbox_cue")):
                 self._mark_speech_finished(payload)
             return True
         finally:
@@ -740,17 +751,23 @@ class SpeechPipeline:
             text = direct_text or self.llm(
                 kind, {"主播设定": self.settings.persona, **payload},
                 list(self.history), model=self.settings.model)
-            text = self._first_person_text(text, payload)
-            text = self.style.decorate(kind, text, payload, self.settings.persona)
-            text = (self._complete_chess_text(text, max_chars=220)
-                    if payload.get("绝杀长播报") else self._short_chess_text(text))
+            if payload.get("_sandbox_cue"):
+                text = self._complete_chess_text(direct_text, max_chars=160)
+            else:
+                text = self._first_person_text(text, payload)
+                text = self.style.decorate(kind, text, payload, self.settings.persona)
+                text = (self._complete_chess_text(text, max_chars=220)
+                        if payload.get("绝杀长播报") else self._short_chess_text(text))
             if not text or not self._chess_line_valid(text, kind, payload):
                 self._mark_speech_failed(payload, "没有可播报的有效台词")
                 return
             if self.settings.speech_enabled:
                 self.notify("speech_status", "正在预热走棋语音", payload)
                 audio = self.tts(text, self.settings.voice)
-            if not state["decision"].wait(30.0) or not state["approved"]:
+                if payload.get("_sandbox_cue") and not audio:
+                    self._mark_speech_failed(payload, "沙盘本步语音未生成")
+                    return
+            if not state["decision"].wait(65.0 if payload.get("_sandbox_cue") else 30.0) or not state["approved"]:
                 return
             if (state["epoch"] != self.cancel_epoch or self.closed.is_set() or
                     getattr(self, "suspended", False)):
@@ -763,7 +780,11 @@ class SpeechPipeline:
             else:
                 if not self._wait_turn(kind, payload, state):
                     return
+                if payload.get("_sandbox_cue"):
+                    self._mark_speech_started(payload)
                 self.notify("reply", text, {"kind": kind, **payload})
+                if payload.get("_sandbox_cue"):
+                    self._mark_speech_finished(payload)
                 self.balance.record(kind, min(10, max(2, len(text) / 5)))
                 self.style.remember(text)
                 self.notify("speech_status", "仅显示文本，未启动语音", payload)
@@ -776,6 +797,10 @@ class SpeechPipeline:
                 self._mark_speech_failed(payload, str(error)[:200])
                 self.notify("error", str(error)[:200], {"kind": kind})
         finally:
+            if (payload.get("_sandbox_cue") and (not state.get("approved")
+                    or state["chess_epoch"] != self.chess_epoch
+                    or state["epoch"] != self.cancel_epoch or self.closed.is_set())):
+                sandbox_receipt(payload, "cancelled")
             with self.prepared_lock:
                 if self.prepared.get(token) is state:
                     self.prepared.pop(token, None)
@@ -1510,6 +1535,8 @@ class LiveController:
             "kind": plan.get("kind", "tactic"),
             "pattern": plan.get("pattern", "组合将杀"),
             "phase": plan.get("phase", "after_move"),
+            "own": plan.get("own", board.turn),
+            "summary": plan.get("summary"),
             "review_seconds": 6.5,
             "speech_token": event.get("speech_token"),
         }
@@ -1546,25 +1573,19 @@ class LiveController:
 
     @classmethod
     def _sandbox_speech(cls, plan):
-        target = cls._spoken_notation(plan["target"]).replace("，吃", "吃")
-        if plan.get("kind") == "mate":
-            return complete_note(f"这路{plan.get('pattern', '组合将杀')}，咱们摆给大家看。沿这条变化走到{target}，再摆一步吃将收尾。")
-        route = [cls._spoken_notation(item.get("notation", "")).replace("，吃", "吃")
-                 for item in plan.get("route", [])[:2]]
-        if len(route) < 2 or not all(route):
-            return complete_note(f"来，摆一下{target}这段接法。")
-        reason = plan.get("reason", "")
-        if "交换" in reason:
-            intro = "这轮交换，摆给大家看。"
-        elif "解将" in reason:
-            intro = "解将以后，还有这段接法。"
-        elif "将军" in reason:
-            intro = "这声将军怎么接，摆一下。"
-        elif "吃大子后的" in reason:
-            intro = "吃完以后怎么接，咱们摆一下。"
-        else:
-            intro = "看这段取子的接法，摆一下。"
-        return complete_note(f"{intro}对面要是{route[0]}，咱们接着{route[1]}。")
+        return "".join(sandbox_script(plan).values())
+
+    def _prepare_sandbox_narration(self, token, plan, payload):
+        mapping = {}
+        for index, (cue, text) in enumerate(sandbox_script(plan).items()):
+            segment = cue_token(token, cue)
+            mapping[cue] = segment
+            self.sandbox_speech_tokens.add(segment)
+            self.pipeline.prepare_move("沙盘推演解说", {
+                **payload, "speech_token": segment, "_sandbox_cue": True,
+                "沙盘步骤": cue,
+            }, direct_text=text, replace_older=index == 0)
+        self.sandbox_speech_by_move[token] = mapping
 
 
 
@@ -1737,21 +1758,24 @@ class LiveController:
                 # The explanation was generated while the engine was thinking,
                 # but is released only after JJ visibly entered its real
                 # sandbox.  This keeps speech aligned with the demonstration.
-                sandbox_token = getattr(
-                    self, "sandbox_speech_by_move", {}).pop(token, "")
-                if sandbox_token:
+                sandbox_token = getattr(self, "sandbox_speech_by_move", {}).get(token)
+                if isinstance(sandbox_token, str) and sandbox_token:
                     self.pipeline.commit_move(sandbox_token)
                     getattr(self, "sandbox_speech_tokens", set()).discard(
                         sandbox_token)
                 self._notify("status", "沙盘已打开，开始同步推演解说")
+            elif action == "cue":
+                mapping = getattr(self, "sandbox_speech_by_move", {}).get(token, {})
+                segment = mapping.get(str(event.get("cue"))) if isinstance(mapping, dict) else None
+                if segment:
+                    self.pipeline.reserve_sandbox()
+                    self.pipeline.commit_move(segment, deadline=event.get("deadline"))
             elif action == "end":
-                if not event.get("entered"):
-                    sandbox_token = getattr(
-                        self, "sandbox_speech_by_move", {}).pop(token, "")
-                    if sandbox_token:
-                        self.pipeline.discard_move(sandbox_token)
-                        getattr(self, "sandbox_speech_tokens", set()).discard(
-                            sandbox_token)
+                mapping = getattr(self, "sandbox_speech_by_move", {}).pop(token, {})
+                segments = mapping.values() if isinstance(mapping, dict) else [mapping] if mapping else []
+                for segment in segments:
+                    self.pipeline.discard_move(segment)
+                    getattr(self, "sandbox_speech_tokens", set()).discard(segment)
                 analysis = getattr(self, "commentary_analyses", {}).get(token, {})
                 if analysis.get("_pre_move_demo") or event.get("phase") == "before_move":
                     if event.get("safe_exit", True):
@@ -1766,7 +1790,8 @@ class LiveController:
                 if event.get("entered"):
                     self._notify(
                         "status",
-                        f"JJ游戏沙盘{event.get('reason', '演示结束')}，已回到实战")
+                        f"JJ游戏沙盘{event.get('reason', '演示结束')}，" +
+                        ("已回到实战" if event.get("safe_exit") else "未确认返回实战，已暂停落子"))
                 else:
                     self._notify(
                         "status",
@@ -1907,12 +1932,11 @@ class LiveController:
             getattr(self, "commentary_analyses", {}).pop(token, None)
             self.last_confirmed_analysis = None
             self.pipeline.discard_move(token)
-            sandbox_token = getattr(
-                self, "sandbox_speech_by_move", {}).pop(token, "")
-            if sandbox_token:
-                self.pipeline.discard_move(sandbox_token)
-                getattr(self, "sandbox_speech_tokens", set()).discard(
-                    sandbox_token)
+            mapping = getattr(self, "sandbox_speech_by_move", {}).pop(token, {})
+            segments = mapping.values() if isinstance(mapping, dict) else [mapping] if mapping else []
+            for segment in segments:
+                self.pipeline.discard_move(segment)
+                getattr(self, "sandbox_speech_tokens", set()).discard(segment)
             getattr(self, "pending_move_events", {}).pop(
                 str(event.get("speech_token") or ""), None)
             return
@@ -1993,8 +2017,14 @@ class LiveController:
             token = event.get("speech_token")
             if token:
                 self.commentary_analyses[token]["finisher"] = finisher
+                prepared_sandbox = False
+                if event.get("sandbox_plan") and getattr(getattr(self, "settings", None), "sandtable_enabled", True):
+                    plan = self._sandtable_plan(event)
+                    if plan:
+                        self._prepare_sandbox_narration(token, plan, payload)
+                        prepared_sandbox = True
                 self.pipeline.prepare_move("绝杀长解说", payload,
-                                           direct_text=finisher["text"])
+                                           direct_text=finisher["text"], replace_older=not prepared_sandbox)
             else:
                 self.pipeline.submit(0, "绝杀长解说", payload,
                                      direct_text=finisher["text"])
@@ -2070,17 +2100,7 @@ class LiveController:
                 if sandtable:
                     # The move call and sandbox explanation are independent:
                     # failed sandbox entry must never silence the real move.
-                    sandbox_token = f"{token}:sandbox"
-                    sandbox_payload = {
-                        **important_payload,
-                        "speech_token": sandbox_token,
-                    }
-                    self.sandbox_speech_tokens.add(sandbox_token)
-                    self.sandbox_speech_by_move[token] = sandbox_token
-                    self.pipeline.prepare_move(
-                        "沙盘推演解说", sandbox_payload,
-                        direct_text=self._sandbox_speech(sandtable),
-                        replace_older=True)
+                    self._prepare_sandbox_narration(token, sandtable, important_payload)
                     self.pipeline.prepare_move(
                         kind, important_payload, direct_text=direct,
                         replace_older=False)

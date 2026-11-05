@@ -22,20 +22,28 @@ from state import (resolve_legal_sequence_by_occupancy,
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIVE_CONFIG = os.path.join(HERE, "live_config.json")
-MAX_MATE_PLIES = 8
+MAX_MATE_PLIES = 14
+MAX_TACTIC_PLIES = 8
 
 
 class SandboxCadence:
     def __init__(self, clock=time.monotonic):
         self.clock = clock
         self.last_move, self.last_at = -100, -1e9
+        self.recent = {}
 
     def allowed(self, plan, number):
+        signature = tuple(item.get("ucci") for item in plan.get("route", []))
         return (plan.get("kind") == "mate" or
-                number - self.last_move >= 3 and self.clock() - self.last_at >= 25)
+                number - self.last_move >= 3 and self.clock() - self.last_at >= 25
+                and (not signature or self.clock() - self.recent.get(signature, -1e9) >= 150))
 
-    def record(self, number):
+    def record(self, number, plan=None):
         self.last_move, self.last_at = number, self.clock()
+        signature = tuple(item.get("ucci") for item in (plan or {}).get("route", []))
+        self.recent = {key: at for key, at in self.recent.items() if self.clock() - at < 150}
+        if signature:
+            self.recent[signature] = self.last_at
 
 
 def king_capture_finish(board):
@@ -57,7 +65,7 @@ def king_capture_finish(board):
 
 def validated_route(board, route, mate=False):
     probe, result = board.copy(), []
-    if not route or len(route) > (MAX_MATE_PLIES if mate else 4):
+    if not route or len(route) > (MAX_MATE_PLIES if mate else MAX_TACTIC_PLIES):
         return []
     for index, item in enumerate(route):
         try:
@@ -106,7 +114,8 @@ def build_plan(notation, analysis, pv_line, executed_ucci, board=None):
     """Verify a tactical PV; complete mate demos run before the real move."""
     if board is None:
         return None
-    probe, route, facts = board.copy(), [], []
+    from sandbox_narration import demo_budget, result_note
+    probe, route, facts, positions = board.copy(), [], [], []
     own = board.turn
     for ucci, _ in list(pv_line or [])[:MAX_MATE_PLIES]:
         try:
@@ -118,7 +127,9 @@ def build_plan(notation, analysis, pv_line, executed_ucci, board=None):
             captured, side, escape = probe.sq[move[1]], probe.turn, probe.in_check(probe.turn)
             text = move_description(probe, move)
             probe.apply(move)
-            route.append({"ucci": ucci, "notation": text})
+            route.append({"ucci": ucci, "notation": text, "side": side,
+                          "capture": captured, "check": probe.in_check(probe.turn), "escape": escape})
+            positions.append(probe.copy())
             facts.append({"capture": captured, "own": side == own, "escape": escape,
                           "check": probe.in_check(probe.turn)})
             if not probe.legal_moves():
@@ -127,32 +138,65 @@ def build_plan(notation, analysis, pv_line, executed_ucci, board=None):
                     if finish:
                         from mate_patterns import identify_pattern
                         pattern = identify_pattern(probe) or "组合将杀"
-                        return {"kind": "mate", "phase": "before_move", "reason": pattern + "绝杀推演",
+                        finish["side"] = own
+                        plan = {"kind": "mate", "phase": "before_move", "reason": pattern + "绝杀推演",
                                 "route": route + [finish], "confidence": 100, "target": text,
-                                "target_kind": "将死后演示吃将", "max_seconds": 12.0,
+                                "target_kind": "将死后演示吃将", "own": own,
                                 "pattern": pattern}
+                        plan["max_seconds"] = demo_budget(plan)
+                        return plan
                 break
         except (ValueError, TypeError, IndexError):
             break
-    if len(route) < 4:
+    if len(route) < 3:
         return None
     # Normal demos explain exchanges, checks and escapes at ordinary scores too.
-    future = facts[1:4]
+    future = facts[1:MAX_TACTIC_PLIES + 1]
     own_target = next((index + 1 for index, fact in enumerate(future)
                        if fact["own"] and (fact["capture"] or fact["check"])), 2)
     big_capture = bool(facts[0]["capture"] and facts[0]["capture"].upper() in "RNC")
     future_big = any(fact["own"] and fact["capture"] and fact["capture"].upper() in "RNC" for fact in future)
-    exchange = bool(facts[1]["capture"] and facts[2]["capture"])
+    exchange = any(a["capture"] and b["capture"] for a, b in zip(future, future[1:]))
     check = any(fact["own"] and fact["check"] for fact in facts[:4])
     escape = facts[0]["escape"]
     if not (big_capture or future_big or exchange or check or escape):
         return None
-    reason = ("关键交换" if exchange else "吃大子后的接法" if big_capture else
-              "后续吃大子" if future_big else "将军与应将" if check else "解将后的衔接")
-    return {"kind": "tactic", "phase": "after_move", "reason": reason,
-            "confidence": kill_confidence(analysis or {}), "route": route[1:4],
+    meaningful = [index for index, fact in enumerate(facts[:MAX_TACTIC_PLIES + 1]) if index > 0
+                  if fact["own"] and (fact["capture"] and fact["capture"].upper() in "RNC" or fact["check"])]
+    end = max(2, meaningful[0] if meaningful else 0)
+    # Continue the capture/check/forced-reply chain until its actual outcome;
+    # do not truncate a recapture merely to keep a three-ply animation.
+    while end + 1 < len(route) and end < MAX_TACTIC_PLIES:
+        next_fact = facts[end + 1]
+        if not (next_fact["capture"] or next_fact["escape"] or next_fact["check"]):
+            break
+        end += 1
+    if end >= len(route) or facts[end]["check"]:
+        return None
+    if end + 1 < len(route) and (facts[end + 1]["capture"] or facts[end + 1]["escape"]):
+        return None  # The safe size limit must not turn half an exchange into a result.
+    if end == len(route) - 1 and facts[end]["capture"]:
+        target = Board.from_ucci(route[end]["ucci"])[1]
+        if any(move[1] == target for move in positions[end].legal_moves()):
+            return None  # PV ended while an immediate recapture is still possible.
+    demo_route = route[1:end + 1]
+    if not any(item.get("capture") or item.get("check") or item.get("escape") for item in demo_route):
+        return None  # A capture followed only by quiet shuffling needs no demo.
+    seen = set()
+    for position in positions[:end + 1]:
+        if position.to_fen() in seen:
+            return None
+        seen.add(position.to_fen())
+    own_target = min(own_target, end)
+    reason = ("解将后的衔接" if escape else "关键交换" if exchange else "吃大子后的接法" if big_capture else
+              "后续吃大子" if future_big else "将军与应将")
+    plan = {"kind": "tactic", "phase": "after_move", "reason": reason, "own": own,
+            "confidence": kill_confidence(analysis or {}), "route": demo_route,
             "target": route[own_target]["notation"],
-            "target_kind": "吃大子" if future_big else "关键接法", "max_seconds": 8.0}
+            "target_kind": "吃大子" if future_big else "关键接法"}
+    plan["summary"] = result_note(demo_route, own)
+    plan["max_seconds"] = demo_budget(plan)
+    return plan
 
 
 def build_deferred_plan(reason, pv_line):
@@ -241,7 +285,7 @@ def _advance_after_observed_reply(live_board, legal_route, probe):
     """Shift a PV sandbox to our turn when JJ already played its first ply."""
     observed = (probe or {}).get("presence_sequence")
     if (not isinstance(observed, list) or len(observed) != 1 or
-            not legal_route or len(legal_route) < 4):
+            not legal_route or len(legal_route) < 2):
         return None
     item, move = legal_route[0]
     if observed[0] != item.get("ucci") or Board.ucci(move) != observed[0]:
@@ -400,9 +444,10 @@ def _return_to_live(device, live_board, orientation, attempts=2,
 
 
 def play_plan(device, live_board, orientation, plan, stop_requested=None,
-              on_step=None, on_enter=None, review_seconds=5.0, max_seconds=8.0,
+              on_step=None, on_enter=None, review_seconds=1.2, max_seconds=None,
+              on_cue=None,
               gate_timeout=1.5):
-    """Enter JJ sandbox, play 3–4 PV plies, review, and safely return.
+    """Enter JJ sandbox, explain a complete verified line, and safely return.
 
     Returns a dict with ``entered`` and ``safe_exit``.  No route click is sent
     unless the sandbox button visibly changed the control strip while the
@@ -412,9 +457,9 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
     mate = (plan or {}).get("kind") == "mate"
     route = list((plan or {}).get("route") or [])
     legal_route = validated_route(live_board, route, mate=mate)
-    if len(legal_route) < (2 if mate else 3) or stop_requested():
+    if len(legal_route) < 2 or stop_requested():
         return {"entered": False, "safe_exit": True,
-                "reason": "绝杀路线未包含已核实的吃将收尾" if mate else "推演路线不足三步或不合法"}
+                "reason": "绝杀路线未包含已核实的吃将收尾" if mate else "推演路线不足两步或不合法"}
 
     observed_reply = None
     # Open the sandbox immediately after our confirmed live move.  This is
@@ -477,6 +522,13 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
         exit_visible = _detect_sandbox_exit(candidate) is not None
         copied_position = _position_matches(
             live_board, candidate, orientation)
+        if (controls_changed and exit_visible and not copied_position
+                and observed_reply is None and (plan or {}).get("phase") != "before_move"):
+            advanced = _advance_after_observed_reply(
+                live_board, legal_route, _position_probe(live_board, candidate, orientation))
+            if advanced is not None and _position_matches(advanced[0], candidate, orientation):
+                live_board, legal_route, observed_reply = advanced
+                copied_position = True
         if controls_changed and exit_visible and copied_position:
             break
     if not controls_changed or not exit_visible or not copied_position:
@@ -492,24 +544,43 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
         on_enter()
     sandbox_board = live_board.copy()
     started = time.monotonic()
+    if max_seconds is None:
+        from sandbox_narration import demo_budget
+        max_seconds = demo_budget(plan)
     hard_deadline = started + max(1.0, float(max_seconds))
     completed = 0
     timed_out = False
     last_sandbox_frame = entered_frame
+    narration_failed = False
+    def cue(name, finish=False):
+        if on_cue is None:
+            return True
+        return on_cue(str(name), finish=finish, deadline=hard_deadline) is not False
+
+    if not cue("intro", finish=True):
+        narration_failed = True
     for number, (item, move) in enumerate(legal_route, 1):
-        if stop_requested():
+        if stop_requested() or narration_failed:
             break
         if time.monotonic() >= hard_deadline:
             timed_out = True
             break
-        if item.get("illustration"):
-            # A platform may close its sandbox at checkmate. Never send the
-            # illustrative king capture unless this SAME frame proves the
-            # terminal sandbox position and its exit control are still there.
-            if (_detect_sandbox_exit(last_sandbox_frame) is None or
-                    not _position_matches(sandbox_board, last_sandbox_frame, orientation)):
-                failed_step = number
-                break
+        cue_number = number + int(observed_reply is not None)
+        if not cue(cue_number):
+            narration_failed = True
+            break
+        if on_cue is not None:
+            last_sandbox_frame = screenshot(device)
+        # Recheck mode and copied position before EVERY move, including retries.
+        # A slow voice or a platform auto-exit must never expose the live board
+        # to the remainder of a simulated variation.
+        if (_detect_sandbox_exit(last_sandbox_frame) is None or
+                not _position_matches(sandbox_board, last_sandbox_frame, orientation)):
+            failed_step = number
+            break
+        if stop_requested() or time.monotonic() >= hard_deadline:
+            timed_out = not stop_requested()
+            break
         fx, fy = pt(move[0], orientation)
         tx, ty = pt(move[1], orientation)
         tap(fx, fy, device=device)
@@ -527,11 +598,16 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
             resumed = _dismiss_interruption(device, frame)
             if resumed is not None:
                 frame = resumed
+                last_sandbox_frame = frame
                 # The notice swallowed the sandbox input.  Retrying is safe
                 # only here: these are local simulation moves, never live
                 # chess inputs, and the trusted sandbox board is unchanged.
                 if not _endpoint_confirmed(
                         sandbox_board, move, frame, orientation):
+                    if (_detect_sandbox_exit(frame) is None or
+                            not _position_matches(sandbox_board, frame, orientation)):
+                        failed_step = number
+                        break
                     tap(fx, fy, device=device)
                     time.sleep(0.18)
                     tap(tx, ty, device=device)
@@ -539,10 +615,23 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
                     frame = screenshot(device)
                     last_sandbox_frame = frame
             else:
-                # JJ highlights can briefly hide one endpoint.  Repeating the
-                # same local-sandbox move once is safe and prevents a cosmetic
-                # miss from shortening a three-step route to one or two steps.
+                # Read a fresh frame before considering a retry.  Only an
+                # unchanged sandbox position can authorize the same input.
                 time.sleep(0.25)
+                frame = screenshot(device)
+                last_sandbox_frame = frame
+                if _endpoint_confirmed(sandbox_board, move, frame, orientation):
+                    sandbox_board.apply(move)
+                    completed += 1
+                    if on_step:
+                        on_step(number, item)
+                    if not cue(cue_number, finish=True):
+                        narration_failed = True
+                    continue
+                if (_detect_sandbox_exit(frame) is None or
+                        not _position_matches(sandbox_board, frame, orientation)):
+                    failed_step = number
+                    break
                 tap(fx, fy, device=device)
                 time.sleep(0.18)
                 tap(tx, ty, device=device)
@@ -556,13 +645,17 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
         completed += 1
         if on_step:
             on_step(number, item)
+        if not cue(cue_number, finish=True):
+            narration_failed = True
+            break
         if time.monotonic() >= hard_deadline:
             timed_out = completed < len(legal_route)
             break
 
     # Keep the whole excursion bounded.  A fast opponent must not make us burn
     # an unlimited amount of our own clock while the real board is hidden.
-    elapsed = time.monotonic() - started
+    if completed == len(legal_route) and not stop_requested() and not narration_failed:
+        narration_failed = not cue("summary", finish=True)
     remaining_review = max(
         0.0, min(float(review_seconds), hard_deadline - time.monotonic()))
     deadline = time.monotonic() + remaining_review
@@ -576,12 +669,14 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
             "failed_step": locals().get("failed_step"),
             "observed_reply": observed_reply,
             "timed_out": timed_out,
+            "narration_failed": narration_failed,
             "king_captured": bool(mate and completed == len(legal_route)),
             # Opponent activity is intentionally not an exit condition.  On
             # return, _return_to_live accepts a legal one-ply real reply and
             # the normal player loop consumes it from the live board.
             "opponent_move_interrupts": False,
-            "reason": ("吃将收尾演示完成" if mate and completed == len(legal_route)
+            "reason": ("语音未同步，已结束演示" if narration_failed
+                       else "吃将收尾演示完成" if mate and completed == len(legal_route)
                        else "绝杀演示未完成吃将收尾" if mate
                        else "演示完成" if completed == len(legal_route)
                        else "达到安全时限，已结束演示" if timed_out

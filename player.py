@@ -457,15 +457,36 @@ def run_game_sandbox(device, board, orientation, plan, token, number, events, ca
     write_runtime_status("sandbox_demo", "正在演示关键路线",
                          details={"own_moves": number, "steps": len(route)})
     def step(index, item):
+        write_runtime_status("sandbox_demo", "正在同步演示路线",
+                             details={"own_moves": number, "step": index, "steps": len(route)})
         print(f"[游戏沙盘] {index}. {item['notation']}", flush=True)
         events.emit("game_sandbox", action="step", number=index,
                     notation=item["notation"], ucci=item["ucci"], illustration=item.get("illustration"))
     def entered():
         events.emit("game_sandbox", action="entered", reason=plan["reason"], route=route,
                     phase=plan.get("phase"), kind=plan.get("kind"), speech_token=token, fen=board.to_fen())
+    from sandbox_narration import cue_token, wait_receipt
+    requested = set()
+    try:
+        with open(LIVE_CFG_PATH, encoding="utf-8") as stream:
+            synchronous = bool(json.load(stream).get("commentary_enabled"))
+    except (OSError, ValueError, AttributeError):
+        synchronous = False
+    def cue(name, *, finish, deadline):
+        if not synchronous:
+            return True
+        write_runtime_status("sandbox_demo", "正在同步沙盘讲解",
+                             details={"own_moves": number, "cue": name})
+        deadline = min(deadline, time.monotonic() + (12 if name == "summary" else 8))
+        if name not in requested:
+            events.emit("game_sandbox", action="cue", cue=name,
+                        speech_token=token, deadline=deadline)
+            requested.add(name)
+        return wait_receipt(cue_token(token, name), finished=finish, deadline=deadline, cancelled=cancelled)
     try:
         result = play_plan(device, board.copy(), orientation, plan, stop_requested=cancelled,
-                           on_step=step, on_enter=entered, max_seconds=plan.get("max_seconds", 8.0))
+                           on_step=step, on_enter=entered, on_cue=cue,
+                           max_seconds=plan.get("max_seconds"))
     except Exception as error:
         result = {"entered": False, "safe_exit": False, "reason": "沙盘异常，未确认返回实战"}
         capture_diagnostic(device, "sandbox_demo_error", extra={"error": str(error), "fen": board.to_fen()})
@@ -798,7 +819,7 @@ def main():
             u = Board.ucci(mv)
             d = move_description(b, mv)
             analysis = dict(getattr(pf, "last_analysis", {}) or {})
-            analysis_summary, pv_line = engine_commentary(b, analysis, max_pv_plies=8)
+            analysis_summary, pv_line = engine_commentary(b, analysis, max_pv_plies=14)
             candidate_analyses = list(
                 getattr(pf, "last_candidates", [])[:3])
             candidate_plans = []
@@ -864,8 +885,7 @@ def main():
                     demo = run_game_sandbox(device, b, orientation, sandbox_plan, speech_token,
                                             n + 1, events, stop_requested)
                     speech_deadline = demo.get("speech_deadline", time.monotonic() + 15.0)
-                    if demo.get("entered"):
-                        sandbox_cadence.record(n + 1)
+                    sandbox_cadence.record(n + 1, sandbox_plan if demo.get("entered") else None)
                     if not demo.get("safe_exit"):
                         result = "recognition_pause"
                         break
@@ -1000,8 +1020,7 @@ def main():
                     fast_reply is None and not stop_requested()):
                 demo = run_game_sandbox(device, b, orientation, sandbox_plan, speech_token,
                                         n, events, stop_requested)
-                if demo.get("entered"):
-                    sandbox_cadence.record(n)
+                sandbox_cadence.record(n, sandbox_plan if demo.get("entered") else None)
                 if not demo.get("safe_exit"):
                     result = "recognition_pause"
                     break

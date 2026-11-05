@@ -64,7 +64,7 @@ class SandboxFinishTests(unittest.TestCase):
                 game_sandbox, "screenshot", return_value=frame), patch.object(
                 game_sandbox, "_region_difference", return_value=5), patch.object(
                 game_sandbox, "_sandbox_button", return_value=(100, 1600)), patch.object(
-                game_sandbox, "_detect_sandbox_exit", side_effect=[(200, 1850), None] if exit_after_mate else None,
+                game_sandbox, "_detect_sandbox_exit", side_effect=[(200, 1850), (200, 1850), None] if exit_after_mate else None,
                 return_value=(200, 1850)), patch.object(
                 game_sandbox, "_position_matches", return_value=True), patch.object(
                 game_sandbox, "_endpoint_confirmed", side_effect=[True] * (len(plan["route"]) - 1) + [capture_confirmed]), patch.object(
@@ -126,7 +126,10 @@ class SandboxFinishTests(unittest.TestCase):
         controller.submit_chess({"event": "move_command", "speech_token": "demo", "notation": line[0][1]})
         controller.pipeline.commit_move.assert_not_called()
         controller.submit_chess({"event": "game_sandbox", "action": "entered", "speech_token": "demo"})
-        controller.pipeline.commit_move.assert_called_once_with("demo:sandbox")
+        controller.pipeline.commit_move.assert_not_called()
+        controller.submit_chess({"event": "game_sandbox", "action": "cue", "cue": "intro",
+                                 "speech_token": "demo", "deadline": 100})
+        controller.pipeline.commit_move.assert_called_once_with("demo:sandbox:intro", deadline=100)
         controller.submit_chess({"event": "game_sandbox", "action": "end", "speech_token": "demo",
             "phase": "before_move", "entered": True, "safe_exit": True, "speech_deadline": 200})
         self.assertEqual(controller.pipeline.commit_move.call_args.args, ("demo",))
