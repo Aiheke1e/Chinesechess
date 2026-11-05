@@ -33,7 +33,8 @@ def infer_turn_from_standard(squares, max_plies=2):
 
 
 def save_session(board: Board, orientation: str, my_color: str,
-                 tolerant_indices=(), active=True, path=SESSION_PATH):
+                 tolerant_indices=(), active=True, path=SESSION_PATH, *,
+                 own_moves=0, rejected_moves=None):
     data = {
         "version": 1,
         "active": bool(active),
@@ -41,6 +42,8 @@ def save_session(board: Board, orientation: str, my_color: str,
         "orientation": orientation,
         "my_color": my_color,
         "tolerant_indices": sorted(set(tolerant_indices)),
+        "own_moves": own_moves,
+        "rejected_moves": rejected_moves or {},
     }
     folder = os.path.dirname(path)
     os.makedirs(folder, exist_ok=True)
@@ -70,6 +73,13 @@ def load_session(path=SESSION_PATH):
         return None
     if validate_board(data["board"]):
         return None
+    count = data.get("own_moves", 0)
+    data["own_moves"] = count if type(count) is int and count >= 0 else 0
+    rejected = data.get("rejected_moves")
+    data["rejected_moves"] = ({fen: moves for fen, moves in rejected.items()
+                               if isinstance(fen, str) and isinstance(moves, list)
+                               and all(isinstance(move, str) for move in moves)}
+                              if isinstance(rejected, dict) else {})
     # A first move may already be visible when an automatic session is created.
     # Recover the true side to move when this early position is uniquely
     # reachable from the standard start in at most two plies.
@@ -116,6 +126,8 @@ def match_live_session(device, path=SESSION_PATH, stable_delay=0.12, *, first_im
     if presence is not None and recognize_presence_occupancy(second, data["orientation"]) != presence:
         return None
     for move in inferred_moves:
+        if board.turn == data["my_color"]:
+            data["own_moves"] = data.get("own_moves", 0) + 1
         board.apply(move)
     data["board"] = board
     data["inferred_moves"] = inferred_moves
@@ -127,7 +139,8 @@ def finish_session(path=SESSION_PATH):
     if data is None:
         return
     save_session(data["board"], data["orientation"], data["my_color"],
-                 data.get("tolerant_indices", ()), active=False, path=path)
+                 data.get("tolerant_indices", ()), active=False, path=path,
+                 own_moves=data.get("own_moves", 0), rejected_moves=data.get("rejected_moves"))
 
 
 def block_position(board: Board, reason: str, path=BLOCKED_PATH):

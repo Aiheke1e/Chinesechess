@@ -4,6 +4,7 @@
 #   e = Pikafish()
 #   mv = e.bestmove(fen, movetime_ms=800)   # 返回 UCI 着法字符串如 "b2e2"
 import os
+import re
 import subprocess
 import threading
 import time
@@ -160,8 +161,16 @@ class Pikafish:
         except Exception:
             pass
 
-    def bestmove(self, fen: str, movetime_ms: int = 800, depth: int | None = None) -> str | None:
+    def bestmove(self, fen: str, movetime_ms: int = 800, depth: int | None = None,
+                 *, searchmoves=None) -> str | None:
         """返回 bestmove 字符串 (如 'b2e2'), 失败返回 None"""
+        suffix = ""
+        if searchmoves is not None:
+            moves = list(searchmoves)
+            if not moves or any(not isinstance(move, str) or not re.fullmatch(
+                    r"[a-i][0-9][a-i][0-9]", move) for move in moves):
+                raise ValueError("searchmoves must contain UCI moves")
+            suffix = " searchmoves " + " ".join(moves)
         if self.proc.poll() is not None:
             raise RuntimeError("Pikafish process is not running")
         with self._command_lock:
@@ -171,9 +180,9 @@ class Pikafish:
             analysis_by_rank = {}
             self.send(f"position fen {fen}")
             if depth:
-                self.send(f"go depth {depth}")
+                self.send(f"go depth {depth}" + suffix)
             else:
-                self.send(f"go movetime {movetime_ms}")
+                self.send(f"go movetime {movetime_ms}" + suffix)
             t0 = time.time()
             limit = (movetime_ms / 1000.0 + 8.0) if not depth else 30.0
             while time.time() - t0 < limit:

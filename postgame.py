@@ -206,6 +206,9 @@ def detect_confirmation_button(image):
     """Detect the green confirmation button on JJ's central result modal."""
     if image is None:
         return None
+    from game_rules import repetition_warning
+    if repetition_warning(image):
+        return None  # The teal 'please change move' toast is not a button.
     height, width = image.shape[:2]
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, (35, 75, 80), (100, 255, 255))

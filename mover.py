@@ -9,7 +9,8 @@ from recognizer import (OX, OY, DX, DY, SHIFT_X, SHIFT_Y,
                         recognize_position)
 from state import (after_move, matches_after_move, same_position,
                    matches_move_with_limited_vision_loss,
-                   trusted_position_matches)
+                   trusted_position_matches, occupancy_difference_count)
+from game_rules import RULE_REJECTED, repetition_warning
 
 
 def pt(i: int, orientation="red_bottom") -> tuple[float, float]:
@@ -75,6 +76,13 @@ def move_piece(frm: int, to: int, device, expected_before=None,
     detected = None
     while True:
         image = screenshot(device)
+        # A previous rejected attempt may leave its toast on screen briefly.
+        # Never attribute that stale toast to a newly submitted alternative.
+        if repetition_warning(image):
+            if time.monotonic() >= deadline:
+                return False, "FAIL 平台规则提示尚未消退，未发送点击"
+            time.sleep(0.15)
+            continue
         if image is not None:
             trusted = False
             if expected_before is not None:
@@ -145,6 +153,7 @@ def move_piece(frm: int, to: int, device, expected_before=None,
     last_image = image
     last_occupancy = None
     relaxed_hits = 0
+    rule_rejection_hits = 0
     next_full_check = time.monotonic() + 0.8
     while time.monotonic() < deadline:
         time.sleep(poll_interval)
@@ -172,6 +181,19 @@ def move_piece(frm: int, to: int, device, expected_before=None,
         if _probe_matches(expected_after, repaired, (frm, to)):
             return True, (f"OK {piece} {frm}->{to} 落子成功"
                           "（高亮容错局部校验）")
+        # A rule-rejected tap leaves both endpoints unchanged.  Require two
+        # explicit warning frames and the trusted pre-move occupancy before
+        # allowing a different move; a toast alone cannot rewind the board.
+        if repetition_warning(image):
+            occupancy = recognize_occupancy(image, orientation)
+            unchanged = (_probe_matches(trusted_before, presence, (frm, to))
+                         and occupancy is not None
+                         and occupancy_difference_count(trusted_before, occupancy) <= 1)
+            rule_rejection_hits = rule_rejection_hits + 1 if unchanged else 0
+            if rule_rejection_hits >= 2:
+                return False, RULE_REJECTED + " 长捉违规请变招，已连续确认棋盘未走动"
+        else:
+            rule_rejection_hits = 0
         # An empty result means the local classifier itself was unavailable;
         # do not postpone the proven full-board fallback in that case.
         if endpoints and time.monotonic() < next_full_check:

@@ -24,6 +24,7 @@ from runtime_status import write_runtime_status
 from queen_commentary import build_queen_evidence
 from game_control import auto_continue_enabled
 from opponent_status import OpponentWaitMonitor
+from game_rules import RULE_REJECTED
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(HERE, "player_config.json")
@@ -373,11 +374,20 @@ def read_stable_board(device, turn, min_pieces=20, stable_delay=0.35,
         return None, None
     return board, second_orientation
 
-def pick_move(b, cfg, pf):
+def pick_move(b, cfg, pf, *, excluded_moves=()):
     if pf is None:
         raise EngineMoveError("Pikafish 未启动")
     try:
-        uci = pf.bestmove(b.to_fen(), movetime_ms=cfg["pikafish_movetime_ms"])
+        options = {}
+        if excluded_moves:
+            allowed = [Board.ucci(move) for move in b.legal_moves()
+                       if Board.ucci(move) not in excluded_moves]
+            if not allowed:
+                raise EngineMoveError("当前局面的可走着法均被平台拒绝，等待人工检查")
+            options["searchmoves"] = allowed
+        uci = pf.bestmove(b.to_fen(), movetime_ms=cfg["pikafish_movetime_ms"], **options)
+        if uci and (uci in excluded_moves or options and uci not in options["searchmoves"]):
+            raise EngineMoveError("引擎返回了平台已拒绝的走法，停止点击")
         return ((Board.from_ucci(uci), f"Pikafish {uci}") if uci else
                 (None, "Pikafish 未返回走法"))
     except Exception as error:
@@ -554,7 +564,14 @@ def main():
             b.turn = inferred_turn
             print("[轮次修正] 根据标准开局后的实际走法，当前轮到"
                   + ("红方。" if b.turn == "r" else "黑方。"))
-    save_session(b, orientation, my, tolerant_indices)
+    n = resumed.get("own_moves", 0) if resumed else 0
+    rejected_moves = dict(resumed.get("rejected_moves", {})) if resumed else {}
+
+    def checkpoint(active=True):
+        save_session(b, orientation, my, tolerant_indices, active=active,
+                     own_moves=n, rejected_moves=rejected_moves)
+
+    checkpoint()
     print("\n[棋盘识别成功]")
     print(f"棋子数量：{b.attacker_count()} 枚")
     print(f"我的阵营：{'红方' if my == 'r' else '黑方'}")
@@ -575,15 +592,15 @@ def main():
         events.emit("error", code="pikafish_unavailable", message=str(error))
         return 4
 
-    n = 0
     result = "stopped"
     from game_sandbox import SandboxCadence
     sandbox_cadence = SandboxCadence()
     opponent_wait = OpponentWaitMonitor()
+    started_at_move = n
     # JJ 会给移动后的棋子换字形。这里保存这些可信占位，只放宽字形，
     # 仍严格检查颜色、空格和合法的一步转移。
     try:
-        while n < cfg["max_moves"] and not stop_requested():
+        while n - started_at_move < cfg["max_moves"] and not stop_requested():
             if b.turn != my:
                 write_runtime_status(
                     "waiting_opponent", "等待对方落子",
@@ -705,7 +722,7 @@ def main():
                         b.apply(mv_seen)
                         tolerant_indices.discard(mv_seen[0])
                         tolerant_indices.add(mv_seen[1])
-                        save_session(b, orientation, my, tolerant_indices)
+                        checkpoint()
                         events.emit("opponent_move", ucci=opponent_ucci,
                                     notation=opponent_text,
                                     waited_seconds=round(total_waited, 1),
@@ -752,7 +769,9 @@ def main():
                 "engine_thinking", "Pikafish 正在计算走法",
                 details={"own_moves": n, "fen": b.to_fen()})
             try:
-                mv, desc = pick_move(b, cfg, pf)
+                excluded = rejected_moves.get(b.to_fen(), ())
+                mv, desc = (pick_move(b, cfg, pf, excluded_moves=excluded) if excluded
+                            else pick_move(b, cfg, pf))
             except EngineMoveError as error:
                 result = "recognition_pause"
                 print("[识别暂停] 引擎没有接受当前局面；保留可信断点并自动重抓。")
@@ -890,7 +909,8 @@ def main():
                           flush=True)
 
             fast_reply = None
-            if not ok and not cfg["dry_run"]:
+            rule_rejected = not ok and msg.startswith(RULE_REJECTED)
+            if not ok and not cfg["dry_run"] and not rule_rejected:
                 observed, seen_orientation = read_squares(device, orientation)
                 if observed is not None and seen_orientation == orientation:
                     fast_reply = resolve_fast_reply(
@@ -924,6 +944,14 @@ def main():
                 events.emit("move_rejected", number=n + 1, ucci=u,
                             notation=d, speech_token=speech_token,
                             reason=msg)
+                if rule_rejected:
+                    banned = rejected_moves.setdefault(b.to_fen(), [])
+                    if u not in banned:
+                        banned.append(u)
+                    checkpoint()
+                    print("[规则变招] JJ 提示长捉违规，本手未落子；保留当前回合，排除该走法重新计算。",
+                          flush=True)
+                    continue
                 # 将死后 JJ 可能依次播放棋盘特效、段位动画，再显示结算按钮。
                 # 只在落子无法确认的异常路径多等待，不增加正常每步用时。
                 if wait_for_postgame_screen(device, timeout=18.0):
@@ -955,8 +983,8 @@ def main():
             b.apply(mv)
             tolerant_indices.discard(mv[0])
             tolerant_indices.add(mv[1])
-            save_session(b, orientation, my, tolerant_indices)
             n += 1
+            checkpoint()
             events.emit("move_applied" if not cfg["dry_run"] else "move_preview",
                         number=n, ucci=u, notation=d, fen=b.to_fen(),
                         speech_token=speech_token,
@@ -981,7 +1009,7 @@ def main():
                 b.apply(fast_reply)
                 tolerant_indices.discard(fast_reply[0])
                 tolerant_indices.add(fast_reply[1])
-                save_session(b, orientation, my, tolerant_indices)
+                checkpoint()
                 reply_ucci = Board.ucci(fast_reply)
                 events.emit("opponent_move", ucci=reply_ucci,
                             notation=reply_text,
@@ -1020,9 +1048,8 @@ def main():
         print(f"对局结束：{result_text}｜我方共走 {n} 步")
         print("=" * 54)
         events.emit("end", result=result, own_moves=n, fen=b.to_fen() if b else None)
-        save_session(b, orientation, my, tolerant_indices,
-                     active=result not in ("won", "lost", "finished",
-                                           "engine_error", "unsafe_position"))
+        checkpoint(active=result not in ("won", "lost", "finished",
+                                         "engine_error", "unsafe_position"))
         continued_actions = []
         if result in ("timeout", "engine_error", "unsafe_position",
                       "recognition_pause", "recovery_pause"):
