@@ -162,9 +162,18 @@ class Pikafish:
             pass
 
     def bestmove(self, fen: str, movetime_ms: int = 800, depth: int | None = None,
-                 *, searchmoves=None) -> str | None:
+                 *, searchmoves=None, root_fen=None, moves=()) -> str | None:
         """返回 bestmove 字符串 (如 'b2e2'), 失败返回 None"""
         suffix = ""
+        position_moves = list(moves)
+        if any(not isinstance(move, str) or not re.fullmatch(r"[a-i][0-9][a-i][0-9]", move)
+               for move in position_moves):
+            raise ValueError("history must contain UCI moves")
+        position = f"position fen {root_fen or fen}"
+        if position_moves:
+            if not root_fen:
+                raise ValueError("history moves require their root position")
+            position += " moves " + " ".join(position_moves)
         if searchmoves is not None:
             moves = list(searchmoves)
             if not moves or any(not isinstance(move, str) or not re.fullmatch(
@@ -178,7 +187,7 @@ class Pikafish:
             self.last_analysis = {}
             self.last_candidates = []
             analysis_by_rank = {}
-            self.send(f"position fen {fen}")
+            self.send(position)
             if depth:
                 self.send(f"go depth {depth}" + suffix)
             else:

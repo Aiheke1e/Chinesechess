@@ -25,6 +25,7 @@ from queen_commentary import build_queen_evidence
 from game_control import auto_continue_enabled
 from opponent_status import OpponentWaitMonitor
 from game_rules import RULE_REJECTED
+from engine_history import PositionHistory
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(HERE, "player_config.json")
@@ -374,11 +375,17 @@ def read_stable_board(device, turn, min_pieces=20, stable_delay=0.35,
         return None, None
     return board, second_orientation
 
-def pick_move(b, cfg, pf, *, excluded_moves=()):
+def pick_move(b, cfg, pf, *, excluded_moves=(), history=None):
     if pf is None:
         raise EngineMoveError("Pikafish 未启动")
     try:
+        repeated = history.repeated_chases(b) if history is not None else set()
+        excluded_moves = set(excluded_moves) | repeated
+        if repeated:
+            print("[规则预防] 避开再次重复将军或追子：" + "、".join(sorted(repeated)), flush=True)
         options = {}
+        if history is not None and history.moves:
+            options.update(root_fen=history.root_fen, moves=list(history.moves))
         if excluded_moves:
             allowed = [Board.ucci(move) for move in b.legal_moves()
                        if Board.ucci(move) not in excluded_moves]
@@ -386,7 +393,7 @@ def pick_move(b, cfg, pf, *, excluded_moves=()):
                 raise EngineMoveError("当前局面的可走着法均被平台拒绝，等待人工检查")
             options["searchmoves"] = allowed
         uci = pf.bestmove(b.to_fen(), movetime_ms=cfg["pikafish_movetime_ms"], **options)
-        if uci and (uci in excluded_moves or options and uci not in options["searchmoves"]):
+        if uci and (uci in excluded_moves or "searchmoves" in options and uci not in options["searchmoves"]):
             raise EngineMoveError("引擎返回了平台已拒绝的走法，停止点击")
         return ((Board.from_ucci(uci), f"Pikafish {uci}") if uci else
                 (None, "Pikafish 未返回走法"))
@@ -598,10 +605,11 @@ def main():
                   + ("红方。" if b.turn == "r" else "黑方。"))
     n = resumed.get("own_moves", 0) if resumed else 0
     rejected_moves = dict(resumed.get("rejected_moves", {})) if resumed else {}
+    history = PositionHistory.restore(b, resumed)
 
     def checkpoint(active=True):
         save_session(b, orientation, my, tolerant_indices, active=active,
-                     own_moves=n, rejected_moves=rejected_moves)
+                     own_moves=n, rejected_moves=rejected_moves, history=history.export())
 
     checkpoint()
     print("\n[棋盘识别成功]")
@@ -752,6 +760,7 @@ def main():
                         print(f"对方回应：{opponent_text}"
                               f"  （{total_waited:.1f} 秒，坐标 {opponent_ucci}）")
                         b.apply(mv_seen)
+                        history.append(mv_seen, b)
                         tolerant_indices.discard(mv_seen[0])
                         tolerant_indices.add(mv_seen[1])
                         checkpoint()
@@ -802,8 +811,7 @@ def main():
                 details={"own_moves": n, "fen": b.to_fen()})
             try:
                 excluded = rejected_moves.get(b.to_fen(), ())
-                mv, desc = (pick_move(b, cfg, pf, excluded_moves=excluded) if excluded
-                            else pick_move(b, cfg, pf))
+                mv, desc = pick_move(b, cfg, pf, excluded_moves=excluded, history=history)
             except EngineMoveError as error:
                 result = "recognition_pause"
                 print("[识别暂停] 引擎没有接受当前局面；保留可信断点并自动重抓。")
@@ -1012,6 +1020,7 @@ def main():
                     print("诊断信息：" + msg)
                 break
             b.apply(mv)
+            history.append(mv, b)
             tolerant_indices.discard(mv[0])
             tolerant_indices.add(mv[1])
             n += 1
@@ -1037,6 +1046,7 @@ def main():
                     break
             if fast_reply is not None:
                 b.apply(fast_reply)
+                history.append(fast_reply, b)
                 tolerant_indices.discard(fast_reply[0])
                 tolerant_indices.add(fast_reply[1])
                 checkpoint()

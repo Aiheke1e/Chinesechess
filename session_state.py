@@ -34,7 +34,7 @@ def infer_turn_from_standard(squares, max_plies=2):
 
 def save_session(board: Board, orientation: str, my_color: str,
                  tolerant_indices=(), active=True, path=SESSION_PATH, *,
-                 own_moves=0, rejected_moves=None):
+                 own_moves=0, rejected_moves=None, history=None):
     data = {
         "version": 1,
         "active": bool(active),
@@ -44,6 +44,7 @@ def save_session(board: Board, orientation: str, my_color: str,
         "tolerant_indices": sorted(set(tolerant_indices)),
         "own_moves": own_moves,
         "rejected_moves": rejected_moves or {},
+        "history": history,
     }
     folder = os.path.dirname(path)
     os.makedirs(folder, exist_ok=True)
@@ -140,7 +141,8 @@ def finish_session(path=SESSION_PATH):
         return
     save_session(data["board"], data["orientation"], data["my_color"],
                  data.get("tolerant_indices", ()), active=False, path=path,
-                 own_moves=data.get("own_moves", 0), rejected_moves=data.get("rejected_moves"))
+                 own_moves=data.get("own_moves", 0), rejected_moves=data.get("rejected_moves"),
+                 history=data.get("history"))
 
 
 def block_position(board: Board, reason: str, path=BLOCKED_PATH):
