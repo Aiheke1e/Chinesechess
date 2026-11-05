@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from secret_store import SECRET_DIR, unprotect
+from tts_requests import TTSRateLimitError, limited_request
 
 
 RESOURCE_ROOT = Path(r"D:\environment\shuzhiren")
@@ -71,6 +72,8 @@ def _request(endpoint, payload, timeout=45):
     if not status.startswith(b"2"):
         error = data.get("error") or data
         code = str(error.get("code") or error.get("type") or status.decode())[:80]
+        if code in ("Throttling.RateQuota", "Throttling.BurstRate", "limit_requests", "limit_burst_rate"):
+            raise TTSRateLimitError(code, data.get("request_id"))
         raise RuntimeError("百炼语音调用失败：" + code)
     return data
 
@@ -90,7 +93,7 @@ def synthesize(text, voice="Maia"):
     if voice == "Maia":
         payload["input"] = {"text": text, "voice": voice,
                             "language_type": "Chinese"}
-    data = _request(voice_config["endpoint"], payload)
+    data = limited_request(lambda: _request(voice_config["endpoint"], payload))
     audio_url = data.get("output", {}).get("audio", {}).get("url")
     if not audio_url:
         raise RuntimeError("百炼没有返回音频地址")

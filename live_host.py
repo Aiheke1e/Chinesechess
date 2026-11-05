@@ -20,6 +20,7 @@ import winsound
 import wave
 
 from bailian_tts import available_voices, synthesize
+from tts_requests import SynthesisCancelled, synthesis_context
 from glm_client import DEFAULT_MODEL, respond
 from opening_library import load_opening_library
 from commentary_text import (complete_note, connected_move_note, waiting_note,
@@ -387,6 +388,31 @@ class SpeechPipeline:
                 and not ("chess_epoch" in state and getattr(self, "chess_suspended", False))
                 and state.get("chess_epoch", self.chess_epoch) == self.chess_epoch
                 and not self._move_skipped(state))
+
+    def _synthesize(self, text, kind, payload, state):
+        # Sandbox steps used to launch a whole PV's HTTP calls together.
+        # Keep the exact same step receipts, but pace their unsent requests,
+        # prioritise the live move and stop spending requests on stale cues.
+        if self._is_mate(kind, payload):
+            cue = str(payload.get("沙盘步骤") or "")
+            priority = (0, int(cue) + 2 if cue.isdigit() else 1 if cue else 0)
+        elif kind in INTERACTION_SPEECH_KINDS:
+            priority = (1, 0)
+        elif payload.get("_sandbox_cue"):
+            cue = str(payload.get("沙盘步骤") or "")
+            priority = (2, 0) if cue == "intro" else (3, int(cue) if cue.isdigit() else 99)
+        else:
+            priority = (2, 0) if kind in OWN_SPEECH_KINDS else (4, 0)
+        def valid():
+            return (self.settings.speech_enabled and self._state_live(state)
+                    and self._chat_valid(kind, payload)
+                    and time.monotonic() < state.get("deadline", float("inf")))
+        def on_retry(attempt):
+            self.notify("speech_status", f"语音服务限流，正在降低请求频率并重试（{attempt}/2）", payload)
+        if not valid():
+            raise SynthesisCancelled()
+        with synthesis_context(priority=priority, valid=valid, on_retry=on_retry):
+            return self.tts(text, self.settings.voice)
 
     @staticmethod
     def _move_skipped(state):
@@ -763,7 +789,7 @@ class SpeechPipeline:
                 return
             if self.settings.speech_enabled:
                 self.notify("speech_status", "正在预热走棋语音", payload)
-                audio = self.tts(text, self.settings.voice)
+                audio = self._synthesize(text, kind, payload, state)
                 if payload.get("_sandbox_cue") and not audio:
                     self._mark_speech_failed(payload, "沙盘本步语音未生成")
                     return
@@ -792,6 +818,8 @@ class SpeechPipeline:
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
                 {"role": "assistant", "content": text}])
             self.notify("speech_status", "等待下一条内容", payload)
+        except SynthesisCancelled:
+            sandbox_receipt(payload, "cancelled")
         except Exception as error:
             if state.get("approved") is not False and state["epoch"] == self.cancel_epoch:
                 self._mark_speech_failed(payload, str(error)[:200])
@@ -868,10 +896,12 @@ class SpeechPipeline:
                 self.balance.record(kind, min(10, max(2, len(text) / 5)))
                 return
             self.notify("speech_status", "正在生成高优走步语音", payload)
-            audio = self.tts(text, self.settings.voice)
+            audio = self._synthesize(text, kind, payload, state)
             if not self._play_in_turn(audio, payload, state, text, kind, "high"):
                 return
             self._prune_audio(Path(audio).parent)
+        except SynthesisCancelled:
+            pass
         except Exception as error:
             if self._state_live(state):
                 self.notify("error", str(error)[:200], {"kind": kind})
@@ -925,7 +955,7 @@ class SpeechPipeline:
             if not text or state["cancel"].is_set():
                 return
             if self.settings.speech_enabled:
-                audio = self.tts(text, self.settings.voice)
+                audio = self._synthesize(text, kind, payload, state)
             while not state["cancel"].is_set():
                 if state["window"].wait(0.1):
                     break
@@ -947,6 +977,8 @@ class SpeechPipeline:
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
                 {"role": "assistant", "content": text},
             ])
+        except SynthesisCancelled:
+            pass
         except Exception as error:
             if not state["cancel"].is_set():
                 self.notify("error", str(error)[:200], {"kind": kind})
@@ -1040,7 +1072,7 @@ class SpeechPipeline:
                 return
             if self.settings.speech_enabled and not payload.get("测试输入"):
                 self.notify("speech_status", "正在生成百炼语音", payload)
-                audio = self.tts(text, self.settings.voice)
+                audio = self._synthesize(text, kind, payload, state)
                 if kind == "弹幕回复":
                     with self.condition:
                         if self.active_chat_payload is payload:
@@ -1066,6 +1098,8 @@ class SpeechPipeline:
                                      {"role": "assistant", "content": text}])
             self.notify("speech_status", "等待下一条内容", payload)
             self.closed.wait(max(0.0, float(self.settings.cooldown)))
+        except SynthesisCancelled:
+            pass
         except Exception as error:
             if self._state_live(state) and self._chat_valid(kind, payload):
                 self.notify("error", str(error)[:200], {"kind": kind})
