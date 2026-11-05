@@ -451,6 +451,21 @@ def run_game_sandbox(device, board, orientation, plan, token, number, events, ca
                   "speech_deadline": time.monotonic() + 15.0}
         events.emit("game_sandbox", action="end", phase=plan.get("phase"), speech_token=token, **result)
         return result
+    from sandbox_narration import cue_token, prepared, wait_receipt
+    try:
+        with open(LIVE_CFG_PATH, encoding="utf-8") as stream:
+            live = json.load(stream)
+        commentary = bool(live.get("commentary_enabled"))
+        synchronous = commentary and bool(live.get("speech_enabled"))
+    except (OSError, ValueError, AttributeError):
+        commentary = synchronous = False
+    if synchronous and not prepared(cue_token(token, "intro")):
+        # An older desktop process can launch a newer player after an update.
+        # Optional demo audio must be ready BEFORE hiding the real game.
+        result = {"entered": False, "safe_exit": True, "reason": "沙盘分步讲解未就绪，继续实战",
+                  "speech_deadline": time.monotonic() + 15.0}
+        events.emit("game_sandbox", action="end", phase=plan.get("phase"), speech_token=token, **result)
+        return result
     route = plan["route"]
     events.emit("game_sandbox", action="start", reason=plan["reason"], route=route,
                 phase=plan.get("phase"), kind=plan.get("kind"), fen=board.to_fen(), speech_token=token)
@@ -465,15 +480,9 @@ def run_game_sandbox(device, board, orientation, plan, token, number, events, ca
     def entered():
         events.emit("game_sandbox", action="entered", reason=plan["reason"], route=route,
                     phase=plan.get("phase"), kind=plan.get("kind"), speech_token=token, fen=board.to_fen())
-    from sandbox_narration import cue_token, wait_receipt
     requested = set()
-    try:
-        with open(LIVE_CFG_PATH, encoding="utf-8") as stream:
-            synchronous = bool(json.load(stream).get("commentary_enabled"))
-    except (OSError, ValueError, AttributeError):
-        synchronous = False
     def cue(name, *, finish, deadline):
-        if not synchronous:
+        if not commentary:
             return True
         write_runtime_status("sandbox_demo", "正在同步沙盘讲解",
                              details={"own_moves": number, "cue": name})
@@ -482,6 +491,8 @@ def run_game_sandbox(device, board, orientation, plan, token, number, events, ca
             events.emit("game_sandbox", action="cue", cue=name,
                         speech_token=token, deadline=deadline)
             requested.add(name)
+        if not synchronous:
+            return True  # Text-only mode never holds the board for an audio receipt.
         return wait_receipt(cue_token(token, name), finished=finish, deadline=deadline, cancelled=cancelled)
     try:
         result = play_plan(device, board.copy(), orientation, plan, stop_requested=cancelled,

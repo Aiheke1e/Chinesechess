@@ -1275,7 +1275,7 @@ class LiveController:
             self.last_engine_score = score
         if score_type == "mate":
             importance = 10
-            reasons.append("杀棋")
+            reasons.append("防守杀棋" if score < 0 else "杀棋")
         elif score_type == "cp":
             if abs(score) >= 600:
                 if previous is None or abs(previous) < 600:
@@ -1501,6 +1501,12 @@ class LiveController:
         from board import Board
         from game_sandbox import build_plan
         notation = str(event.get("notation") or "")
+        analysis = event.get("analysis") or {}
+        try:
+            if analysis.get("score_type") == "mate" and int(analysis.get("score", 0)) < 0:
+                return None
+        except (TypeError, ValueError):
+            pass
         try:
             board = Board.from_fen(event["fen_before"])
         except (KeyError, ValueError, TypeError):
@@ -1742,6 +1748,7 @@ class LiveController:
             self.last_confirmed_analysis = None
             self.last_commentary_reply = None
             self.last_offline_notice_at = float("-inf")
+            self.defense_level = 0
             return
         if event.get("event") == "game_sandbox":
             action = event.get("action")
@@ -2047,6 +2054,15 @@ class LiveController:
             payload["沙盘起因走法"] = notation
             payload["沙盘战术落点"] = sandtable["target"]
         near_win, forced_win = self._is_near_win(event)
+        analysis = event.get("analysis") or {}
+        try:
+            score = int(analysis.get("score", 0))
+        except (TypeError, ValueError):
+            score = 0
+        defending_mate = analysis.get("score_type") == "mate" and score < 0
+        defense_level = 2 if defending_mate else 1 if analysis.get("score_type") == "cp" and score <= -250 else 0
+        if not defense_level:
+            self.defense_level = 0
         importance, reasons = self._commentary_importance(event)
         evidence = event.get("queen_evidence") or {}
         factual_reasons = list(evidence.get("选择理由") or [])
@@ -2092,10 +2108,18 @@ class LiveController:
                     direct = self._closing_move_text(
                         notation, event.get("number", 0), forced_win, factual_reasons)
             if direct is None and importance >= threshold:
-                direct = continuation or self._synced_move_text(
-                    notation, factual_reasons + reasons,
-                    event.get("number", 0),
-                    sandtable=False, effects=effects)
+                if defense_level:
+                    if defense_level > getattr(self, "defense_level", 0):
+                        message = "对面有连续将杀的路线，咱们先防守。" if defending_mate else "局面吃亏了，咱们得先稳住。"
+                        direct = f"{self._spoken_notation(notation)}，{message}"
+                        self.defense_level = defense_level
+                    else:
+                        direct = self._synced_move_text(notation, factual_reasons, event.get("number", 0))
+                else:
+                    direct = continuation or self._synced_move_text(
+                        notation, factual_reasons + reasons,
+                        event.get("number", 0),
+                        sandtable=False, effects=effects)
             if token:
                 if sandtable:
                     # The move call and sandbox explanation are independent:

@@ -20,6 +20,15 @@ def marker_path(token):
     return MARKERS / (hashlib.sha256(token.encode("utf-8")).hexdigest() + ".json")
 
 
+def prepared(token):
+    """A token-scoped receipt proves this host understands step playback."""
+    try:
+        data = json.loads(marker_path(token).read_text(encoding="utf-8"))
+        return data.get("token") == token and data.get("status") in ("preparing", "started", "finished")
+    except (OSError, ValueError):
+        return False
+
+
 def receipt(payload, status):
     if not payload.get("_sandbox_cue"):
         return False

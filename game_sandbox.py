@@ -114,6 +114,12 @@ def build_plan(notation, analysis, pv_line, executed_ucci, board=None):
     """Verify a tactical PV; complete mate demos run before the real move."""
     if board is None:
         return None
+    try:
+        score = int((analysis or {}).get("score", 0))
+    except (TypeError, ValueError):
+        score = 0
+    if (analysis or {}).get("score_type") == "mate" and score < 0:
+        return None  # Defending a mating attack takes priority over an optional excursion.
     from sandbox_narration import demo_budget, result_note
     probe, route, facts, positions = board.copy(), [], [], []
     own = board.turn
