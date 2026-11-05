@@ -38,7 +38,7 @@ class SandboxPresentationTests(unittest.TestCase):
         board, line, plan = plan_fixture()
         self.assertEqual([item["ucci"] for item in plan["route"]], list(LINE[1:5]))
         self.assertEqual(len(plan["route"]), 4)
-        self.assertIn("对面吃到1枚炮", plan["summary"])
+        self.assertIn("对面吃到一门炮", plan["summary"])
         board.apply(Board.from_ucci(LINE[0]))
         self.assertEqual(len(gs.validated_route(board, plan["route"])), 4)
         text = LiveController._sandbox_speech(plan)

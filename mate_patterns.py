@@ -4,7 +4,7 @@ The 17-name reference catalog follows a community JJ effects collection;
 these are chess-shape rules, not JJ's private recognition or priority rules.
 """
 from board import Board, RED, BLACK
-from notation import move_description
+from notation import move_description, move_notation, PIECE_NAMES
 
 
 PATTERNS = {
@@ -30,10 +30,10 @@ ALIASES = {"列马车": ("立马车",), "铁门栓": ("铁门闩",),
            "对面笑": ("白脸将",), "侧面虎": ("高钓马",)}
 
 MATE_OPENINGS = (
-    ("稳住", "棋友们先别急着庆祝，咱们把最后这段配合看清楚。盯住九宫，哪些路被管住了，关键就在这里。"),
-    ("看棋", "这回先把道理说明白，手上再落子。收尾不是看谁喊得响，得看对面还有没有办法解开。"),
-    ("配合", "棋友们看这里，别光看哪枚子在动。旁边的棋子管住哪些路，也得一块看，这段配合才算看完整。"),
-    ("手稳", "咱们先不喊漂亮，先把这段棋说清楚。最后这一步，看的就是对面还有没有安全的接法。"),
+    ("稳住", "咱们就差最后这一手了。"),
+    ("看棋", "这一手的妙处，得连着将的退路一起看。"),
+    ("配合", "配合到这儿，最后一手可以收口了。"),
+    ("手稳", "最后这一手，看清楚再落。"),
 )
 MATE_PUNCHLINES = {
     "马后炮": "这回的马后炮，可是真有炮在后面撑腰。",
@@ -57,7 +57,7 @@ MATE_PUNCHLINES = {
 }
 
 
-def finisher_copy(name, notation, number=1, *, opening=None, playful=True):
+def finisher_copy(name, notation, number=1, *, opening=None, playful=True, detail=""):
     explanation = PATTERNS.get(name, "几路子力合着把将门收住，挡、吃、挪将都没有解围的路。")
     if opening is None:
         opening = MATE_OPENINGS[(int(number or 1) - 1) % len(MATE_OPENINGS)][1]
@@ -65,8 +65,33 @@ def finisher_copy(name, notation, number=1, *, opening=None, playful=True):
     heading = f"这里有一手{name}。"
     ending = (f"接下来走{spoken}，落下就是困毙，对面无棋可走。" if name == "困毙" else
               f"接下来走{spoken}，这一手落下，就是{name}。")
-    return heading + (opening if playful else "") + explanation + (
+    if not detail:
+        detail = ("不只是将走不了，其他棋子也全没有合法着法，轮到对面只能结束这一盘。" if name == "困毙" else
+                  "这一将之后，挪将、挡子、吃掉进攻的棋子，都找不到合法的解法。")
+    return heading + (opening if playful else "") + explanation + detail + (
         MATE_PUNCHLINES.get(name, "") if playful else "") + ending
+
+
+def _escape_detail(final):
+    """Name concrete king exits controlled in the verified terminal position."""
+    loser, king = final.turn, final.king_pos(final.turn)
+    attacker = RED if loser == BLACK else BLACK
+    if king < 0 or not final.in_check(loser):
+        return ""
+    details = []
+    for move in final.gen_moves(loser, king):
+        if abs(move[0] // 9 - move[1] // 9) + abs(move[0] % 9 - move[1] % 9) != 1:
+            continue
+        probe = final.copy()
+        probe.apply(move)
+        sources = [a for a, b in probe.gen_moves(attacker) if b == move[1]]
+        if sources:
+            piece = PIECE_NAMES[probe.sq[sources[0]]]
+            action = move_notation(final, move, include_side=False)
+            details.append(f"想{action}，那个落点有咱们的{piece}看着。")
+        if len(details) == 2:
+            break
+    return "".join(details)
 
 
 def _between(a, b):
@@ -231,9 +256,10 @@ def build_finisher(event, previous=None, reply=None):
         name = identify_pattern(final, _alternating_rooks(event, previous, reply))
         if not name:
             return None
-        text = finisher_copy(name, notation, event.get("number", 1))
+        detail = _escape_detail(final)
+        text = finisher_copy(name, notation, event.get("number", 1), detail=detail)
         return {"name": name, "notation": notation, "text": text,
-                "terminal_fen": final.to_fen(), "checkmate": final.in_check(final.turn)}
+                "detail": detail, "terminal_fen": final.to_fen(), "checkmate": final.in_check(final.turn)}
     except (KeyError, TypeError, ValueError, AttributeError, IndexError):
         return None
 

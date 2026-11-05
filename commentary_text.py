@@ -69,6 +69,36 @@ def opponent_wait_note(status, number=0, *, playful=True):
     return ""
 
 
+def opponent_capture_note(event, previous=None):
+    """Distinguish a confirmed recapture from an unexplained piece loss."""
+    move = spoken_move(event.get("notation"))
+    captured = move.rsplit("，吃", 1)[-1][:1] if "，吃" in move else ""
+    if not captured:
+        return ""
+    neutral = f"对面{move.split('，吃', 1)[0]}，吃了咱们{piece_amount(captured)}。"
+    if not previous:
+        return neutral
+    try:
+        board = Board.from_fen(previous["fen_before"])
+        first, reply = Board.from_ucci(previous["ucci"]), Board.from_ucci(event["ucci"])
+        taken, ours = board.sq[first[1]], board.sq[first[0]]
+        if not taken or first not in board.legal_moves():
+            return neutral
+        board.apply(first)
+        if reply not in board.legal_moves() or reply[1] != first[1]:
+            return neutral
+        board.apply(reply)
+        observed = Board.from_fen(event["fen"])
+        if observed.sq != board.sq or observed.turn != board.turn:
+            return neutral
+        if taken.upper() == ours.upper():
+            kind = "兵卒" if ours.upper() == "P" else PIECE_NAMES[ours]
+            return f"对面{move.split('，吃', 1)[0]}，吃回{piece_amount(PIECE_NAMES[ours])}，这轮是兑{kind}。"
+        return f"对面吃回{piece_amount(PIECE_NAMES[ours])}，这轮咱们用它换了{piece_amount(PIECE_NAMES[taken])}。"
+    except (KeyError, TypeError, ValueError, IndexError, AttributeError):
+        return neutral
+
+
 def confirmed_win_note(event, last_move):
     """Describe the final tactic only when a confirmed terminal board proves it."""
     if event.get("result") != "won" or event.get("reason") != "no_legal_moves" or not last_move:

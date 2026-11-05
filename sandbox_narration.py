@@ -78,8 +78,12 @@ def wait_receipt(token, *, finished=False, deadline, cancelled):
 
 
 def _pieces(pieces):
-    return "、".join(f"{pieces.count(piece)}枚{PIECE_CN[piece]}"
-                    for piece in dict.fromkeys(pieces))
+    def amount(piece):
+        count = pieces.count(piece)
+        number = "一二三四五六七八九十"[count - 1] if 0 < count <= 10 else str(count)
+        unit = {"R": "辆", "N": "匹", "C": "门"}.get(piece.upper(), "枚")
+        return f"{number}{unit}{PIECE_CN[piece]}"
+    return "、".join(amount(piece) for piece in dict.fromkeys(pieces))
 
 
 def result_note(route, own, mate=False, pattern="组合将杀"):
@@ -88,7 +92,7 @@ def result_note(route, own, mate=False, pattern="组合将杀"):
     ours = [item["capture"] for item in route if item.get("capture") and item.get("side") == own]
     theirs = [item["capture"] for item in route if item.get("capture") and item.get("side") != own]
     if ours and theirs:
-        return f"沿这条变化，咱们吃到{_pieces(ours)}，对面吃到{_pieces(theirs)}。双方的代价都要算进去。"
+        return f"按这条变化，咱们吃到{_pieces(ours)}，对面吃到{_pieces(theirs)}。这段交换，两边的吃子都摆清楚了。"
     if ours:
         return f"沿这条变化，咱们能吃到{_pieces(ours)}。回到实战，看对面怎么接。"
     if theirs:
@@ -119,6 +123,17 @@ def script(plan):
             text = "假设对面" + text
         else:
             text = subject + text
+        if not item.get("illustration"):
+            if item.get("check") and item.get("escape"):
+                text += "，解将反将"
+            elif item.get("check"):
+                text += "，将军"
+            elif item.get("escape"):
+                text += "，先解将"
+            if (index > 1 and item.get("capture") and route[index - 2].get("capture")
+                    and str(item.get("ucci") or "")[2:] == str(route[index - 2].get("ucci") or "")[2:]
+                    and item.get("ucci")):
+                text += "，这是回吃"
         cues[str(index)] = text.rstrip("。") + "。"
     cues["summary"] = plan.get("summary") or result_note(route, own, mate, plan.get("pattern", "组合将杀"))
     return cues

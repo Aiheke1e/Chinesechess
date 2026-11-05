@@ -114,6 +114,13 @@ def _important_attack(board, target, enemy):
     return not _attacked(probe, target, color_of(piece))
 
 
+def _has_defender(board, target):
+    piece = board.sq[target]
+    probe = board.copy()
+    probe.sq[target] = piece.swapcase()
+    return _attacked(probe, target, color_of(piece))
+
+
 def _piece_label(board, index):
     piece = board.sq[index]
     number = file_name(color_of(piece), index % 9).translate(
@@ -137,7 +144,9 @@ def move_effects(board, move):
     before_moves, after_moves = _legal_from(board, origin), _legal_from(after, destination)
     old_targets = {target for _, target in before_moves if board.sq[target]}
     new_targets = [target for _, target in after_moves if after.sq[target] and
-                   after.sq[target].upper() in "RNC" and target not in old_targets]
+                   after.sq[target].upper() in "RNC" and target not in old_targets
+                   and (PIECE_VALUE[piece.upper()] < PIECE_VALUE[after.sq[target].upper()]
+                        or not _has_defender(after, target))]
     if new_targets:
         target = max(new_targets, key=lambda index: PIECE_VALUE[after.sq[index].upper()])
         effects.append(f"{subject}盯住了对面的{_piece_label(after, target)}。")
@@ -148,9 +157,9 @@ def move_effects(board, move):
                  and _attacked(after, target, enemy)}
     if protected:
         target = max(protected, key=lambda index: PIECE_VALUE[after.sq[index].upper()])
-        effects.append(f"{subject}给正在受攻的{_piece_label(after, target)}补上保护。")
+        effects.insert(0, f"{subject}给正在受攻的{_piece_label(after, target)}补上保护。")
     if piece.upper() in "RNC" and _important_attack(board, origin, enemy) and not _attacked(after, destination, enemy):
-        effects.append(f"{subject}避开了对面的攻击。")
+        effects.insert(0, f"{subject}避开了对面的攻击。")
     from_row, to_row = origin // 9, destination // 9
     if piece.upper() == "P" and (from_row == 5 and to_row == 4 if side == RED else from_row == 4 and to_row == 5):
         effects.append(f"{subject}刚过河，之后也能横着走了。")

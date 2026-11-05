@@ -24,7 +24,7 @@ from tts_requests import SynthesisCancelled, synthesis_context
 from glm_client import DEFAULT_MODEL, respond
 from opening_library import load_opening_library
 from commentary_text import (complete_note, connected_move_note, waiting_note,
-                             confirmed_win_note, opponent_wait_note)
+                             confirmed_win_note, opponent_wait_note, opponent_capture_note)
 from sandbox_narration import cue_token, receipt as sandbox_receipt, script as sandbox_script
 from mate_patterns import build_finisher, confirmed_finisher_note, finisher_copy, MATE_OPENINGS
 from chat_selection import ChatSelector, viewer_key
@@ -181,8 +181,22 @@ class SpeechPipeline:
             return True
         recent = [item.get("content", "") for item in list(self.history)[-12:]
                   if item.get("role") == "assistant"]
-        return any(re.sub(r"[\s，。！？、；：,.!?]", "", old) == normalized
-                   for old in recent)
+        effect = re.search(r"(?:盯住了对面的|给正在受攻的|避开了对面的攻击)[^。！？]*", text)
+        key = re.sub(r"[\s，。！？、；：,.!?]", "", effect.group()) if effect else ""
+        return any((cleaned := re.sub(r"[\s，。！？、；：,.!?]", "", old)) == normalized
+                   or key and key in cleaned for old in recent)
+
+    def _without_repeated_effect(self, text, kind, payload):
+        if kind not in ("关键走棋解说", "我方走棋播报", "我方走棋解说"):
+            return text
+        evidence = payload.get("QUEEN式证据") or {}
+        if {"先解除将军", "形成将军"}.intersection(evidence.get("选择理由") or ()):
+            return text
+        for effect in evidence.get("本手作用") or ():
+            phrase = LiveController._effect_phrase(effect).rstrip("。")
+            if phrase and "，" + phrase in text and self._recently_spoken(effect):
+                text = text.replace("，" + phrase, "")
+        return text
     @staticmethod
     def _chess_line_valid(text, kind, payload):
         if kind not in CHESS_SPEECH_KINDS:
@@ -781,6 +795,7 @@ class SpeechPipeline:
                 text = self._complete_chess_text(direct_text, max_chars=160)
             else:
                 text = self._first_person_text(text, payload)
+                text = self._without_repeated_effect(text, kind, payload)
                 text = self.style.decorate(kind, text, payload, self.settings.persona)
                 text = (self._complete_chess_text(text, max_chars=220)
                         if payload.get("绝杀长播报") else self._short_chess_text(text))
@@ -1501,14 +1516,8 @@ class LiveController:
         return None
 
     @classmethod
-    def _important_reply_text(cls, notation):
-        move = cls._spoken_notation(notation)
-        captured = move.rsplit("吃", 1)[-1][:1] if "吃" in move else ""
-        if captured == "车":
-            return "咱们丢了一辆大车，局面得重新算。"
-        if captured:
-            return f"咱们一枚{captured}被吃，得重新盘一下。"
-        return ""
+    def _important_reply_text(cls, notation, event=None, previous=None):
+        return opponent_capture_note({**(event or {}), "notation": notation}, previous)
 
     @staticmethod
     def _kill_confidence(event):
@@ -2013,7 +2022,8 @@ class LiveController:
                 }
             else:
                 self.reply_context = None
-            important_text = self._important_reply_text(notation)
+            important_text = self._important_reply_text(
+                notation, event, getattr(self, "last_confirmed_analysis", None))
             if important_text:
                 # Keep the tactical note visible, but do not let a slow TTS
                 # request for the opponent's previous move spill over our
@@ -2051,7 +2061,7 @@ class LiveController:
             playful = humor_enabled(getattr(getattr(self, "settings", None), "persona", DEFAULT_PERSONA))
             opening = self._speech_flair().pick("绝杀开场", MATE_OPENINGS, required=True) if playful else ""
             finisher["text"] = finisher_copy(finisher["name"], finisher["notation"],
-                event.get("number", 1), opening=opening, playful=playful)
+                event.get("number", 1), opening=opening, playful=playful, detail=finisher.get("detail", ""))
             payload.update({"绝杀长播报": True, "杀法名称": finisher["name"],
                             "我方计划走法": finisher["notation"],
                             "解说对应走法": finisher["notation"]})
