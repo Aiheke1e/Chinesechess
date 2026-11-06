@@ -21,6 +21,7 @@ import wave
 
 from bailian_tts import available_voices, synthesize
 from tts_requests import SynthesisCancelled, synthesis_context
+from live_clock import CLOCK_KIND, GameClockCadence, beijing_now, clock_line, minute_key
 from glm_client import DEFAULT_MODEL, respond
 from opening_library import load_opening_library
 from commentary_text import (complete_note, connected_move_note, waiting_note,
@@ -45,6 +46,7 @@ SPEECH_PREPARING = HERE / "work" / "speech_preparing.json"
 SPEECH_PRIORITY = HERE / "work" / "speech_priority.json"
 SPEECH_SKIPPED = HERE / "work" / "speech_skipped.json"
 CHESS_SPEECH_KINDS = {
+    CLOCK_KIND,
     "我方走棋播报", "我方走棋解说", "对手走棋播报", "对手走棋解说",
     "关键走棋解说", "关键应手解说", "等待期长讲解", "应手预判",
     "开局定式解说", "绝杀长解说",
@@ -403,6 +405,9 @@ class SpeechPipeline:
                 and not (state.get("cancel") and state["cancel"].is_set())
                 and not ("chess_epoch" in state and getattr(self, "chess_suspended", False))
                 and state.get("chess_epoch", self.chess_epoch) == self.chess_epoch
+                and not (state.get("between_games") and self.balance.chess_active)
+                and (not state.get("clock_minute") or state.get("audio_started")
+                     or state["clock_minute"] == minute_key(beijing_now()))
                 and not self._move_skipped(state))
 
     def _synthesize(self, text, kind, payload, state):
@@ -1066,6 +1071,8 @@ class SpeechPipeline:
         state = {"epoch": epoch, "approved": True}
         if kind in CHESS_SPEECH_KINDS:
             state["chess_epoch"] = payload.get("_chess_epoch", 0)
+        if kind == CLOCK_KIND:
+            state.update(between_games=True, deadline=created + 10)
         try:
             if not self._state_live(state) or not self._chat_valid(kind, payload):
                 return
@@ -1076,8 +1083,13 @@ class SpeechPipeline:
             self.notify("speech_status", f"正在组织{kind}话术", payload)
             history = list(self.history) if kind in CHESS_SPEECH_KINDS else []
             style_hint = ({"最近用过的比喻": self.style.topics()} if kind in INTERACTION_SPEECH_KINDS else {})
-            text = direct or payload.get("_grounded_reply") or self.llm(kind, {"主播设定": self.settings.persona, **style_hint, **payload},
-                                      history, model=self.settings.model)
+            if kind == CLOCK_KIND:
+                moment = beijing_now()
+                text = clock_line(moment)
+                state["clock_minute"] = minute_key(moment)
+            else:
+                text = direct or payload.get("_grounded_reply") or self.llm(kind, {"主播设定": self.settings.persona, **style_hint, **payload},
+                                          history, model=self.settings.model)
             text = self._first_person_text(text, payload)[:300]
             text = self.style.decorate(kind, text, payload, self.settings.persona)
             if kind == "弹幕回复":
@@ -1171,6 +1183,7 @@ class LiveController:
         self.last_engine_score = None
         self.opponent_move_count = 0
         self.victory_count = 0
+        self.clock_cadence = GameClockCadence()
         self.quiet_move_count = 0
         self.next_prediction_move = 4
         self.prediction_count = 0
@@ -1787,6 +1800,9 @@ class LiveController:
         if not getattr(getattr(self, "settings", None),
                        "commentary_enabled", True):
             return
+        if not hasattr(self, "clock_cadence"):
+            self.clock_cadence = GameClockCadence()
+        clock_due = self.clock_cadence.observe(event)
         if event.get("event") in ("start", "move_selected", "opponent_move", "game_over"):
             self.opponent_wait_scope = None
             if event.get("event") != "game_over":
@@ -1894,6 +1910,8 @@ class LiveController:
                     direct_text=("对面断线后，这局已经结束了。" if getattr(
                         self, "opponent_disconnected", False) else "这盘已经结束，等下一局棋盘。"))
             self.opponent_disconnected = False
+            if clock_due:
+                self.pipeline.submit(5, CLOCK_KIND, {"已完成盘数": self.clock_cadence.completed})
             return
         notation = str(event.get("notation") or "").strip()
         if event.get("event") == "waiting_for_opponent":
