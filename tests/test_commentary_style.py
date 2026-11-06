@@ -180,6 +180,13 @@ class CommentaryStyleTests(unittest.TestCase):
             for promise in ("下次", "照顾你", "再刷", "赢棋"):
                 self.assertNotIn(promise, text)
 
+    def test_gift_thanks_use_only_the_requested_boss_template(self):
+        style = Mock()
+        self.assertEqual(gift_reply("模型的一大段闲话", {"观众": "阿杰🐵", "礼物": "小心心", "数量": 6}, style),
+                         "感谢阿杰老板送的小心心，谢谢老板。")
+        self.assertEqual(gift_reply("", {"观众": "张老板", "礼物": "玫瑰"}), "感谢张老板送的玫瑰，谢谢老板。")
+        style.pick.assert_not_called()
+
     def test_long_readable_name_is_not_replaced_or_cut_in_welcome_and_gift_thanks(self):
         nickname = "来自直播间的完整观众昵称" * 3
         self.assertEqual(welcome_line(nickname), f"欢迎{nickname}进入直播间。")

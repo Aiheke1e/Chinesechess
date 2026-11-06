@@ -295,6 +295,8 @@ class SpeechPipeline:
             payload = {**payload, "_chess_epoch": getattr(self, "chess_epoch", 0)}
         if kind == "欢迎观众":
             direct_text = welcome_line(payload.get("观众"))
+        elif kind == "礼物答谢":
+            direct_text = gift_reply("", payload)
         with self.condition:
             if (self.closed.is_set() or getattr(self, "suspended", False)
                     or (kind in CHESS_SPEECH_KINDS and getattr(self, "chess_suspended", False))
@@ -667,7 +669,8 @@ class SpeechPipeline:
         if kind == "弹幕回复":
             self._refresh_chat_priority()
         try:
-            self.notify("reply", text, {"kind": kind, **payload})
+            self.notify("reply", text, {"kind": kind, **payload, "_speech_mode": "audio",
+                                        "_speech_seconds": duration})
             self.style.remember(text)
             if acknowledge:
                 self._mark_speech_started(payload)
@@ -823,7 +826,7 @@ class SpeechPipeline:
                     return
                 if payload.get("_sandbox_cue"):
                     self._mark_speech_started(payload)
-                self.notify("reply", text, {"kind": kind, **payload})
+                self.notify("reply", text, {"kind": kind, **payload, "_speech_mode": "text"})
                 if payload.get("_sandbox_cue"):
                     self._mark_speech_finished(payload)
                 self.balance.record(kind, min(10, max(2, len(text) / 5)))
@@ -906,7 +909,7 @@ class SpeechPipeline:
             if not self.settings.speech_enabled:
                 if not self._wait_turn(kind, payload, state):
                     return
-                self.notify("reply", text, {"kind": kind, **payload})
+                self.notify("reply", text, {"kind": kind, **payload, "_speech_mode": "text"})
                 self.notify("speech_status", "高优走步仅显示文本", payload)
                 self.balance.record(kind, min(10, max(2, len(text) / 5)))
                 return
@@ -984,7 +987,7 @@ class SpeechPipeline:
             else:
                 if not self._wait_turn(kind, payload, state):
                     return
-                self.notify("reply", text, {"kind": kind, **payload})
+                self.notify("reply", text, {"kind": kind, **payload, "_speech_mode": "text"})
                 self.style.remember(text)
                 self.notify("speech_status", f"{kind}仅显示文本", payload)
                 self.balance.record(kind, min(10, max(2, len(text) / 5)))
@@ -1103,7 +1106,7 @@ class SpeechPipeline:
                             self.chat_ready = True
                 if not self._wait_turn(kind, payload, state):
                     return
-                self.notify("reply", text, {"kind": kind, **payload})
+                self.notify("reply", text, {"kind": kind, **payload, "_speech_mode": "text"})
                 self.balance.record(kind, min(10, max(2, len(text) / 5)))
                 self.style.remember(text)
                 self.notify("speech_status", "仅文本模式：未调用 TTS", payload)
@@ -1112,7 +1115,8 @@ class SpeechPipeline:
                 self.history.extend([{"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
                                      {"role": "assistant", "content": text}])
             self.notify("speech_status", "等待下一条内容", payload)
-            self.closed.wait(max(0.0, float(self.settings.cooldown)))
+            if kind != "弹幕回复":
+                self.closed.wait(max(0.0, float(self.settings.cooldown)))
         except SynthesisCancelled:
             pass
         except Exception as error:
@@ -1138,7 +1142,13 @@ class SpeechPipeline:
         self.closed.set()
         with self.condition:
             self.condition.notify_all()
-        winsound.PlaySound(None, winsound.SND_PURGE)
+        # Let the cancelled playback owner leave its critical section before
+        # returning. Otherwise its delayed purge can cut a new pipeline's clip.
+        if self.playback_lock.acquire(timeout=1):
+            try:
+                winsound.PlaySound(None, winsound.SND_PURGE)
+            finally:
+                self.playback_lock.release()
 
     @staticmethod
     def stop_audio():

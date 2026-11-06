@@ -128,15 +128,16 @@ class IndependentFeatureTests(unittest.TestCase):
         release = threading.Event()
         self.release.append(release)
         spoken = []
-        def llm(*args, **kwargs):
-            generating.set()
-            release.wait(2)
-            return "谢谢小王的小心心。"
+        def tts(text, voice):
+            if "小心心" in text:
+                generating.set()
+                release.wait(2)
+            return text + ".wav"
         def notify(kind, text, data):
             if kind == "reply":
                 spoken.append(data["kind"])
                 heard.set()
-        pipeline = self.make_pipeline(notify, llm)
+        pipeline = self.make_pipeline(notify, tts=tts)
         original = pipeline._run_job
         def run(job):
             try:

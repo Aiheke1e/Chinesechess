@@ -119,25 +119,20 @@ class InteractionPriorityTests(unittest.TestCase):
         self.pipelines.append(pipeline)
         return pipeline
 
-    def test_chat_generation_bypasses_an_inflight_gift_model_request(self):
-        gift_started, release, chat_heard = (threading.Event() for _ in range(3))
-        def llm(kind, *args, **kwargs):
-            if kind == "礼物答谢":
-                gift_started.set()
-                release.wait(2)
-                return "谢谢礼物。"
-            return "当前弹幕的回复。"
+    def test_gift_thanks_need_no_model_and_next_chat_can_continue(self):
+        gift_heard, chat_heard = threading.Event(), threading.Event()
+        llm = Mock(return_value="当前弹幕的回复。")
         def notify(kind, text, data):
-            if kind == "reply" and data["kind"] == "弹幕回复": chat_heard.set()
+            if kind == "reply":
+                (gift_heard if data["kind"] == "礼物答谢" else chat_heard).set()
         pipeline = self.pipeline(notify, llm)
         with patch.object(pipeline, "_audio_duration", return_value=.01):
-            try:
-                pipeline.submit(0, "礼物答谢", {"观众": "送礼观众"})
-                self.assertTrue(gift_started.wait(1))
-                pipeline.submit(9, "弹幕回复", {"观众": "小王", "弹幕": "主播晚上好"})
-                self.assertTrue(chat_heard.wait(.5))
-            finally:
-                release.set()
+            pipeline.submit(0, "礼物答谢", {"观众": "送礼观众", "礼物": "小心心"})
+            self.assertTrue(gift_heard.wait(1))
+            llm.assert_not_called()
+            pipeline.submit(9, "弹幕回复", {"观众": "小王", "弹幕": "主播晚上好"})
+            self.assertTrue(chat_heard.wait(.5))
+            self.assertEqual(llm.call_count, 1)
 
     def test_chat_preempts_an_ordinary_move_audio(self):
         move_heard, chat_heard = threading.Event(), threading.Event()
@@ -254,6 +249,23 @@ class InteractionPriorityTests(unittest.TestCase):
             self.assertFalse(chat_heard.wait(.04))
             self.assertTrue(chat_heard.wait(1))
             self.assertFalse(any(call.args[0] is None for call in self.sound.call_args_list))
+
+    def test_close_waits_for_cancelled_audio_cleanup_before_the_next_pipeline(self):
+        heard, cleaned = threading.Event(), threading.Event()
+        pipeline = self.pipeline(lambda kind, *args: heard.set() if kind == "reply" else None)
+        original = pipeline._play_synced_audio
+        def play(*args, **kwargs):
+            try:
+                return original(*args, **kwargs)
+            finally:
+                # Make the old owner's late native cleanup deterministic.
+                time.sleep(.04)
+                cleaned.set()
+        with patch.object(pipeline, "_audio_duration", return_value=10), patch.object(pipeline, "_play_synced_audio", side_effect=play):
+            pipeline.submit(3, "弹幕回复", {"观众": "小王", "弹幕": "主播下午好"})
+            self.assertTrue(heard.wait(1))
+            pipeline.close()
+            self.assertTrue(cleaned.is_set())
 
     def test_skipped_move_is_not_spoken_after_its_tts_finishes(self):
         heard, ready, done = threading.Event(), threading.Event(), threading.Event()

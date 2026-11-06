@@ -88,19 +88,8 @@ def spoken_reply(text, limit=55, payload=None):
 
 
 def gift_reply(text, payload, style=None):
-    """Keep actual sender/gift details and remove promises or gift solicitation."""
-    name = viewer_address(payload.get("观众")) or "朋友"
+    """Fixed thanks using the real sender and gift; no model or extra patter."""
+    name = viewer_address(payload.get("观众"))
     gift = " ".join(str(payload.get("礼物") or "心意").split())
-    cleaned = re.sub(r"\[[^\]\n]{1,12}\]|【[^】\n]{1,12}】", "", str(text))
-    cleaned = re.sub(r"[\U0001f000-\U0001faff\u2600-\u27ff\ufe0f\u200d\r\n*_#`]", "", cleaned).strip()
-    promises = r"下次|再刷|再送|多刷|继续送|回礼|好好照顾|保赢|稳赢|送你|给你|替你"
-    if (name in cleaned and gift in cleaned and len(cleaned) <= 35
-            and not re.search(promises, cleaned)):
-        return cleaned
-    base = f"谢谢{name}送的{gift}。"
-    options = (("戏台", "心意收到，笑容也安排上了。"),
-               ("上班", "谢意到位，主播精神也到位。"),
-               ("音量", "心意收到，开心这声报响点。"),
-               ("财务", "这份心意，记在小本本上啦。"))
-    joke = style.pick("礼物答谢", options, required=True) if style else options[0][1]
-    return base + joke if len(base + joke) <= 35 else base
+    boss = name if name.endswith("老板") else name + "老板"
+    return f"感谢{boss}送的{gift}，谢谢老板。"

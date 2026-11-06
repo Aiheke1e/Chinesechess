@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 from chat_selection import ChatSelector
 from control_panel import ControlPanel
-from live_host import LiveController, LiveSettings
+from live_host import LiveController, LiveSettings, SpeechPipeline
 from room_feed import room_message_entry
 from stream_brand import AREA_A_TITLE, DEFAULT_AVATAR, AVATAR_PRESETS
 
@@ -203,6 +203,91 @@ class RoomFeedUITests(unittest.TestCase):
         self.panel._poll()
         self.assertEqual(self.panel.interaction_user.get(), "")
         self.assertEqual(self.panel.interaction_message.get(), "")
+
+    def test_audio_completion_clears_name_comment_and_avatar_immediately(self):
+        first = {"kind": "弹幕回复", "观众": "🍊真实昵称", "弹幕": "主播下午好", "互动标识": "one",
+                 "_speech_mode": "audio", "_speech_seconds": 15}
+        self.panel._receive_live_event({"kind": "reply", "text": "下午好。", "data": first})
+        self.panel._poll()
+        self.root.update_idletasks()
+        self.assertEqual(self.panel.interaction_user.get(), "🍊真实昵称")
+        self.assertEqual(self.panel.interaction_message.get(), "主播下午好")
+        self.assertEqual(self.panel.broadcast_view.avatar_label.winfo_manager(), "pack")
+        # Raw comments, gift events and generation status do not change the
+        # selected comment while its audio is still playing.
+        for kind, data in (("room_message", {"type": "gift", "user": "小李", "gift": "玫瑰", "count": 3}),
+                           ("queued", {"kind": "弹幕回复", "观众": "小李", "弹幕": "下一条"})):
+            self.panel._receive_live_event({"kind": kind, "data": data})
+        self.panel._poll()
+        self.assertEqual(self.panel.interaction_user.get(), "🍊真实昵称")
+        self.panel._receive_live_event({"kind": "interaction_done", "data": {"互动标识": "one", "completed": True}})
+        self.panel._poll()
+        self.root.update_idletasks()
+        self.assertEqual(self.panel.interaction_user.get(), "")
+        self.assertEqual(self.panel.interaction_message.get(), "")
+        self.assertEqual(self.panel.broadcast_view.avatar_label.winfo_manager(), "")
+
+    def test_old_text_clear_callback_cannot_erase_the_next_actual_reply(self):
+        first = {"观众": "小王", "弹幕": "文本回复", "互动标识": "text-one", "_speech_mode": "text"}
+        self.panel._show_current_interaction(first)
+        with patch.object(self.root, "after", return_value="text-clear") as after:
+            self.panel._finish_current_interaction({"互动标识": "text-one", "completed": True})
+        self.assertGreater(after.call_args.args[0], 5000)
+        callback = after.call_args.args[1]
+        self.panel._show_current_interaction({"观众": "小李", "弹幕": "真实新弹幕", "互动标识": "audio-two", "_speech_mode": "audio"})
+        callback()
+        self.assertEqual(self.panel.interaction_user.get(), "小李")
+        self.assertEqual(self.panel.interaction_message.get(), "真实新弹幕")
+
+    def test_gift_audio_cannot_keep_the_previous_comment_on_screen(self):
+        self.panel._show_current_interaction({"观众": "小王", "弹幕": "上一条", "互动标识": "one", "_speech_mode": "audio"})
+        self.panel._receive_live_event({"kind": "reply", "text": "感谢小李老板送的玫瑰，谢谢老板。", "data": {
+            "kind": "礼物答谢", "观众": "小李", "礼物": "玫瑰", "_speech_mode": "audio"}})
+        self.panel._poll()
+        self.assertEqual(self.panel.interaction_user.get(), "")
+        self.assertEqual(self.panel.interaction_message.get(), "")
+
+    def test_three_consecutive_audio_replies_update_and_clear_the_actual_preview(self):
+        started, finished = threading.Event(), threading.Event()
+        spoken = []
+        def notify(kind, text, data):
+            self.panel._receive_live_event({"kind": kind, "text": text, "data": data})
+            if kind == "reply":
+                spoken.append((text, dict(data)))
+                started.set()
+            elif kind == "interaction_done":
+                finished.set()
+        with patch("live_host.winsound.PlaySound"), patch.object(SpeechPipeline, "_audio_duration", return_value=.35), patch.object(
+                SpeechPipeline, "_write_speech_marker"):
+            pipeline = SpeechPipeline(LiveSettings(speech_enabled=True, cooldown=5), notify,
+                llm=lambda *args, **kwargs: "收到你的这条弹幕了。", tts=Mock(return_value="reply.wav"))
+            self.controller.enabled = True
+            self.controller.pipeline = pipeline
+            try:
+                for index, (user, message) in enumerate((("阿杰🐵", "主播下午好"), ("小李", "今天声音挺清楚"), ("小王", "这套头像很可爱"))):
+                    started.clear(); finished.clear()
+                    identity = f"real-{index}"
+                    self.assertTrue(pipeline.submit(3, "弹幕回复", {"观众": user, "弹幕": message, "互动标识": identity}))
+                    self.assertTrue(started.wait(1))
+                    self.panel._poll()
+                    self.assertEqual(self.panel.interaction_id, identity)
+                    self.assertEqual(self.panel.interaction_user.get(), user)
+                    self.assertEqual(self.panel.interaction_message.get(), message)
+                    self.assertEqual(spoken[-1][1]["_speech_mode"], "audio")
+                    self.assertEqual(spoken[-1][1]["弹幕"], message)
+                    self.assertFalse(finished.is_set())
+                    # Completion follows the audio, without the generic five
+                    # second job cooldown keeping a stale comment on screen.
+                    self.assertTrue(finished.wait(1))
+                    self.panel._poll()
+                    self.assertEqual(self.panel.interaction_user.get(), "")
+                    self.assertEqual(self.panel.interaction_message.get(), "")
+                    with pipeline.condition:
+                        self.assertTrue(pipeline.condition.wait_for(lambda: not pipeline.active_chat, timeout=1))
+                self.assertEqual(len(spoken), 3)
+                self.assertEqual(pipeline.tts.call_count, 3)
+            finally:
+                pipeline.close()
 
     def test_all_stateful_options_use_the_same_switch_group(self):
         self.assertEqual(len(self.panel.toggle_widgets), 10)

@@ -7,6 +7,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 from collections import deque
 from datetime import datetime
@@ -1554,10 +1555,50 @@ class ControlPanel:
         self._sync_interaction_button()
 
     def _reset_interaction_display(self):
+        self._cancel_interaction_clear()
+        self._interaction_display_generation = getattr(self, "_interaction_display_generation", 0) + 1
         self.interaction_id = None
         if hasattr(self, "interaction_user"):
             self.interaction_user.set("")
             self.interaction_message.set("")
+
+    def _cancel_interaction_clear(self):
+        job = getattr(self, "_interaction_display_job", None)
+        self._interaction_display_job = None
+        if job is not None:
+            try:
+                self.root.after_cancel(job)
+            except tk.TclError:
+                pass
+
+    def _show_current_interaction(self, data):
+        self._cancel_interaction_clear()
+        self._interaction_display_generation = getattr(self, "_interaction_display_generation", 0) + 1
+        self.interaction_id = data.get("互动标识")
+        self._interaction_display_started = time.monotonic()
+        self._interaction_display_audio = data.get("_speech_mode") == "audio"
+        self.interaction_state.set("正在互动")
+        self.interaction_user.set(str(data.get("观众") or "观众"))
+        self.interaction_message.set(str(data.get("弹幕") or ""))
+
+    def _finish_current_interaction(self, data):
+        if self.interaction_id is None or data.get("互动标识") != self.interaction_id:
+            return
+        self.interaction_state.set("互动已暂停" if not self.live_controller.enabled else (
+            "已回复 · 自动抽选中" if data.get("completed") else "互动已中断"))
+        if not data.get("completed") or getattr(self, "_interaction_display_audio", False):
+            self._reset_interaction_display()
+            return
+        self._cancel_interaction_clear()
+        identity = self.interaction_id
+        generation = getattr(self, "_interaction_display_generation", 0)
+        # Audio clears at completion; text-only tests need a short read window.
+        elapsed = time.monotonic() - getattr(self, "_interaction_display_started", time.monotonic())
+        delay = max(.1, 6 - elapsed)
+        def clear_finished():
+            if identity == self.interaction_id and generation == getattr(self, "_interaction_display_generation", 0):
+                self._reset_interaction_display()
+        self._interaction_display_job = self.root.after(round(delay * 1000), clear_finished)
 
     def toggle_live_speech(self):
         if not self.save_live_settings(quiet=True):
@@ -2466,15 +2507,7 @@ class ControlPanel:
                             f"弹幕 {stats.get('chat_rate', 0):g} 条/秒")
                         self._queue_monitor()
                     elif kind == "interaction_done":
-                        data = record.get("data") or {}
-                        if data.get("互动标识") == self.interaction_id:
-                            self.interaction_state.set("互动已暂停" if not self.live_controller.enabled else (
-                                "已回复 · 自动抽选中" if data.get("completed")
-                                else "互动已中断"))
-                            # Keep the selected comment readable after playback.
-                            # Only the next reply's actual start replaces it.
-                            if not data.get("completed"):
-                                self._reset_interaction_display()
+                        self._finish_current_interaction(record.get("data") or {})
                     elif kind == "speech_status":
                         self.speech_status.set(text)
                     elif kind == "error":
@@ -2485,10 +2518,9 @@ class ControlPanel:
                         current_interaction = ("_chat_epoch" not in data or
                             data["_chat_epoch"] == self.live_controller.pipeline.chat_epoch)
                         if data.get("kind") == "弹幕回复" and current_interaction:
-                            self.interaction_id = data.get("互动标识")
-                            self.interaction_state.set("正在互动")
-                            self.interaction_user.set(str(data.get("观众") or "观众"))
-                            self.interaction_message.set(str(data.get("弹幕") or ""))
+                            self._show_current_interaction(data)
+                        elif data.get("_speech_mode") == "audio" and current_interaction:
+                            self._reset_interaction_display()
                         self.append_speech(record)
 
                 else:
@@ -2503,6 +2535,7 @@ class ControlPanel:
 
     def close(self):
         self.closing = True
+        self._cancel_interaction_clear()
         self._cancel_scheduled_prepare()
         self._publish_auto_continue(False)
         self.task_cancel.set()
