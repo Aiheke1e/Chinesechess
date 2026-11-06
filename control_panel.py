@@ -1292,7 +1292,7 @@ class ControlPanel:
             label = "对手应手"
         if kind == "沙盘推演解说" and data.get("沙盘步骤"):
             cue = str(data["沙盘步骤"])
-            label += " · " + {"intro": "看点", "summary": "结果"}.get(cue, f"第{cue}步")
+            label += " · " + {"question": "互动提问", "intro": "看点", "summary": "结果"}.get(cue, f"第{cue}步")
         if kind in ("弹幕回复", "礼物答谢", "欢迎观众") and data.get("观众"):
             label += " · " + str(data["观众"])
         # Provenance belongs to this speech job, never to the newer live board.

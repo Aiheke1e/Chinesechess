@@ -458,7 +458,7 @@ def run_game_sandbox(device, board, orientation, plan, token, number, events, ca
                   "speech_deadline": time.monotonic() + 15.0}
         events.emit("game_sandbox", action="end", phase=plan.get("phase"), speech_token=token, **result)
         return result
-    from sandbox_narration import cue_token, prepared, wait_receipt
+    from sandbox_narration import cue_token, prepared, question_budget, wait_receipt
     try:
         with open(LIVE_CFG_PATH, encoding="utf-8") as stream:
             live = json.load(stream)
@@ -502,9 +502,20 @@ def run_game_sandbox(device, board, orientation, plan, token, number, events, ca
             return True  # Text-only mode never holds the board for an audio receipt.
         return wait_receipt(cue_token(token, name), finished=finish, deadline=deadline, cancelled=cancelled)
     try:
-        result = play_plan(device, board.copy(), orientation, plan, stop_requested=cancelled,
-                           on_step=step, on_enter=entered, on_cue=cue,
-                           max_seconds=plan.get("max_seconds"))
+        max_seconds = plan.get("max_seconds")
+        scene_seconds = (question_budget(cue_token(token, "question"))
+                         if commentary and plan.get("kind") == "tactic" else None)
+        result = None
+        if scene_seconds is not None:
+            started = time.monotonic()
+            question_finished = cue("question", finish=True, deadline=started + min(8, scene_seconds))
+            max_seconds = scene_seconds - (time.monotonic() - started)
+            if not question_finished or cancelled() or max_seconds < 3:
+                result = {"entered": False, "safe_exit": True, "reason": "互动提问已取消，跳过本次沙盘"}
+        if result is None:
+            result = play_plan(device, board.copy(), orientation, plan, stop_requested=cancelled,
+                               on_step=step, on_enter=entered, on_cue=cue,
+                               max_seconds=max_seconds)
     except Exception as error:
         result = {"entered": False, "safe_exit": False, "reason": "沙盘异常，未确认返回实战"}
         capture_diagnostic(device, "sandbox_demo_error", extra={"error": str(error), "fen": board.to_fen()})

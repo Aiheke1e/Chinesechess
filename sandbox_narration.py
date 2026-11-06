@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import threading
 import time
+from collections import Counter
 
 from board import PIECE_CN
 
@@ -29,6 +30,19 @@ def prepared(token):
         return False
 
 
+def question_budget(token):
+    """Only this move's prepared question may request a pre-entry scene."""
+    try:
+        data = json.loads(marker_path(token).read_text(encoding="utf-8"))
+        budget = float(data.get("scene_seconds", 0))
+        if (data.get("token") == token and data.get("status") in ("preparing", "started", "finished")
+                and 5 <= budget <= 30):
+            return budget
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
+
+
 def receipt(payload, status):
     if not payload.get("_sandbox_cue"):
         return False
@@ -39,8 +53,10 @@ def receipt(payload, status):
     temporary = path.with_name(f"{path.name}.{threading.get_ident()}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary.write_text(json.dumps({"token": token, "status": status,
-                                         "created": time.time()}), encoding="utf-8")
+        data = {"token": token, "status": status, "created": time.time()}
+        if payload.get("沙盘步骤") == "question" and payload.get("_sandbox_scene_seconds"):
+            data["scene_seconds"] = payload["_sandbox_scene_seconds"]
+        temporary.write_text(json.dumps(data), encoding="utf-8")
         for attempt in range(12):
             try:
                 os.replace(temporary, path)
@@ -107,7 +123,13 @@ def script(plan):
     mate = plan.get("kind") == "mate"
     intro = (f"看这路{plan.get('pattern', '组合将杀')}，摆到吃将收尾。" if mate else
              f"看这段{plan.get('reason', '关键接法')}，咱们摆到结果。")
-    cues = {"intro": intro}
+    scene = plan.get("audience_scene") if not mate else None
+    cues = {}
+    if scene:
+        cues["question"] = scene["question"]
+        intro = (f"如果想到吃{scene['lead_piece']}，咱们就摆这条线。" if scene["variant"] % 2 == 0 else
+                 f"{scene['lead_move']}，咱们往后看。")
+    cues["intro"] = intro
     first_side = (route[0].get("side") or ("r" if str(route[0].get("notation", "")).startswith("红方") else "b")) if route else "r"
     own = plan.get("own") or (first_side if plan.get("phase") == "before_move" else "b" if first_side == "r" else "r")
     for index, item in enumerate(route, 1):
@@ -119,6 +141,10 @@ def script(plan):
         subject = "咱们" if side == own else "对面"
         if item.get("illustration"):
             text = "最后摆一步，" + text
+        elif scene and side != own:
+            text = "要是对面" + text
+        elif scene and side == own and any(previous.get("side") == own for previous in route[:index - 1]):
+            text = "那咱们" + text
         elif index == 1 and side != own:
             text = "假设对面" + text
         else:
@@ -136,11 +162,28 @@ def script(plan):
                 text += "，这是回吃"
         cues[str(index)] = text.rstrip("。") + "。"
     cues["summary"] = plan.get("summary") or result_note(route, own, mate, plan.get("pattern", "组合将杀"))
+    if scene:
+        ours = [item["capture"] for item in route if item.get("capture") and item.get("side") == own]
+        theirs = [item["capture"] for item in route if item.get("capture") and item.get("side") != own]
+        our_counts = Counter(piece.upper() for piece in ours)
+        their_counts = Counter(piece.upper() for piece in theirs)
+        if our_counts == their_counts and len(our_counts) == 1:
+            kind = next(iter(our_counts))
+            facts = f"这是兑{PIECE_CN[kind]}，双方各少{_pieces(ours)}。"
+        else:
+            facts = f"咱们拿{_pieces(ours)}，对面拿{_pieces(theirs)}。"
+        praise = (("妙在后手。", "漂亮，后续才是看点。", "这一下有高手味儿。", "妙，后面的接法也算到了。") if scene["profitable"] else
+                  ("高手看的是后手。", "来回的代价都要算。", "看全这条线，才有高手味儿。", "交换的账要算完整。"))
+        cues["summary"] = facts + praise[scene["variant"] % len(praise)]
     return cues
 
 
 def demo_budget(plan):
     """Include speech, ADB/animation overhead and a visible final position."""
+    if plan.get("audience_scene") and plan.get("kind") != "mate":
+        # Questions share the ordinary cap.  Real TTS pauses make the compact
+        # exchange longer than a plain character-count estimate suggests.
+        return 30
     cues = script(plan)
     seconds = len(plan.get("route") or []) * 1.9 + sum(len(t) for t in cues.values()) / 6 + 3
     return min(42 if plan.get("kind") == "mate" else 30, max(12, seconds))

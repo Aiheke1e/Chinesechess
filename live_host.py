@@ -22,6 +22,7 @@ import wave
 from bailian_tts import available_voices, synthesize
 from tts_requests import SynthesisCancelled, synthesis_context
 from live_clock import CLOCK_KIND, GameClockCadence, beijing_now, clock_line, minute_key
+from audience_scene import AudienceSceneDirector
 from glm_client import DEFAULT_MODEL, respond
 from opening_library import load_opening_library
 from commentary_text import (complete_note, connected_move_note, waiting_note,
@@ -428,7 +429,7 @@ class SpeechPipeline:
             priority = (1, 0)
         elif payload.get("_sandbox_cue"):
             cue = str(payload.get("沙盘步骤") or "")
-            priority = (2, 0) if cue == "intro" else (3, int(cue) if cue.isdigit() else 99)
+            priority = (2, 0) if cue in ("intro", "question") else (3, int(cue) if cue.isdigit() else 99)
         else:
             priority = (2, 0) if kind in OWN_SPEECH_KINDS else (4, 0)
         def valid():
@@ -1196,6 +1197,7 @@ class LiveController:
         self.opponent_move_count = 0
         self.victory_count = 0
         self.clock_cadence = GameClockCadence()
+        self.audience_scenes = AudienceSceneDirector()
         self.quiet_move_count = 0
         self.next_prediction_move = 4
         self.prediction_count = 0
@@ -1621,6 +1623,7 @@ class LiveController:
             "phase": plan.get("phase", "after_move"),
             "own": plan.get("own", board.turn),
             "summary": plan.get("summary"),
+            "max_seconds": plan.get("max_seconds"),
             "review_seconds": 6.5,
             "speech_token": event.get("speech_token"),
         }
@@ -1668,6 +1671,7 @@ class LiveController:
             self.pipeline.prepare_move("沙盘推演解说", {
                 **payload, "speech_token": segment, "_sandbox_cue": True,
                 "沙盘步骤": cue,
+                "_sandbox_scene_seconds": plan.get("scene_seconds") if cue == "question" else None,
             }, direct_text=text, replace_older=index == 0)
         self.sandbox_speech_by_move[token] = mapping
 
@@ -1886,6 +1890,8 @@ class LiveController:
                         f"JJ游戏沙盘已跳过：{event.get('reason', '界面未确认')}")
             return
         if event.get("event") == "game_over":
+            if hasattr(self, "audience_scenes"):
+                self.audience_scenes.end_game()
             last_move = getattr(self, "last_confirmed_analysis", None)
             win_note = (confirmed_finisher_note(event, last_move)
                         or confirmed_win_note(event, last_move))
@@ -2129,6 +2135,14 @@ class LiveController:
         sandtable = (self._sandtable_plan(event)
                      if getattr(getattr(self, "settings", None),
                                 "sandtable_enabled", True) else None)
+        if getattr(self, "enabled", False):
+            if not hasattr(self, "audience_scenes"):
+                self.audience_scenes = AudienceSceneDirector()
+            scene = self.audience_scenes.choose(event, sandtable)
+            if scene:
+                from sandbox_narration import demo_budget
+                sandtable = {**sandtable, "audience_scene": scene}
+                sandtable["scene_seconds"] = demo_budget(sandtable)
         if sandtable:
             if sandtable.get("phase") == "before_move" and event.get("speech_token"):
                 self.commentary_analyses[event["speech_token"]]["_pre_move_demo"] = True
