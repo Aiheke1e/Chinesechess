@@ -101,11 +101,6 @@ class BroadcastView(SoftCard):
         self.comment_text.yview_moveto(0)
 
     def _schedule_layout(self, *_):
-        if any(variable.get() for variable in self._variables):
-            if not self.avatar_label.winfo_manager():
-                self.avatar_label.pack(side="left", padx=(0, 14), anchor="center", before=self.comment_text)
-        else:
-            self.avatar_label.pack_forget()
         self._render_comment()
         if self._layout_job is None:
             self._layout_job = self.after_idle(self._fit_message)

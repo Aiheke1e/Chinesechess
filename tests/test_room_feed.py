@@ -204,7 +204,10 @@ class RoomFeedUITests(unittest.TestCase):
         self.assertEqual(self.panel.interaction_user.get(), "")
         self.assertEqual(self.panel.interaction_message.get(), "")
 
-    def test_audio_completion_clears_name_comment_and_avatar_immediately(self):
+    def test_avatar_stays_visible_before_during_and_after_the_reply(self):
+        self.assertEqual(self.panel.interaction_user.get(), "")
+        self.assertEqual(self.panel.interaction_message.get(), "")
+        self.assertEqual(self.panel.broadcast_view.avatar_label.winfo_manager(), "pack")
         first = {"kind": "弹幕回复", "观众": "🍊真实昵称", "弹幕": "主播下午好", "互动标识": "one",
                  "_speech_mode": "audio", "_speech_seconds": 15}
         self.panel._receive_live_event({"kind": "reply", "text": "下午好。", "data": first})
@@ -225,7 +228,7 @@ class RoomFeedUITests(unittest.TestCase):
         self.root.update_idletasks()
         self.assertEqual(self.panel.interaction_user.get(), "")
         self.assertEqual(self.panel.interaction_message.get(), "")
-        self.assertEqual(self.panel.broadcast_view.avatar_label.winfo_manager(), "")
+        self.assertEqual(self.panel.broadcast_view.avatar_label.winfo_manager(), "pack")
 
     def test_old_text_clear_callback_cannot_erase_the_next_actual_reply(self):
         first = {"观众": "小王", "弹幕": "文本回复", "互动标识": "text-one", "_speech_mode": "text"}
