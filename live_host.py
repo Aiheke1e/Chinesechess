@@ -24,6 +24,7 @@ from tts_requests import SynthesisCancelled, synthesis_context
 from live_clock import CLOCK_KIND, GameClockCadence, beijing_now, clock_line, minute_key
 from audience_scene import AudienceSceneDirector
 from sandbox_story import SandboxStory
+from broadcast_flow import BroadcastFlow, GAP_KIND, TRANSITION_KINDS
 from glm_client import DEFAULT_MODEL, respond
 from opening_library import load_opening_library
 from commentary_text import (complete_note, connected_move_note, waiting_note,
@@ -53,6 +54,7 @@ CHESS_SPEECH_KINDS = {
     "关键走棋解说", "关键应手解说", "等待期长讲解", "应手预判",
     "开局定式解说", "绝杀长解说",
     "沙盘推演解说", "QUEEN式等待期解说", "收官解说", "获胜收官", "结算收官", "对手状态解说",
+    "新局开场", GAP_KIND,
 }
 INTERACTION_SPEECH_KINDS = {"弹幕回复", "欢迎观众", "礼物答谢"}
 OWN_SPEECH_KINDS = {
@@ -336,7 +338,7 @@ class SpeechPipeline:
             # move replace stale chess play-by-play.
             if kind in OWN_SPEECH_KINDS:
                 self.jobs = [job for job in self.jobs
-                             if job[4] not in CHESS_SPEECH_KINDS]
+                             if job[4] not in CHESS_SPEECH_KINDS or job[4] in TRANSITION_KINDS]
                 heapq.heapify(self.jobs)
             heapq.heappush(self.jobs, (
                 -1 if self._is_mate(kind, payload) else max(2, priority),
@@ -402,6 +404,11 @@ class SpeechPipeline:
             return True
         if self._mate_busy():
             return False
+        if kind not in TRANSITION_KINDS and kind in CHESS_SPEECH_KINDS:
+            with self.condition:
+                if (getattr(self, "active_kind", None) in TRANSITION_KINDS
+                        or any(job[4] in TRANSITION_KINDS for job in self.jobs)):
+                    return False
         if kind in INTERACTION_SPEECH_KINDS:
             return (self.balance.can_chat() or (getattr(self, "audio_active", False)
                     and self.balance.chat_may_finish()
@@ -413,8 +420,13 @@ class SpeechPipeline:
                 and not self.closed.is_set() and not getattr(self, "suspended", False)
                 and not (state.get("cancel") and state["cancel"].is_set())
                 and not ("chess_epoch" in state and getattr(self, "chess_suspended", False))
-                and state.get("chess_epoch", self.chess_epoch) == self.chess_epoch
-                and not (state.get("between_games") and self.balance.chess_active)
+                and not ("chess_epoch" in state and not getattr(self.settings,"commentary_enabled",True))
+                and (state.get("chess_epoch", self.chess_epoch) == self.chess_epoch
+                     or state.get("finish_sentence") and state.get("audio_started"))
+                and not (state.get("lifecycle") and (getattr(self, "chess_suspended", False)
+                         or not self.settings.commentary_enabled))
+                and not (state.get("between_games") and self.balance.chess_active
+                         and not (state.get("finish_sentence") and state.get("audio_started")))
                 and (not state.get("clock_minute") or state.get("audio_started")
                      or state["clock_minute"] == minute_key(beijing_now()))
                 and not self._move_skipped(state))
@@ -641,12 +653,14 @@ class SpeechPipeline:
         self.cancel_idle()
         with self.condition:
             self.high_mates = 0
-            self.jobs = [job for job in self.jobs if job[4] not in CHESS_SPEECH_KINDS]
+            self.jobs = [job for job in self.jobs if job[4] not in CHESS_SPEECH_KINDS or job[4] in TRANSITION_KINDS]
             heapq.heapify(self.jobs)
         with self.prepared_lock:
             states = list(self.prepared.values())
             self.prepared.clear()
         for state in states:
+            if state.get("finish_sentence") and state.get("audio_started"):
+                continue
             state["approved"] = False
             state["decision"].set()
 
@@ -667,17 +681,26 @@ class SpeechPipeline:
         valid = lambda: (self._state_live(state)
                          and self.settings.speech_enabled
                          and self._chat_valid(kind, payload)
-                         and (self._has_turn(kind, payload) or (
-                             until is not None and until - time.monotonic() <= .6
+                         and ((state.get("finish_sentence") and state.get("audio_started")
+                               and not self._mate_busy() and not self._chat_busy())
+                              or self._has_turn(kind, payload) or (
+                             until is not None and until - time.monotonic() <= .9
                              and not self._mate_busy() and (self._chat_busy() or (
                                  kind in INTERACTION_SPEECH_KINDS and not self.balance.chat_may_finish())))))
         if (not valid() or not self._chat_valid(kind, payload)
                 or time.monotonic() >= state.get("deadline", float("inf"))):
             return False
         duration = self._audio_duration(audio)
+        if payload.get("_sandbox_cue") and time.monotonic()+duration+.05 > state.get("deadline",float("inf")):
+            self._mark_speech_failed(payload,"沙盘剩余时间不足，本段未起播")
+            return False
         winsound.PlaySound(str(audio), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
         playback_started = time.monotonic()
         state["audio_started"] = True
+        # Finish a short factual move call already on air. New positions still
+        # discard unstarted jobs; pause, speech-off and mate priority remain immediate.
+        state["finish_sentence"] = (0 < duration <= 9 and not payload.get("_sandbox_cue")
+            and kind in ("关键走棋解说", "我方走棋播报", "我方走棋解说", GAP_KIND, *TRANSITION_KINDS))
         with self.playback_state_lock:
             self.audio_active = True
         if kind == "弹幕回复":
@@ -692,11 +715,20 @@ class SpeechPipeline:
             while time.monotonic() < until:
                 if not valid():
                     winsound.PlaySound(None, winsound.SND_PURGE)
+                    if acknowledge:
+                        self._mark_speech_failed(payload,"本段播报已中断")
+                    self.notify("speech_interrupted", "播报已中断", {"kind":kind,
+                        "speech_token":payload.get("speech_token"),
+                        "elapsed":round(time.monotonic()-playback_started,2), "duration":round(duration,2),
+                        "reason":("语音已关闭" if not self.settings.speech_enabled else
+                                  "停止或暂停" if self.closed.is_set() or getattr(self,"suspended",False) or getattr(self,"chess_suspended",False) else
+                                  "关键将杀优先" if self._mate_busy() else
+                                  "新局面或演示已结束" if not self._state_live(state) else "弹幕或讲棋优先级切换")})
                     return False
                 self.closed.wait(min(0.03, max(0, until - time.monotonic())))
             if not valid():
                 return False
-            if acknowledge and (payload.get("绝杀长播报") or payload.get("_sandbox_cue")):
+            if acknowledge:
                 self._mark_speech_finished(payload)
             return True
         finally:
@@ -791,6 +823,8 @@ class SpeechPipeline:
             self.balance.reserve_chess()
         self._refresh_chat_priority()
         for old in older:
+            if old.get("finish_sentence") and old.get("audio_started"):
+                continue
             old["approved"] = False
             old["decision"].set()
         threading.Thread(
@@ -1078,10 +1112,12 @@ class SpeechPipeline:
         priority, sequence, created, epoch, kind, payload, direct = job
         completed = False
         state = {"epoch": epoch, "approved": True}
-        if kind in CHESS_SPEECH_KINDS:
+        if kind in TRANSITION_KINDS:
+            state.update(lifecycle=True,deadline=created+12)
+        elif kind in CHESS_SPEECH_KINDS:
             state["chess_epoch"] = payload.get("_chess_epoch", 0)
-        if kind == CLOCK_KIND:
-            state.update(between_games=True, deadline=created + 10)
+        if kind in (CLOCK_KIND,GAP_KIND):
+            state.update(between_games=True, deadline=created + (6 if kind == GAP_KIND else 10))
         try:
             if not self._state_live(state) or not self._chat_valid(kind, payload):
                 return
@@ -1200,6 +1236,7 @@ class LiveController:
         self.clock_cadence = GameClockCadence()
         self.audience_scenes = AudienceSceneDirector()
         self.sandbox_story = SandboxStory()
+        self.broadcast_flow = BroadcastFlow()
         self.quiet_move_count = 0
         self.next_prediction_move = 4
         self.prediction_count = 0
@@ -1247,6 +1284,8 @@ class LiveController:
         except Exception:
             pass
         spoken_kind = str((data or {}).get("kind") or "")
+        if kind == "reply":
+            self.last_spoken_until = time.monotonic() + float((data or {}).get("_speech_seconds") or 2)
         if kind == "reply" and spoken_kind in CHESS_SPEECH_KINDS:
             self.last_chess_spoken_at = time.monotonic()
             self.quiet_move_count = 0
@@ -1830,6 +1869,9 @@ class LiveController:
             if event.get("event") != "game_over":
                 self.opponent_disconnected = False
         if event.get("event") == "start":
+            if not hasattr(self, "broadcast_flow"):
+                self.broadcast_flow = BroadcastFlow()
+            self.broadcast_flow.start(event)
             if hasattr(self, "sandbox_story"):
                 self.sandbox_story.clear()
             self._reset_opening()
@@ -1900,6 +1942,11 @@ class LiveController:
                         f"JJ游戏沙盘已跳过：{event.get('reason', '界面未确认')}")
             return
         if event.get("event") == "game_over":
+            if not hasattr(self, "broadcast_flow"):
+                self.broadcast_flow = BroadcastFlow()
+            ending = self.broadcast_flow.end(event)
+            if self.broadcast_flow.is_terminal(event) and not ending:
+                return  # Repeated settlement must not cancel its own closing line.
             if hasattr(self, "sandbox_story"):
                 self.sandbox_story.clear()
             if hasattr(self, "audience_scenes"):
@@ -1930,7 +1977,7 @@ class LiveController:
                                            解说对应走法=last_move.get("notation"))
                 self.pipeline.submit(
                     0, "获胜收官", victory_payload,
-                    direct_text=win_note or self._victory_text())
+                    direct_text=win_note or ending or self._victory_text())
             elif (event.get("result") == "finished" and
                   event.get("reason") in (
                        "jj_result_screen", "delayed_jj_result_screen",
@@ -1938,10 +1985,19 @@ class LiveController:
                 self.pipeline.submit(
                     0, "结算收官", event,
                     direct_text=("对面断线后，这局已经结束了。" if getattr(
-                        self, "opponent_disconnected", False) else "这盘已经结束，等下一局棋盘。"))
+                        self, "opponent_disconnected", False) else ending or "这盘已经结束了。"))
+            elif ending:
+                self.pipeline.submit(0,"结算收官",event,direct_text=ending)
             self.opponent_disconnected = False
             if clock_due:
                 self.pipeline.submit(5, CLOCK_KIND, {"已完成盘数": self.clock_cadence.completed})
+            return
+        if event.get("event") == "position":
+            if not hasattr(self,"broadcast_flow"):
+                self.broadcast_flow = BroadcastFlow()
+            opening = self.broadcast_flow.position(event)
+            if opening:
+                self.pipeline.submit(1,"新局开场",event,direct_text=opening)
             return
         notation = str(event.get("notation") or "").strip()
         if event.get("event") == "waiting_for_opponent":
@@ -1983,9 +2039,9 @@ class LiveController:
                        "_expires_at": now + 12}
             if self.pipeline.prepare_idle(payload, kind="对手状态解说", direct_text=text):
                 self.pipeline.open_idle_window()
+                self.opponent_wait_line_count = count + 1
                 if status == "disconnected":
                     self.last_offline_notice_at = now
-                    self.opponent_wait_line_count = count + 1
             return
         if not notation:
             return
@@ -2029,6 +2085,9 @@ class LiveController:
             self.pipeline.cancel_idle()
             return
         if event.get("event") == "move_applied":
+            if hasattr(self,"broadcast_flow"):
+                self.broadcast_flow.ended = False
+                self.broadcast_flow.ended_at = None
             token = str(event.get("speech_token") or "")
             self.last_confirmed_analysis = getattr(self, "commentary_analyses", {}).pop(token, None)
             getattr(self, "pending_move_events", {}).pop(
@@ -2438,11 +2497,25 @@ class LiveController:
         while not self.chat_closed.wait(0.5):
             try:
                 self._select_chat()
+                self._between_games_tick()
             except Exception as error:
                 now = time.monotonic()
                 if now - getattr(self, "chat_error_at", 0) >= 30:
                     self.chat_error_at = now
                     self._notify("error", "弹幕抽选异常：" + type(error).__name__)
+
+    def _between_games_tick(self):
+        flow = getattr(self,"broadcast_flow",None)
+        if (flow is None or self.suspended or self.chess_suspended
+                or not self.settings.commentary_enabled or self.pipeline.balance.chess_active
+                or time.monotonic()-getattr(self,"last_spoken_until",0)<12):
+            return
+        activity = self.pipeline.activity_snapshot()
+        if any(activity.get(key) for key in ("queued","working","preparing","playing")):
+            return
+        line = flow.gap()
+        if line:
+            self.pipeline.submit(4,GAP_KIND,{},direct_text=line)
 
     def _reset_chat_room(self):
         if hasattr(self, "chat_selector"):

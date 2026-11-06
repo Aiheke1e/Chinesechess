@@ -432,6 +432,7 @@ class LiveHostTests(unittest.TestCase):
         self.assertEqual(submitted[0][0], "获胜收官")
         self.assertTrue(any(word in submitted[0][1] for word in ("拿下", "收下")))
         self.assertNotIn("受害者", submitted[0][1])
+        controller.broadcast_flow.start({})
         controller.submit_chess({"event": "game_over", "result": "won", "reason": "no_legal_moves"})
         self.assertNotEqual(submitted[0][1], submitted[1][1])
 

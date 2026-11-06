@@ -466,6 +466,10 @@ def run_game_sandbox(device, board, orientation, plan, token, number, events, ca
         synchronous = commentary and bool(live.get("speech_enabled"))
     except (OSError, ValueError, AttributeError):
         commentary = synchronous = False
+    if synchronous and plan.get("phase") == "before_move":
+        ready_deadline = time.monotonic()+.8
+        while not prepared(cue_token(token,"intro")) and not cancelled() and time.monotonic()<ready_deadline:
+            time.sleep(.02)
     if synchronous and not prepared(cue_token(token, "intro")):
         # An older desktop process can launch a newer player after an update.
         # Optional demo audio must be ready BEFORE hiding the real game.
@@ -473,6 +477,17 @@ def run_game_sandbox(device, board, orientation, plan, token, number, events, ca
                   "speech_deadline": time.monotonic() + 15.0}
         events.emit("game_sandbox", action="end", phase=plan.get("phase"), speech_token=token, **result)
         return result
+    if synchronous and plan.get("phase") == "after_move":
+        finish_deadline = time.monotonic()+7
+        main = _read_speech_marker(SPEECH_STARTED_PATH)
+        while main.get("token") == token and main.get("status") == "started" and not cancelled() and time.monotonic()<finish_deadline:
+            time.sleep(.03)
+            main = _read_speech_marker(SPEECH_STARTED_PATH)
+        if cancelled() or main.get("token") == token and main.get("status") == "started":
+            result={"entered":False,"safe_exit":True,"reason":"本手播报尚未结束，略过本次沙盘",
+                    "speech_deadline":time.monotonic()+15}
+            events.emit("game_sandbox",action="end",phase=plan.get("phase"),speech_token=token,**result)
+            return result
     route = plan["route"]
     events.emit("game_sandbox", action="start", reason=plan["reason"], route=route,
                 phase=plan.get("phase"), kind=plan.get("kind"), fen=board.to_fen(), speech_token=token)
@@ -629,7 +644,7 @@ def main():
     print(f"棋盘方向：{'红方在下' if orientation == 'red_bottom' else '黑方在下'}")
     print("状态：等待开始走棋\n")
     events.emit("position", fen=b.to_fen(), orientation=orientation, my_color=my,
-                pieces=b.attacker_count())
+                pieces=b.attacker_count(), own_moves=n)
 
     write_runtime_status("engine_starting", "棋盘已确认，正在启动引擎")
     pf = None

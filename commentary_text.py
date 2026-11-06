@@ -64,8 +64,11 @@ def opponent_wait_note(status, number=0, *, playful=True):
         )
         return lines[int(number) % len(lines)]
     if status == "waiting_long":
-        return ("对面这手还没走，咱们先等等。手别急，棋盘又不会自己跑。" if playful else
-                "对面暂时还没落子，继续等他这一步。")
+        lines = ("对面这手还没走，咱们先等等。手别急，棋盘又不会自己跑。",
+                 "这会儿还没新落子，棋友们也歇口气。",
+                 "对面这手还没落，咱们先等一下，别替人家着急。",
+                 "棋盘暂时没变化，继续等对面这一手。")
+        return lines[int(number)%len(lines)] if playful else "对面暂时还没落子，继续等他这一步。"
     return ""
 
 

@@ -588,9 +588,6 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
             timed_out = True
             break
         cue_number = number + int(observed_reply is not None)
-        if not cue(cue_number):
-            narration_failed = True
-            break
         if on_cue is not None:
             last_sandbox_frame = screenshot(device)
         # Recheck mode and copied position before EVERY move, including retries.
@@ -600,6 +597,15 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
                 not _position_matches(sandbox_board, last_sandbox_frame, orientation)):
             failed_step = number
             break
+        if not cue(cue_number):
+            narration_failed = True
+            break
+        if on_cue is not None:
+            last_sandbox_frame = screenshot(device)
+            if (_detect_sandbox_exit(last_sandbox_frame) is None or
+                    not _position_matches(sandbox_board,last_sandbox_frame,orientation)):
+                failed_step = number
+                break
         if stop_requested() or time.monotonic() >= hard_deadline:
             timed_out = not stop_requested()
             break
