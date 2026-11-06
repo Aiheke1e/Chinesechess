@@ -28,6 +28,7 @@ from session_state import (blocked_position_matches, clear_blocked_position,
                            infer_turn_from_standard, match_live_session)
 from cache_cleanup import cleanup_generated_cache, scan_generated_cache
 from bailian_tts import available_voices
+from douyin_auth import clear_cookie
 from live_host import CHESS_SPEECH_KINDS, LiveController, load_settings
 from health_check import collect_readiness, readiness_level
 from runtime_status import (heartbeat_age, read_runtime_status, rotate_log,
@@ -799,6 +800,8 @@ class ControlPanel:
                                  activebackground=THEME["jade2"], activeforeground=THEME["text"])
         self.tools_menu.add_command(label="保存设置", command=self.save_live_settings)
         self.tools_menu.add_command(label="当前异常", command=self.show_monitor_issues)
+        self.tools_menu.add_command(label="登录抖音（接收礼物）", command=self.login_douyin)
+        self.tools_menu.add_command(label="清除抖音登录", command=self.clear_douyin_login)
         self.tools_menu.add_separator()
         self.tools_menu.add_command(label="预览一手", command=self.preview_once)
         self.tools_menu.add_separator()
@@ -1562,6 +1565,61 @@ class ControlPanel:
         if hasattr(self, "interaction_user"):
             self.interaction_user.set("")
             self.interaction_message.set("")
+
+    def login_douyin(self):
+        if getattr(self, "_douyin_login_request", None) is not None:
+            self.live_status.set("请先完成已打开的抖音登录窗口")
+            return
+        runtime = os.path.join(r"D:\environment\shuzhiren\runtime\douyin-env\Scripts", "python.exe")
+        if not os.path.isfile(runtime):
+            self.live_status.set("抖音连接器运行环境不存在，无法打开登录窗口")
+            return
+        request = self._douyin_login_request = object()
+        self.live_status.set("正在打开抖音官方登录页面…")
+        def worker():
+            final = False
+            process = None
+            try:
+                environment = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+                process = subprocess.Popen([runtime, "-u", os.path.join(HERE, "douyin_login.py")],
+                    cwd=HERE, env=environment, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    text=True, encoding="utf-8", errors="replace", creationflags=subprocess.CREATE_NO_WINDOW)
+                for line in process.stdout:
+                    if line.startswith("CHESS_DOUYIN_LOGIN ") and len(line) < 2000:
+                        data = json.loads(line[len("CHESS_DOUYIN_LOGIN "):])
+                        final |= data.get("state") in ("saved", "cancelled", "error")
+                        self.output.put(("douyin_login", request, data))
+                process.wait()
+            except Exception:
+                pass
+            finally:
+                if process is not None and process.stdout:
+                    process.stdout.close()
+                if not final:
+                    self.output.put(("douyin_login", request, {"state": "error", "text": "抖音登录未完成，请重试"}))
+        threading.Thread(target=worker, name="douyin-login", daemon=True).start()
+
+    def clear_douyin_login(self):
+        if getattr(self, "_douyin_login_request", None) is not None:
+            self.live_status.set("请先关闭抖音登录窗口，再清除登录信息")
+            return
+        self.disconnect_live()
+        clear_cookie()
+        self.live_status.set("抖音登录信息已清除")
+
+    def _handle_douyin_login(self, request, data):
+        if request is not getattr(self, "_douyin_login_request", None):
+            return
+        self.live_status.set(str(data.get("text") or ""))
+        if data.get("state") == "waiting":
+            return
+        self._douyin_login_request = None
+        if data.get("state") == "saved":
+            if self.live_room.get().strip():
+                self.disconnect_live()
+                self.connect_live()
+            else:
+                self.live_status.set("已保存抖音登录信息，粘贴直播链接后连接即可")
 
     def _cancel_interaction_clear(self):
         job = getattr(self, "_interaction_display_job", None)
@@ -2459,6 +2517,8 @@ class ControlPanel:
                         self.live_status.set("连接失败：" + item[2])
                         self.append_live("连接失败", item[2])
                     self._sync_connection_button()
+                elif isinstance(item, tuple) and item[0] == "douyin_login":
+                    self._handle_douyin_login(item[1], item[2])
                 elif isinstance(item, tuple) and item[0] == "live_event":
                     record = item[1]
                     kind = record.get("kind", "status")

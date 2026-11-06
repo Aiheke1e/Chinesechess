@@ -209,9 +209,11 @@ class LiveConnectionTests(unittest.TestCase):
                 self.live_id = room
                 self.live_url = "https://live.douyin.com/"
                 self.headers = {"User-Agent": "test"}
-                self.ttwid = "test-cookie"
                 self.session.get.return_value.text = json.dumps({"roomInfo": {
                     "room": {"id_str": "7703480882075454218", "status": 4}}})
+            @property
+            def ttwid(self):
+                return "test-cookie"
             def start(self):
                 self.started = True
         module.DouyinLiveWebFetcher = Fetcher
@@ -222,7 +224,8 @@ class LiveConnectionTests(unittest.TestCase):
                      "EmojiChatMessage"):
             setattr(proto, name, Mock())
         with patch.dict("sys.modules", {"liveMan": module, "protobuf": types.ModuleType("protobuf"),
-                                       "protobuf.douyin": proto, "websocket": Mock()}):
+                                       "protobuf.douyin": proto, "websocket": Mock()}), patch.object(
+                douyin_bridge, "load_cookie", return_value=""):
             fetcher = douyin_bridge.create_fetcher("216845906630")
             module.generateSignature("wss://example.test")
         expected = str(douyin_bridge.UPSTREAM / "sign.js")

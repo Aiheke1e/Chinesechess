@@ -10,6 +10,9 @@ from pathlib import Path
 import sys
 import threading
 import time
+from unittest.mock import patch
+
+from douyin_auth import cookie_items, load_cookie, merge_cookie
 
 
 UPSTREAM = Path(r"D:\environment\shuzhiren\connectors\DouyinLiveWebFetcher-main")
@@ -68,12 +71,38 @@ def create_fetcher(room, sink=emit):
         def __init__(self):
             super().__init__(room, abogus_file=str(UPSTREAM / "a_bogus.js"))
             self.ended = False
+            self.login_cookie = load_cookie()
             original_get = self.session.get
 
             def bounded_get(*args, **kwargs):
                 kwargs.setdefault("timeout", (8, 15))
+                if self.login_cookie:
+                    headers = dict(kwargs.get("headers") or {})
+                    existing = headers.pop("Cookie", headers.get("cookie", ""))
+                    headers["cookie"] = merge_cookie(existing, self.login_cookie)
+                    kwargs["headers"] = headers
                 return original_get(*args, **kwargs)
             self.session.get = bounded_get
+
+        @property
+        def ttwid(self):
+            saved = cookie_items(getattr(self, "login_cookie", "")).get("ttwid")
+            return saved or super().ttwid
+
+        def _connectWebSocket(self):
+            if not self.login_cookie:
+                return super()._connectWebSocket()
+            original = websocket.WebSocketApp
+            def authenticated_socket(*args, **kwargs):
+                headers = dict(kwargs.get("header") or {})
+                existing = headers.pop("Cookie", headers.get("cookie", ""))
+                headers["cookie"] = merge_cookie(existing, self.login_cookie)
+                kwargs["header"] = headers
+                return original(*args, **kwargs)
+            # Upstream creates its own headers; setting Session cookies alone
+            # never puts the account login on the websocket handshake.
+            with patch.object(websocket, "WebSocketApp", authenticated_socket):
+                return super()._connectWebSocket()
 
         @property
         def room_id(self):
@@ -96,7 +125,8 @@ def create_fetcher(room, sink=emit):
             return super().start()
 
         def _wsOnOpen(self, ws):
-            sink({"type": "status", "state": "connected", "text": "已连接抖音直播间"})
+            mode = "已载入登录信息" if self.login_cookie else "游客接入，礼物消息需登录"
+            sink({"type": "status", "state": "connected", "text": f"已连接抖音直播间（{mode}）"})
             threading.Thread(target=self._sendHeartbeat, daemon=True).start()
 
         def _wsOnError(self, ws, error):
