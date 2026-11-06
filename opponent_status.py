@@ -78,7 +78,7 @@ class OpponentWaitMonitor:
                 return "cleared"  # Cancel stale speech; do not claim a reconnection.
         now = self.clock()
         if (not self.offline_notified and not self.long_notified
-                and self.stable_frames >= 2 and now - self.started >= 35
+                and self.stable_frames >= 2 and now - self.started >= 20
                 and now - self.last_long_notice >= 180):
             self.long_notified = True
             self.last_long_notice = now

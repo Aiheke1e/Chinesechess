@@ -182,6 +182,8 @@ py -3 player.py --once --dry --engine pikafish --movetime 500
 
 每次运行还会追加写入 `work/events.jsonl`，包含 `position`、`move_selected`、`move_applied`、`opponent_move`、`end` 等事件。后续 TTS、走法讲解和直播弹幕模块可以直接消费这个 JSONL，不必侵入下棋主循环。
 
+对手回合棋盘稳定约20秒仍未落子时，会尝试发送JJ表情栏第一个免费乌云表情，并短播“阁下神速些吧”。同一轮等待一次，跨回合至少间隔3分钟；暂停、只读、沙盘及对手已落子时不发送。操作与落子串行，核对原棋盘和真实表情栏后才选首格，不选旁边的付费道具，失败不重发。催棋台词和其他语音一样进入解说记录。
+
 ## 旧版 Windows 窗口入口
 
 ```bash

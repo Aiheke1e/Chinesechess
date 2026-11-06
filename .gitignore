@@ -41,6 +41,10 @@ data/opening_book*.json.gz
 !assets/jj-rank-title.png
 !assets/jj-rank-back.png
 !assets/jj-opponent-offline.png
+!assets/jj-emoji-smile.png
+!assets/jj-emoji-tabs.png
+!assets/jj-emoji-cloud.png
+!assets/jj-emoji-coin.png
 !assets/jj-rule-long-chase.png
 
 # Pikafish runtime files are downloaded separately; keep only its licenses/docs.

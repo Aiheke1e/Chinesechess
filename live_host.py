@@ -2035,6 +2035,8 @@ class LiveController:
             count = getattr(self, "opponent_wait_line_count", 0)
             text = opponent_wait_note(status, count, playful=humor_enabled(
                 getattr(getattr(self, "settings", None), "persona", DEFAULT_PERSONA)))
+            if status == "waiting_long":
+                text = "阁下神速些吧。"
             payload = {**event, "解说对应手数": None, "解说对应走法": None,
                        "_expires_at": now + 12}
             if self.pipeline.prepare_idle(payload, kind="对手状态解说", direct_text=text):

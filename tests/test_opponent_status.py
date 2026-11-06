@@ -72,9 +72,9 @@ class OpponentStatusTests(unittest.TestCase):
         monitor = OpponentWaitMonitor(clock=lambda: now[0])
         monitor.observe_screen(self.thinking)
         monitor.observe_board(True)
-        now[0] = 34
+        now[0] = 19
         self.assertIsNone(monitor.observe_board(True))
-        now[0] = 35
+        now[0] = 20
         self.assertEqual(monitor.observe_board(True), "waiting_long")
         now[0] = 100
         self.assertIsNone(monitor.observe_board(True))
@@ -157,6 +157,56 @@ class OpponentStatusTests(unittest.TestCase):
         self.assertNotIn("赢", text)
         self.assertIsNone(prepared.call_args.args[0]["解说对应走法"])
         self.assertIn("_expires_at", prepared.call_args.args[0])
+
+    def test_long_wait_uses_the_requested_nudge_line_once_and_the_same_speech_log(self):
+        controller = self.controller()
+        controller.submit_chess(self.wait_event())
+        event = {**self.status_event("waiting_long"), "nudge": {"sent": True}}
+        controller.submit_chess(event)
+        controller.submit_chess(event)
+        prepared = controller.pipeline.prepare_idle
+        prepared.assert_called_once()
+        self.assertEqual(prepared.call_args.kwargs["direct_text"], "阁下神速些吧。")
+        header, body = ControlPanel._speech_log_entry({"kind": "reply", "text": "阁下神速些吧。",
+            "data": {"kind": prepared.call_args.kwargs["kind"]}})
+        self.assertEqual((header, body), ("对手状态", "阁下神速些吧。"))
+
+    def test_player_nudges_only_a_stable_long_wait_and_never_in_read_only_mode(self):
+        for dry, changed in ((False, False), (False, True), (True, False)):
+            with self.subTest(dry=dry, changed=changed), ExitStack() as stack:
+                board = Board.from_fen(START_FEN)
+                board.turn = "b"
+                cfg = dict(player.DEFAULT_CFG, my_color="r", dry_run=dry, auto_continue_after_game=False)
+                events, monitor = Mock(), Mock()
+                monitor.observe_screen.return_value = None
+                monitor.observe_board.return_value = "waiting_long"
+                for item in (
+                    patch.object(player.sys, "argv", ["player.py"]),
+                    patch.object(player, "load_cfg", return_value=cfg),
+                    patch.object(player, "list_devices", return_value=["mock"]),
+                    patch.object(player, "match_live_session", return_value=None),
+                    patch.object(player, "read_stable_board", return_value=(board, "red_bottom")),
+                    patch.object(player, "infer_turn_from_standard", return_value=None),
+                    patch.object(player, "save_session"), patch.object(player, "write_runtime_status"),
+                    patch.object(player, "EventLog", return_value=events),
+                    patch.object(player, "OpponentWaitMonitor", return_value=monitor),
+                    patch("pikafish.get_engine", return_value=Mock()),
+                    patch.object(player, "screenshot", return_value=self.thinking),
+                    patch.object(player, "postgame_screen_visible", side_effect=[False, True]),
+                    patch.object(player, "resolve_move_from_change", return_value=(None, 0)),
+                    patch.object(player, "assess_image_against_board", return_value=(None, "unchanged", 0)),
+                    patch.object(player.time, "sleep"),
+                ):
+                    stack.enter_context(item)
+                sender = stack.enter_context(patch.object(player, "send_wait_cloud", return_value={
+                    "sent": not changed, "reason": "test", "board_changed": changed}))
+                move = stack.enter_context(patch.object(player, "move_piece_retry"))
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(player.main(), 0)
+                self.assertEqual(sender.call_count, int(not dry))
+                notices = [c for c in events.emit.call_args_list if c.args[0] == "opponent_status"]
+                self.assertEqual(len(notices), int(not changed))
+                move.assert_not_called()
 
     def test_late_status_or_unverified_claim_cannot_create_speech(self):
         controller = self.controller()
