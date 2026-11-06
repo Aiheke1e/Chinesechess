@@ -88,14 +88,23 @@ def chat(messages, model=DEFAULT_MODEL, timeout=20, max_tokens=120,
         'header = "Content-Type: application/json"',
         "data = " + json.dumps(json.dumps(payload, ensure_ascii=False), ensure_ascii=False),
     ])
-    result = subprocess.run(
-        ["curl.exe", "--disable", "--config", "-", "--silent",
+    command = ["curl.exe", "--disable", "--config", "-", "--silent",
          "--show-error", "--connect-timeout", "8", "--max-time", str(timeout),
-         "-w", "\n%{http_code}", BASE_URL + "/chat/completions"],
-        input=curl_config.encode("utf-8"), capture_output=True,
-        timeout=timeout + 5, creationflags=subprocess.CREATE_NO_WINDOW)
+         "-w", "\n%{http_code}", BASE_URL + "/chat/completions"]
+    options = dict(input=curl_config.encode("utf-8"), capture_output=True,
+                   timeout=timeout + 5, creationflags=subprocess.CREATE_NO_WINDOW)
+    result = subprocess.run(command, **options)
+    # Windows may reach the API but fail before HTTP because the certificate's
+    # revocation distribution point is offline. Retry only that exact failure;
+    # best-effort still checks the certificate chain and rejects revoked certs.
+    if (os.name == "nt" and result.returncode == 35
+            and b"CRYPT_E_REVOCATION_OFFLINE" in result.stderr.upper()
+            and result.stdout.rpartition(b"\n")[-1] == b"000"):
+        result = subprocess.run([*command[:2], "--ssl-revoke-best-effort", *command[2:]], **options)
     if result.returncode:
-        raise RuntimeError("智谱连接失败或请求超时")
+        reason = {6: "域名解析失败", 7: "无法连接服务", 28: "请求超时",
+                  35: "TLS握手失败", 60: "HTTPS证书校验失败"}.get(result.returncode, "连接失败")
+        raise RuntimeError(f"智谱{reason}（curl {result.returncode}）")
     body, _, status = result.stdout.rpartition(b"\n")
     try:
         data = json.loads(body)
