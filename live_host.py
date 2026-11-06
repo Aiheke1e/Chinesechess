@@ -306,6 +306,8 @@ class SpeechPipeline:
             return False
         if kind in CHESS_SPEECH_KINDS:
             payload = {**payload, "_chess_epoch": getattr(self, "chess_epoch", 0)}
+        if kind == "新局开场":
+            payload = {**payload, "_opening_epoch": getattr(self, "opening_epoch", 0)}
         if kind == "欢迎观众":
             direct_text = welcome_line(payload.get("观众"))
         elif kind == "礼物答谢":
@@ -359,6 +361,14 @@ class SpeechPipeline:
                          and not getattr(self, "interactions_suspended", False)
                          and not self.active_chat)
         return available and not self._mate_busy() and self.balance.can_chat()
+
+    def reset_opening_speech(self):
+        """Drop an unplayed opening when its game has ended or been replaced."""
+        with self.condition:
+            self.opening_epoch = getattr(self, "opening_epoch", 0) + 1
+            self.jobs = [job for job in self.jobs if job[4] != "新局开场"]
+            heapq.heapify(self.jobs)
+            self.condition.notify_all()
 
     def set_chess_active(self, active):
         self.balance.set_chess_active(active)
@@ -425,6 +435,7 @@ class SpeechPipeline:
                      or state.get("finish_sentence") and state.get("audio_started"))
                 and not (state.get("lifecycle") and (getattr(self, "chess_suspended", False)
                          or not self.settings.commentary_enabled))
+                and ("opening_epoch" not in state or state["opening_epoch"] == getattr(self, "opening_epoch", 0))
                 and not (state.get("between_games") and self.balance.chess_active
                          and not (state.get("finish_sentence") and state.get("audio_started")))
                 and (not state.get("clock_minute") or state.get("audio_started")
@@ -444,7 +455,7 @@ class SpeechPipeline:
             cue = str(payload.get("沙盘步骤") or "")
             priority = (2, 0) if cue in ("intro", "question") else (3, int(cue) if cue.isdigit() else 99)
         else:
-            priority = (2, 0) if kind in OWN_SPEECH_KINDS else (4, 0)
+            priority = (2, 0) if kind in OWN_SPEECH_KINDS or kind == "新局开场" else (4, 0)
         def valid():
             return (self.settings.speech_enabled and self._state_live(state)
                     and self._chat_valid(kind, payload)
@@ -1114,6 +1125,8 @@ class SpeechPipeline:
         state = {"epoch": epoch, "approved": True}
         if kind in TRANSITION_KINDS:
             state.update(lifecycle=True,deadline=created+12)
+            if kind == "新局开场":
+                state["opening_epoch"] = payload.get("_opening_epoch", 0)
         elif kind in CHESS_SPEECH_KINDS:
             state["chess_epoch"] = payload.get("_chess_epoch", 0)
         if kind in (CLOCK_KIND,GAP_KIND):
@@ -1870,6 +1883,7 @@ class LiveController:
             if event.get("event") != "game_over":
                 self.opponent_disconnected = False
         if event.get("event") == "start":
+            self.pipeline.reset_opening_speech()
             if not hasattr(self, "broadcast_flow"):
                 self.broadcast_flow = BroadcastFlow()
             self.broadcast_flow.start(event)
@@ -1950,6 +1964,7 @@ class LiveController:
                 playful=humor_enabled(getattr(getattr(self, "settings", None), "persona", DEFAULT_PERSONA)))
             if self.broadcast_flow.is_terminal(event) and not ending:
                 return  # Repeated settlement must not cancel its own closing line.
+            self.pipeline.reset_opening_speech()
             if hasattr(self, "sandbox_story"):
                 self.sandbox_story.clear()
             if hasattr(self, "audience_scenes"):
@@ -2694,7 +2709,7 @@ class ChessEventTailer(threading.Thread):
                         except ValueError:
                             continue
                         if event.get("event") in (
-                                "start",
+                                "start", "position",
                                 "move_selected", "move_command", "move_applied", "move_rejected", "speech_cancelled",
                                 "move_preview", "engine_analysis", "opponent_move",
                                 "game_sandbox",

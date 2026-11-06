@@ -416,6 +416,9 @@ class LiveHostTests(unittest.TestCase):
         submitted = []
 
         class Pipeline:
+            def reset_opening_speech(self):
+                pass
+
             def cancel_idle(self):
                 pass
 
@@ -440,6 +443,9 @@ class LiveHostTests(unittest.TestCase):
         submitted = []
 
         class Pipeline:
+            def reset_opening_speech(self):
+                pass
+
             def cancel_idle(self):
                 pass
 

@@ -651,7 +651,8 @@ def main():
     print(f"棋盘方向：{'红方在下' if orientation == 'red_bottom' else '黑方在下'}")
     print("状态：等待开始走棋\n")
     events.emit("position", fen=b.to_fen(), orientation=orientation, my_color=my,
-                pieces=b.attacker_count(), own_moves=n)
+                pieces=b.attacker_count(), own_moves=n,
+                new_game=n == 0 and infer_turn_from_standard(b.sq) is not None)
 
     write_runtime_status("engine_starting", "棋盘已确认，正在启动引擎")
     pf = None

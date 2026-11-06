@@ -36,12 +36,32 @@ class BroadcastFlow:
         self.opened = True
         self.ended_at = None
         side = {"r":"红","b":"黑"}.get(event.get("my_color"))
-        if event.get("own_moves",0):
+        if event.get("own_moves",0) or event.get("new_game") is False:
             return "棋盘接上了，咱们继续当前这盘。"
-        variants = ("新一盘接上了", "下一盘来了", "棋盘就绪，咱们继续", "这盘开始，重新布阵")
-        lead = variants[self.open_sequence % len(variants)]
+        variants = (
+            "新一盘，咱们执{side}，先把阵势摆好。",
+            "棋友们，新局开张！这盘执{side}，走着看。",
+            "又开一桌，豆包执{side}，陪大家接着过招。",
+            "新局执{side}，嘴上可以皮，棋上得认真。",
+            "这盘执{side}，车马炮重新上岗，咱们开工。",
+            "下一盘来了，执{side}上阵，先走稳。",
+            "执{side}迎新局，包袱先放一边，先看棋。",
+            "棋盘归位，这局咱们执{side}，重新过招。",
+            "新局到了，执{side}的豆包已就位，请指教。",
+            "换个棋局继续聊，这盘咱们执{side}。",
+            "执{side}开新盘，输赢还没定，先把棋走明白。",
+            "棋友们接着看，这盘执{side}，认真营业。",
+        ) if side else (
+            "新一盘开始，咱们先把阵势摆好。", "棋友们，新局开张，接着过招。",
+            "又开一桌，豆包陪大家继续看棋。", "新局来了，嘴上可以皮，棋上得认真。",
+            "车马炮重新上岗，这盘咱们开工。", "下一盘来了，先把开局走稳。",
+            "新局到了，包袱放一边，先看棋。", "棋盘归位，咱们重新过招。",
+            "新的对局，豆包已就位，请指教。", "换个棋局，咱们继续边走边聊。",
+            "新盘开了，输赢还没定，先把棋走明白。", "棋友们接着看，新局认真营业。",
+        )
+        text = variants[self.open_sequence % len(variants)].format(side=side)
         self.open_sequence += 1
-        return lead + (f"，这盘咱们执{side}。" if side else "。")
+        return text
 
     def end(self, event, *, playful=True):
         if self.dry_run or self.ended or not self.is_terminal(event):
