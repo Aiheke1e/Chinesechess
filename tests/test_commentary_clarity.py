@@ -67,8 +67,7 @@ class CommentaryClarityTests(unittest.TestCase):
         _, _, plan = plan_fixture()
         cues = script(plan)
         self.assertIn("这是回吃", cues["4"])
-        self.assertIn("咱们吃到一门炮", cues["summary"])
-        self.assertIn("对面吃到一门炮", cues["summary"])
+        self.assertIn("双方各换掉一门炮", cues["summary"])
 
     def test_sandbox_keeps_check_and_escape_facts_in_the_exact_step(self):
         cues = script({"own": "r", "route": [

@@ -96,7 +96,7 @@ def wait_receipt(token, *, finished=False, deadline, cancelled):
 def _pieces(pieces):
     def amount(piece):
         count = pieces.count(piece)
-        number = "一二三四五六七八九十"[count - 1] if 0 < count <= 10 else str(count)
+        number = "两" if count == 2 else "一二三四五六七八九十"[count - 1] if 0 < count <= 10 else str(count)
         unit = {"R": "辆", "N": "匹", "C": "门"}.get(piece.upper(), "枚")
         return f"{number}{unit}{PIECE_CN[piece]}"
     return "、".join(amount(piece) for piece in dict.fromkeys(pieces))
@@ -108,9 +108,11 @@ def result_note(route, own, mate=False, pattern="组合将杀"):
     ours = [item["capture"] for item in route if item.get("capture") and item.get("side") == own]
     theirs = [item["capture"] for item in route if item.get("capture") and item.get("side") != own]
     if ours and theirs:
-        return f"按这条变化，咱们吃到{_pieces(ours)}，对面吃到{_pieces(theirs)}。这段交换，两边的吃子都摆清楚了。"
+        if Counter(p.upper() for p in ours) == Counter(p.upper() for p in theirs):
+            return f"这条线双方各换掉{_pieces(ours)}，交换的代价相同。回到实战。"
+        return f"按这条变化，咱们吃到{_pieces(ours)}，对面吃到{_pieces(theirs)}。回到实战。"
     if ours:
-        return f"沿这条变化，咱们能吃到{_pieces(ours)}。回到实战，看对面怎么接。"
+        return f"这条线能拿到{_pieces(ours)}。回到实战。"
     if theirs:
         return f"沿这条变化，对面能吃到{_pieces(theirs)}，这个代价得看清。回到实战。"
     if any(item.get("check") or item.get("escape") for item in route):
@@ -122,8 +124,18 @@ def script(plan):
     route = plan.get("route") or []
     mate = plan.get("kind") == "mate"
     intro = (f"看这路{plan.get('pattern', '组合将杀')}，摆到吃将收尾。" if mate else
-             f"看这段{plan.get('reason', '关键接法')}，咱们摆到结果。")
+             "摆一下这段连续将军，看应将怎么接。" if plan.get("target_kind") == "连续将军" else
+             "这段交换要连着看，咱们摆清后手。" if plan.get("reason") == "关键交换" else
+             "这里有后续吃子，咱们摆一下接法。")
     scene = plan.get("audience_scene") if not mate else None
+    variant = int(plan.get("narration_variant", 0)) % 4
+    if not mate:
+        options = (("摆一下这段连续将军，看应将怎么接。", "这几步将军得连起来看。", "咱们摆摆将军和应将的衔接。", "把这串应将摆清楚。")
+                   if plan.get("target_kind") == "连续将军" else
+                   ("这段交换要连着看，咱们摆清后手。", "先别只看眼前这口，摆一下后面的回吃。", "咱们把交换摆完，再看两边的代价。", "这几步有来有回，连起来摆一下。")
+                   if plan.get("reason") == "关键交换" else
+                   ("这里有后续吃子，咱们摆一下接法。", "咱们顺着这条线，看后手怎么接。", "把后面这段吃子摆给大家看。", "这条接法有后手，咱们展开看一眼。"))
+        intro = options[variant]
     cues = {}
     if scene:
         cues["question"] = scene["question"]

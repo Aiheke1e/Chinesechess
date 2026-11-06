@@ -131,6 +131,8 @@ class CommentaryStyle:
             return list(dict.fromkeys(word for word in self.recent_openers if word))
 
     def decorate(self, kind, text, payload, persona):
+        if payload.get("_sandbox_continuation"):
+            return text
         if kind == "弹幕回复":
             opener = re.match(r"^(好嘞|哎呀|哈哈|好的|欸|哎)[，。！？\s]+", text)
             if opener and opener.group(1) in self.openers():

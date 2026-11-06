@@ -23,6 +23,7 @@ from bailian_tts import available_voices, synthesize
 from tts_requests import SynthesisCancelled, synthesis_context
 from live_clock import CLOCK_KIND, GameClockCadence, beijing_now, clock_line, minute_key
 from audience_scene import AudienceSceneDirector
+from sandbox_story import SandboxStory
 from glm_client import DEFAULT_MODEL, respond
 from opening_library import load_opening_library
 from commentary_text import (complete_note, connected_move_note, waiting_note,
@@ -1198,6 +1199,7 @@ class LiveController:
         self.victory_count = 0
         self.clock_cadence = GameClockCadence()
         self.audience_scenes = AudienceSceneDirector()
+        self.sandbox_story = SandboxStory()
         self.quiet_move_count = 0
         self.next_prediction_move = 4
         self.prediction_count = 0
@@ -1624,6 +1626,7 @@ class LiveController:
             "own": plan.get("own", board.turn),
             "summary": plan.get("summary"),
             "max_seconds": plan.get("max_seconds"),
+            "fen": probe.to_fen(),
             "review_seconds": 6.5,
             "speech_token": event.get("speech_token"),
         }
@@ -1663,6 +1666,9 @@ class LiveController:
         return "".join(sandbox_script(plan).values())
 
     def _prepare_sandbox_narration(self, token, plan, payload):
+        if not hasattr(self, "sandbox_story"):
+            self.sandbox_story = SandboxStory()
+        plan = self.sandbox_story.prepare(token, plan)
         mapping = {}
         for index, (cue, text) in enumerate(sandbox_script(plan).items()):
             segment = cue_token(token, cue)
@@ -1824,6 +1830,8 @@ class LiveController:
             if event.get("event") != "game_over":
                 self.opponent_disconnected = False
         if event.get("event") == "start":
+            if hasattr(self, "sandbox_story"):
+                self.sandbox_story.clear()
             self._reset_opening()
             self.pending_prediction = None
             self.reply_context = None
@@ -1863,6 +1871,8 @@ class LiveController:
                     self.pipeline.reserve_sandbox()
                     self.pipeline.commit_move(segment, deadline=event.get("deadline"))
             elif action == "end":
+                if hasattr(self, "sandbox_story"):
+                    self.sandbox_story.finished(token, event)
                 mapping = getattr(self, "sandbox_speech_by_move", {}).pop(token, {})
                 segments = mapping.values() if isinstance(mapping, dict) else [mapping] if mapping else []
                 for segment in segments:
@@ -1890,6 +1900,8 @@ class LiveController:
                         f"JJ游戏沙盘已跳过：{event.get('reason', '界面未确认')}")
             return
         if event.get("event") == "game_over":
+            if hasattr(self, "sandbox_story"):
+                self.sandbox_story.clear()
             if hasattr(self, "audience_scenes"):
                 self.audience_scenes.end_game()
             last_move = getattr(self, "last_confirmed_analysis", None)
@@ -2037,6 +2049,8 @@ class LiveController:
                 str(event.get("speech_token") or ""), None)
             return
         if event.get("event") == "opponent_move":
+            if hasattr(self, "sandbox_story"):
+                self.sandbox_story.reply(event)
             self.last_commentary_reply = dict(event)
             self.pipeline.cancel_idle()
             invalidate = getattr(self.pipeline, "invalidate_chess", None)
@@ -2131,6 +2145,9 @@ class LiveController:
         # An old forecast is not a new fact about the move being played.  Do
         # not let styling/model context replace this turn's verified content.
         self.reply_context = None
+        story_call = self.sandbox_story.move_call(event) if hasattr(self, "sandbox_story") else ""
+        if story_call:
+            payload["_sandbox_continuation"] = True
         payload["最近已讲话题"] = list(getattr(self, "recent_chess_topics", ()))
         sandtable = (self._sandtable_plan(event)
                      if getattr(getattr(self, "settings", None),
@@ -2169,6 +2186,8 @@ class LiveController:
             importance = max(importance, 10)
             reasons.append("沙盘推演")
         threshold, _, _ = self._density_rule()
+        if story_call:
+            importance = max(importance, threshold)
         token = str(event.get("speech_token") or "")
         if near_win and not getattr(self, "closing_announced", False):
             importance = max(importance, 8)
@@ -2218,6 +2237,8 @@ class LiveController:
                         notation, factual_reasons + reasons,
                         event.get("number", 0),
                         sandtable=False, effects=effects)
+            if story_call:
+                direct = story_call
             if token:
                 if sandtable:
                     # The move call and sandbox explanation are independent:
@@ -2235,7 +2256,7 @@ class LiveController:
             settings = getattr(self, "settings", None)
             used = [effect for effect in effects
                     if self._effect_phrase(effect).rstrip("。") in str(direct)]
-            note = (waiting_note(evidence, used=used) if settings is not None and
+            note = (waiting_note(evidence, used=used) if not story_call and settings is not None and
                     getattr(settings, "queen_commentary_enabled", True) and
                     not sandtable and evidence.get("值得展开") else "")
             if note:

@@ -34,16 +34,23 @@ class SandboxCadence:
 
     def allowed(self, plan, number):
         signature = tuple(item.get("ucci") for item in plan.get("route", []))
-        return (plan.get("kind") == "mate" or
-                number - self.last_move >= 3 and self.clock() - self.last_at >= 25
-                and (not signature or self.clock() - self.recent.get(signature, -1e9) >= 150))
+        kind, now = plan.get("kind"), self.clock()
+        for (previous_kind, previous), at in self.recent.items():
+            if previous_kind != kind or now - at >= 150 or not signature:
+                continue
+            if signature == previous or any(
+                    signature[i:i + 2] == previous[j:j + 2]
+                    for i in range(len(signature) - 1) for j in range(len(previous) - 1)):
+                return False
+        return (kind == "mate" or
+                number - self.last_move >= 3 and now - self.last_at >= 25)
 
     def record(self, number, plan=None):
         self.last_move, self.last_at = number, self.clock()
         signature = tuple(item.get("ucci") for item in (plan or {}).get("route", []))
         self.recent = {key: at for key, at in self.recent.items() if self.clock() - at < 150}
         if signature:
-            self.recent[signature] = self.last_at
+            self.recent[((plan or {}).get("kind"), signature)] = self.last_at
 
 
 def king_capture_finish(board):
@@ -188,7 +195,16 @@ def build_plan(notation, analysis, pv_line, executed_ucci, board=None):
     demo_route = route[1:end + 1]
     if not any(item.get("capture") or item.get("check") or item.get("escape") for item in demo_route):
         return None  # A capture followed only by quiet shuffling needs no demo.
-    seen = set()
+    # Judge the portion actually shown, not a later exchange outside its end.
+    future_big = any(item["side"] == own and item.get("capture")
+                     and item["capture"].upper() in "RNC" for item in demo_route)
+    forcing = (sum(bool(item.get("check")) for item in route[:end + 1]
+                   if item.get("side") == own) >= 2
+               and any(item.get("escape") for item in demo_route))
+    if not future_big and (not forcing or (facts[0]["capture"] or "").upper() == "P"):
+        return None  # Pawn trades and a lone check do not warrant a full excursion.
+    exchange = any(a.get("capture") and b.get("capture") for a, b in zip(demo_route, demo_route[1:]))
+    seen = {board.to_fen()}
     for position in positions[:end + 1]:
         if position.to_fen() in seen:
             return None
@@ -199,7 +215,7 @@ def build_plan(notation, analysis, pv_line, executed_ucci, board=None):
     plan = {"kind": "tactic", "phase": "after_move", "reason": reason, "own": own,
             "confidence": kill_confidence(analysis or {}), "route": demo_route,
             "target": route[own_target]["notation"],
-            "target_kind": "吃大子" if future_big else "关键接法"}
+            "target_kind": "吃大子" if future_big else "连续将军"}
     plan["summary"] = result_note(demo_route, own)
     plan["max_seconds"] = demo_budget(plan)
     return plan

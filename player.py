@@ -915,7 +915,7 @@ def main():
                     demo = run_game_sandbox(device, b, orientation, sandbox_plan, speech_token,
                                             n + 1, events, stop_requested)
                     speech_deadline = demo.get("speech_deadline", time.monotonic() + 15.0)
-                    sandbox_cadence.record(n + 1, sandbox_plan if demo.get("entered") else None)
+                    sandbox_cadence.record(n + 1, sandbox_plan)
                     if not demo.get("safe_exit"):
                         result = "recognition_pause"
                         break
@@ -1051,7 +1051,7 @@ def main():
                     fast_reply is None and not stop_requested()):
                 demo = run_game_sandbox(device, b, orientation, sandbox_plan, speech_token,
                                         n, events, stop_requested)
-                sandbox_cadence.record(n, sandbox_plan if demo.get("entered") else None)
+                sandbox_cadence.record(n, sandbox_plan)
                 if not demo.get("safe_exit"):
                     result = "recognition_pause"
                     break
