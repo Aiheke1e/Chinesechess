@@ -87,6 +87,37 @@ class DouyinAuthTests(unittest.TestCase):
         self.assertIn("游客接入", events[-1]["text"])
         self.assertIn("礼物消息需登录", events[-1]["text"])
 
+    def test_connector_reports_the_verified_account_without_account_ids_or_secrets(self):
+        fetcher, socket, events = self.fake_fetcher("sessionid=private-login; ttwid=logged")
+        fetcher.http_get.return_value.json.return_value = {
+            "status_code": 0, "user": {"uid": "123456789", "nickname": "实际登录的账号"}}
+        fetcher._connectWebSocket()
+        with patch("douyin_bridge.threading.Thread"):
+            fetcher._wsOnOpen(Mock())
+        self.assertTrue(events[-1]["login_verified"])
+        self.assertEqual(events[-1]["account_nickname"], "实际登录的账号")
+        self.assertIn("登录：实际登录的账号", events[-1]["text"])
+        self.assertNotIn("123456789", json.dumps(events))
+        self.assertNotIn("private-login", json.dumps(events))
+
+    def test_saved_cookie_or_failed_optional_lookup_does_not_claim_verified_login(self):
+        for response in ({"status_code": 8}, {"status_code": 0, "user": {}}, None):
+            fetcher, socket, events = self.fake_fetcher("sessionid=private-login")
+            fetcher.http_get.return_value.json.return_value = response
+            fetcher._connectWebSocket()
+            with patch("douyin_bridge.threading.Thread"):
+                fetcher._wsOnOpen(Mock())
+            self.assertFalse(events[-1]["login_verified"])
+            self.assertIn("已载入登录信息", events[-1]["text"])
+            self.assertTrue(socket.WebSocketApp.called)
+
+    def test_failed_optional_account_request_does_not_break_the_room_connection(self):
+        fetcher, socket, events = self.fake_fetcher("sessionid=private-login")
+        fetcher.http_get.side_effect = TimeoutError()
+        fetcher._connectWebSocket()
+        socket.WebSocketApp.assert_called_once()
+        self.assertFalse(fetcher.account_nickname)
+
     def panel(self):
         panel = object.__new__(ControlPanel)
         panel._douyin_login_request = object()

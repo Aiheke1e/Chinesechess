@@ -72,6 +72,8 @@ def create_fetcher(room, sink=emit):
             super().__init__(room, abogus_file=str(UPSTREAM / "a_bogus.js"))
             self.ended = False
             self.login_cookie = load_cookie()
+            self.account_nickname = ""
+            self.account_checked = False
             original_get = self.session.get
 
             def bounded_get(*args, **kwargs):
@@ -92,6 +94,7 @@ def create_fetcher(room, sink=emit):
         def _connectWebSocket(self):
             if not self.login_cookie:
                 return super()._connectWebSocket()
+            self._check_account()
             original = websocket.WebSocketApp
             def authenticated_socket(*args, **kwargs):
                 headers = dict(kwargs.get("header") or {})
@@ -103,6 +106,27 @@ def create_fetcher(room, sink=emit):
             # never puts the account login on the websocket handshake.
             with patch.object(websocket, "WebSocketApp", authenticated_socket):
                 return super()._connectWebSocket()
+
+        def _check_account(self):
+            """Verify the actual saved account; cookie presence is not login proof."""
+            if self.account_checked:
+                return
+            self.account_checked = True
+            try:
+                response = self.session.get(
+                    "https://www.douyin.com/aweme/v1/web/user/profile/self/",
+                    params={"device_platform": "webapp", "aid": "6383"},
+                    headers={**self.headers, "Referer": "https://www.douyin.com/"})
+                response.raise_for_status()
+                data = response.json()
+                if not isinstance(data, dict) or data.get("status_code") != 0:
+                    return
+                user = data.get("user") or {}
+                if isinstance(user, dict) and str(user.get("uid") or "").isdigit():
+                    self.account_nickname = str(user.get("nickname") or "已验证账号")[:256]
+            except Exception:
+                # This optional check must not prevent ordinary room messages.
+                pass
 
         @property
         def room_id(self):
@@ -125,8 +149,10 @@ def create_fetcher(room, sink=emit):
             return super().start()
 
         def _wsOnOpen(self, ws):
-            mode = "已载入登录信息" if self.login_cookie else "游客接入，礼物消息需登录"
-            sink({"type": "status", "state": "connected", "text": f"已连接抖音直播间（{mode}）"})
+            mode = (f"登录：{self.account_nickname}" if self.account_nickname else
+                    "已载入登录信息" if self.login_cookie else "游客接入，礼物消息需登录")
+            sink({"type": "status", "state": "connected", "text": f"已连接抖音直播间（{mode}）",
+                  "login_verified": bool(self.account_nickname), "account_nickname": self.account_nickname})
             threading.Thread(target=self._sendHeartbeat, daemon=True).start()
 
         def _wsOnError(self, ws, error):
