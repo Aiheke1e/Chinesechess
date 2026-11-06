@@ -30,8 +30,8 @@ from sandbox_narration import cue_token, receipt as sandbox_receipt, script as s
 from mate_patterns import build_finisher, confirmed_finisher_note, finisher_copy, MATE_OPENINGS
 from chat_selection import ChatSelector, viewer_key
 from speech_balance import SpeechBalance
-from interaction_text import welcome_line, spoken_reply, gift_reply
-from interaction_chess import ChessChatContext, grounded_reply
+from interaction_text import welcome_line, spoken_reply, gift_reply, local_reply, viewer_address
+from interaction_chess import ChessChatContext
 from commentary_style import CommentaryStyle, DEFAULT_PERSONA, LEGACY_PERSONAS, piece_amount, humor_enabled
 from stream_brand import (HOST_NAME, CHANNEL_NAME, DEFAULT_INTRODUCTION,
                           LEGACY_INTRODUCTIONS, migrate_host_identity)
@@ -177,6 +177,13 @@ def save_settings(settings):
 
 
 class SpeechPipeline:
+    def _remember_speech(self, text, kind, payload):
+        if kind in INTERACTION_SPEECH_KINDS:
+            name = viewer_address(payload.get("观众"))
+            if name:
+                text = text.replace(name, "", 1)
+        self.style.remember(text)
+
     def _recently_spoken(self, text):
         normalized = re.sub(r"[\s，。！？、；：,.!?]", "", text)
         if not normalized:
@@ -676,7 +683,7 @@ class SpeechPipeline:
         try:
             self.notify("reply", text, {"kind": kind, **payload, "_speech_mode": "audio",
                                         "_speech_seconds": duration})
-            self.style.remember(text)
+            self._remember_speech(text, kind, payload)
             if acknowledge:
                 self._mark_speech_started(payload)
             until = time.monotonic() + duration
@@ -1082,14 +1089,19 @@ class SpeechPipeline:
                 return
             self.notify("speech_status", f"正在组织{kind}话术", payload)
             history = list(self.history) if kind in CHESS_SPEECH_KINDS else []
-            style_hint = ({"最近用过的比喻": self.style.topics()} if kind in INTERACTION_SPEECH_KINDS else {})
+            style_hint = ({"最近用过的比喻": self.style.topics(), "最近用过的开头": self.style.openers()}
+                          if kind in INTERACTION_SPEECH_KINDS else {})
             if kind == CLOCK_KIND:
                 moment = beijing_now()
                 text = clock_line(moment)
                 state["clock_minute"] = minute_key(moment)
             else:
-                text = direct or payload.get("_grounded_reply") or self.llm(kind, {"主播设定": self.settings.persona, **style_hint, **payload},
-                                          history, model=self.settings.model)
+                text = direct or payload.get("_grounded_reply")
+                if not text and kind == "弹幕回复":
+                    text = local_reply(payload.get("弹幕"))
+                if not text:
+                    text = self.llm(kind, {"主播设定": self.settings.persona, **style_hint, **payload},
+                                    history, model=self.settings.model)
             text = self._first_person_text(text, payload)[:300]
             text = self.style.decorate(kind, text, payload, self.settings.persona)
             if kind == "弹幕回复":
@@ -1120,7 +1132,7 @@ class SpeechPipeline:
                     return
                 self.notify("reply", text, {"kind": kind, **payload, "_speech_mode": "text"})
                 self.balance.record(kind, min(10, max(2, len(text) / 5)))
-                self.style.remember(text)
+                self._remember_speech(text, kind, payload)
                 self.notify("speech_status", "仅文本模式：未调用 TTS", payload)
             completed = True
             if kind in CHESS_SPEECH_KINDS:
@@ -1667,11 +1679,11 @@ class LiveController:
         move = cls._spoken_notation(notation)
         if forced:
             if "，吃" in move:
-                return cls._synced_move_text(notation, reasons, number) + "咱们按这条线收官。"
+                return cls._synced_move_text(notation, reasons, number)
             if "形成将军" in reasons:
-                return f"{move}，将军，收官这段咱们不抢跑。"
-            variants = (f"{move}，杀棋路线接着走，收官这段不抢跑。",
-                        f"{move}，杀棋路线有了，收官的压轴题认真做。")
+                return f"{move}，将军。"
+            variants = (f"{move}，后面有杀棋，咱们接着走。",
+                        f"{move}，杀棋路线已经算到，接着往下走。")
         else:
             variants = (
                 f"{move}，目前局面占优，咱们继续走稳。",
@@ -2348,7 +2360,7 @@ class LiveController:
             payload = {"观众": user, "弹幕": text, "测试输入": bool(force),
                        "互动标识": f"test-{time.time_ns()}"}
             context = getattr(self, "chat_chess_context", None)
-            answer = grounded_reply(text, context.snapshot() if context else {})
+            answer = local_reply(text, context.snapshot() if context else {})
             if answer is not None:
                 payload["_grounded_reply"] = answer
             self.pipeline.submit(1, "弹幕回复", payload)
@@ -2382,7 +2394,7 @@ class LiveController:
                     "互动标识": f"chat-{time.time_ns()}",
                     "_expires_at": selected["received"] + self.chat_selector.MAX_AGE}
                 context = getattr(self, "chat_chess_context", None)
-                answer = grounded_reply(selected["text"], context.snapshot() if context else {})
+                answer = local_reply(selected["text"], context.snapshot() if context else {})
                 if answer is not None:
                     payload["_grounded_reply"] = answer
                 self.pipeline.submit(3, "弹幕回复", payload)

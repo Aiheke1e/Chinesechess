@@ -1,6 +1,6 @@
 """Short audience lines without invented nicknames or stage directions."""
 import re
-from interaction_chess import grounded_reply
+from interaction_chess import chess_comment, grounded_reply
 
 
 def viewer_address(user):
@@ -29,12 +29,26 @@ def reply_hint(comment):
     return "只按这条弹幕的原意回答，不借用其他观众的话。"
 
 
+def local_reply(comment, snapshot=None):
+    """Answer missing real-world facts honestly, before any model request."""
+    comment = str(comment or "")
+    if (re.search(r"支架|耳机|鼠标|键盘|衣服|同款|设备", comment)
+            and re.search(r"[哪那].{0,5}买|[哪那].{0,4}卖|链接|店铺|多少钱|什么|哪款|型号", comment)):
+        return ("购买来源我这边没有，可不能闭眼给你报一家店。" if re.search(r"买|卖|链接|店铺|多少钱", comment) else
+                "具体型号我这边没有，先不乱报品牌。")
+    if re.search(r"^(?:快|帮我|给我|赶紧|麻烦|请)?\s*(?:呼叫|叫来|喊来|联系|通知).{1,18}$", comment):
+        return "召唤收到，我只能在这里接话，没法替你把人叫来。"
+    if re.search(r"是.{0,3}(?:特大|大师|冠军)|(?:特大|大师|冠军)(?:吗|么|不)", comment):
+        return "你指的是哪位棋手？称号得有可靠资料，我先不乱认。"
+    return grounded_reply(comment, snapshot)
+
+
 def spoken_reply(text, limit=55, payload=None):
     payload = payload or {}
     comment = str(payload.get("弹幕") or "")
     if payload.get("_grounded_reply"):
         text = payload["_grounded_reply"]
-    elif (answer := grounded_reply(comment)) is not None:
+    elif (answer := local_reply(comment)) is not None:
         # Chess claims cannot be invented by an unconstrained social reply.
         text = answer
     hint = reply_hint(comment)
@@ -52,6 +66,10 @@ def spoken_reply(text, limit=55, payload=None):
         greeting = re.search(r"晚上好|早上好|中午好|下午好|你好|早安", comment)
         text = (f"{greeting.group()}，招呼收到，咱们这场聊天算是开席了。" if greeting else
                 "先把你的意思说清楚，咱们聊明白再接着看。")
+    if not chess_comment(comment) and re.search(r"这[招步].{0,8}(?:狠|稳|有想法|犀利)|(?:这盘|棋局).{0,20}(?:赢|优势|热闹|玄机|好戏)|对手.{0,6}(?:偷袭|上风)|稳如老狗", str(text)):
+        text = ("能把你逗乐就好，这场气氛算是到位了。" if re.search(r"笑|哈哈", comment) else
+                "你看得乐呵，我这话筒就没白开。" if re.search(r"有趣|有意思|节目效果", comment) else
+                "这句我没听明白，你指的是哪件事？")
     text = re.sub(r"\[[^\]\n]{1,12}\]|【[^】\n]{1,12}】", "", str(text))
     text = re.sub(r"[\U0001f000-\U0001faff\u2600-\u27ff\ufe0f\u200d]", "", text)
     text = re.sub(r"[\r\n*_#`]+", "", text).strip()
@@ -62,7 +80,7 @@ def spoken_reply(text, limit=55, payload=None):
     if name and text:
         lead = r"(?:(?:哎|欸|嘿|嗨|好嘞|哈哈|好的)[，,:：、！!\s]*)*"
         address_pattern = re.compile(r"^" + lead + r"(?:" + re.escape(name) +
-            r"|这位棋友|这位朋友|这位观众|棋友|朋友)(?:[，,:：、！!\s]+|$)")
+            r"|这位棋友|这位朋友|这位观众|棋友|朋友|老师|老板|师兄|大哥|兄弟|老铁)(?:[，,:：、！!\s]+|$)")
         for _ in range(3):
             cleaned = address_pattern.sub("", text, count=1)
             if cleaned == text:

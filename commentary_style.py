@@ -81,6 +81,7 @@ class CommentaryStyle:
         self.recent_keys = deque(maxlen=16)
         self.recent_families = deque(maxlen=4)
         self.spoken_families = deque(maxlen=4)
+        self.recent_openers = deque(maxlen=6)
         self.turn = 0
         self.move_calls = 0
         self.last_move_flourish = -3
@@ -118,12 +119,23 @@ class CommentaryStyle:
         families = [key for key, terms in words.items() if any(term in text for term in terms)]
         with self.lock:
             self.spoken_families.extend(families or [None])
+            opener = re.search(r"(?:^|[，。！？])\s*(好嘞|哎呀|哈哈|好的|欸|哎)[，。！？\s]", text)
+            self.recent_openers.append(opener.group(1) if opener else None)
 
     def topics(self):
         with self.lock:
             return list(dict.fromkeys(family for family in self.spoken_families if family))
 
+    def openers(self):
+        with self.lock:
+            return list(dict.fromkeys(word for word in self.recent_openers if word))
+
     def decorate(self, kind, text, payload, persona):
+        if kind == "弹幕回复":
+            opener = re.match(r"^(好嘞|哎呀|哈哈|好的|欸|哎)[，。！？\s]+", text)
+            if opener and opener.group(1) in self.openers():
+                return text[opener.end():] or text
+            return text
         if not humor_enabled(persona):
             return text
         review = payload.get("上一手预判复盘") or {}

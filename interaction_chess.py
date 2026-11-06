@@ -12,7 +12,13 @@ from queen_commentary import move_effects
 PIECES = "车马炮兵卒相象仕士帅将"
 MOVE = re.compile(rf"[{PIECES}][一二三四五六七八九1-9][进退平][一二三四五六七八九1-9]")
 CHESS = re.compile(rf"[{PIECES}][一二三四五六七八九1-9]|[打吃跳进出回退平飞补架拱][{PIECES}]|"
-                   r"绝杀|漏杀|将死|闷宫|重炮|双杯|钓鱼马|这[盘局手步]|棋[局盘招力]|谁[赢输]|局势")
+                   rf"[抓捉抽兑弃丢冲挺推压挡封卧上落](?:你|他|这|那|中|边|路|河|的|[1-9]|[上下左右前后]){{0,3}}[{PIECES}]|"
+                   r"绝杀|漏杀|将死|叫杀|闷宫|重炮|双杯|钓鱼马|卧槽马|马后炮|"
+                   r"这[盘局手步招]|棋[局盘招力规风]|谁[赢输]|局势|均势|优势|劣势|"
+                   r"丢子|弃子|送子|兑子|蹩马腿|马.{0,4}(?:方向|难受|卧错)|"
+                   r"(?:红|黑)(?:方|棋)?.{0,2}(?:亏|赢|输|优)|"
+                   r"(?:要|能|会|快|包|稳|终于).{0,3}(?:赢|输)|开[胡和]|"
+                   r"三步虎|列炮|两头蛇|双头蛇|屏风马|中炮|仙人指路|一[杀将捉吃].{0,3}一[杀将捉吃]")
 
 
 def chess_comment(text):
@@ -20,8 +26,10 @@ def chess_comment(text):
 
 
 def incomplete_comment(text):
+    text = re.sub(r"\[[^\]\n]{1,12}\]", "", str(text)).strip()
     return bool(re.fullmatch(rf"\s*(?:[1-9一二三四五六七八九]路|[{PIECES}][1-9]{{1,2}}|"
-                             rf"[打吃跳进出回退平飞补架拱][{PIECES}])\s*[。！!]?", str(text)))
+                             rf"[打吃跳进出回退平飞补架拱][{PIECES}]|[冲挺拱推](?:中|边)?[兵卒]|"
+                             rf"[上下左右前后]边?[{PIECES}]|均势|[推拉走跳]起来|推演[\u4e00-\u9fff]?|[一二三四五六七八九1-9]+把手|准备[a-zA-Z]+)\s*[。！!]?", text))
 
 
 def _normalize(move):
@@ -101,6 +109,10 @@ def grounded_reply(comment, snapshot=None):
     if not chess_comment(comment):
         return None
     snapshot = snapshot or {}
+    if re.search(r"棋规|规则|违规|一[杀将捉吃].{0,3}一[杀将捉吃]", comment):
+        return "是否违规得看完整往返棋谱和平台规则，只凭这几个字还不能判。"
+    if re.search(r"三步虎|列炮|两头蛇|双头蛇|屏风马|仙人指路", comment) and re.search(r"亏|优|难受|好坏", comment):
+        return "布局好坏还得看具体变化，不能只凭开局名字说哪边吃亏。"
     suggestion = MOVE.search(comment)
     if suggestion and snapshot.get("fen"):
         try:
@@ -110,9 +122,11 @@ def grounded_reply(comment, snapshot=None):
             if move is not None:
                 probe = board.copy()
                 probe.apply(move)
-                mate = (probe.king_pos(probe.turn) >= 0 and probe.in_check(probe.turn) and not probe.legal_moves())
-                if mate:
-                    return f"按刚确认的局面，{suggestion.group()}确实是一步将死，这次有棋盘作证。"
+                terminal = probe.king_pos(probe.turn) >= 0 and not probe.legal_moves()
+                if terminal:
+                    if probe.in_check(probe.turn):
+                        return f"按刚确认的局面，{suggestion.group()}确实是一步将死，这次有棋盘作证。"
+                    return f"按刚确认的局面，{suggestion.group()}走完对面无棋可走，是困毙取胜。"
                 if re.search(r"绝杀|将死|闷宫|重炮|双杯|钓鱼马", comment):
                     return f"{suggestion.group()}这手能走，但对面还有合法应法，不能直接喊一步绝杀。"
                 effects = move_effects(board, move)
@@ -125,8 +139,16 @@ def grounded_reply(comment, snapshot=None):
             return f"刚确认的局面里，当前行棋方没有{suggestion.group()}这手，可能说的是前面的局面。"
         except (ValueError, TypeError, IndexError):
             pass
+    if suggestion and not snapshot.get("fen"):
+        return f"{suggestion.group()}这手我收到了，还得核对当前棋形才能讲作用。"
+    if re.search(r"谁[赢输]|优势|劣势|均势|[红黑].{0,3}亏|(?:要|能|会|快|包|稳|终于).{0,3}(?:赢|输)|开[胡和]", comment):
+        return "这盘的最新棋形还没核实，先不急着判输赢。" if not snapshot.get("fen") else "胜负得看后续实招，刚才那份棋形还不足以保证谁赢。"
     if re.search(r"漏杀|绝杀|将死|闷宫|重炮|双杯|钓鱼马", comment):
-        return "这条杀法得核对当时的局面，不能听见绝杀就跟着喊，豆包先把嘴刹住。"
+        return "这条杀法得核对当时的局面，先不能直接认定是绝杀。"
+    if re.search(r"丢子|弃子|送子|兑子", comment):
+        return "现在还不能确认是丢子还是交换，得把前后的走法一起看。"
+    if re.search(r"抽.{0,2}车|抓.{0,2}炮|叫杀", comment):
+        return "这条威胁得看双方子的位置，我还不能只凭这句话定应法。"
     piece = "相象" if re.search(r"飞[象相]", comment) else "马" if re.search(r"跳马|进马|回马", comment) else ""
     for row in reversed(snapshot.get("moves") or []):
         notation = re.sub(r"^(?:红方|黑方)\s+", "", row["notation"])
@@ -141,4 +163,4 @@ def grounded_reply(comment, snapshot=None):
             return f"刚才{actor}走的是{notation.split('，')[0]}，更具体的作用还没核实，不能硬夸成高招。"
     if re.search(r"先?[打吃]马", comment):
         return "先打马这个建议收到，不过能吃和该先吃是两回事，得对着具体局面看。"
-    return "这条得对着具体棋形讲，现有记录还不能确认你的意思，豆包不隔空封高招。"
+    return "这手得看完整棋形，你指的是哪枚子、哪一步？"

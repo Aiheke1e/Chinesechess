@@ -200,7 +200,7 @@ class CommentaryTextTests(unittest.TestCase):
     def test_closing_call_stays_with_current_check_without_program_wording(self):
         text = LiveController._closing_move_text("黑方 车6退1", 30, True, ["形成将军"])
         self.assertIn("将军", text)
-        self.assertIn("收官", text)
+        self.assertEqual(text, "车6退1，将军。")
         self.assertNotIn("核准", text)
         self.assertNotIn("拿下", text)
 
