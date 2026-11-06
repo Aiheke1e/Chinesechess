@@ -12,6 +12,7 @@ from queen_commentary import move_effects
 PIECES = "车马炮兵卒相象仕士帅将"
 MOVE = re.compile(rf"[{PIECES}][一二三四五六七八九1-9][进退平][一二三四五六七八九1-9]")
 CHESS = re.compile(rf"[{PIECES}][一二三四五六七八九1-9]|[打吃跳进出回退平飞补架拱][{PIECES}]|"
+                   rf"[打吃拿](?:你|我|他|她|咱们|对面|对手|的|这|那|枚|匹|门|辆){{0,4}}[{PIECES}]|破[相象]|"
                    rf"[抓捉抽兑弃丢冲挺推压挡封卧上落](?:你|他|这|那|中|边|路|河|的|[1-9]|[上下左右前后]){{0,3}}[{PIECES}]|"
                    r"绝杀|漏杀|将死|叫杀|闷宫|重炮|双杯|钓鱼马|卧槽马|马后炮|"
                    r"这[盘局手步招]|棋[局盘招力规风]|谁[赢输]|局势|均势|优势|劣势|"
@@ -149,6 +150,8 @@ def grounded_reply(comment, snapshot=None):
         return "现在还不能确认是丢子还是交换，得把前后的走法一起看。"
     if re.search(r"抽.{0,2}车|抓.{0,2}炮|叫杀", comment):
         return "这条威胁得看双方子的位置，我还不能只凭这句话定应法。"
+    if re.search(r"破[相象]", comment):
+        return "你说的是破相这条思路。能否拆开防守，还得核对后面的接法。"
     piece = "相象" if re.search(r"飞[象相]", comment) else "马" if re.search(r"跳马|进马|回马", comment) else ""
     for row in reversed(snapshot.get("moves") or []):
         notation = re.sub(r"^(?:红方|黑方)\s+", "", row["notation"])
@@ -163,4 +166,7 @@ def grounded_reply(comment, snapshot=None):
             return f"刚才{actor}走的是{notation.split('，')[0]}，更具体的作用还没核实，不能硬夸成高招。"
     if re.search(r"先?[打吃]马", comment):
         return "先打马这个建议收到，不过能吃和该先吃是两回事，得对着具体局面看。"
+    capture = re.search(rf"[打吃拿](?:你|我|他|她|咱们|对面|对手|的|这|那|枚|匹|门|辆){{0,4}}([{PIECES}])", comment)
+    if capture:
+        return f"涉及吃{capture.group(1)}的这条线，还得把保护和回吃核对清楚，不能只看眼前这一口。"
     return "这手得看完整棋形，你指的是哪枚子、哪一步？"

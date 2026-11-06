@@ -32,6 +32,11 @@ def reply_hint(comment):
 def local_reply(comment, snapshot=None):
     """Answer missing real-world facts honestly, before any model request."""
     comment = str(comment or "")
+    if (re.search(r"课程|微学堂|买课|购课|学费|报名", comment)
+            and re.search(r"看|买|购|平台|订单|互通|多少钱|价格|报名|支持|能不能|可以|能在", comment)):
+        return "课程能否互通，要以购买平台的说明为准，我这边查不到课程权限和订单。"
+    if re.fullmatch(r"\s*(?:确实|真|还真|是)?有研究[啊呀哦嘛。！!\s]*", comment):
+        return "研究归研究，还是得让实战说话。"
     if (re.search(r"支架|耳机|鼠标|键盘|衣服|同款|设备", comment)
             and re.search(r"[哪那].{0,5}买|[哪那].{0,4}卖|链接|店铺|多少钱|什么|哪款|型号", comment)):
         return ("购买来源我这边没有，可不能闭眼给你报一家店。" if re.search(r"买|卖|链接|店铺|多少钱", comment) else
@@ -108,6 +113,8 @@ def spoken_reply(text, limit=55, payload=None):
 def gift_reply(text, payload, style=None):
     """Fixed thanks using the real sender and gift; no model or extra patter."""
     name = viewer_address(payload.get("观众"))
+    if "*" in str(payload.get("观众") or "") and name.endswith("棋友"):
+        name = name[:-2]
     gift = " ".join(str(payload.get("礼物") or "心意").split())
     boss = name if name.endswith("老板") else name + "老板"
     return f"感谢{boss}送的{gift}，谢谢老板。"
