@@ -72,7 +72,7 @@ class SpeechBalanceTests(unittest.TestCase):
             finally:
                 pipeline.close()
 
-    def test_sandbox_entry_cannot_be_covered_by_a_long_chat_audio(self):
+    def test_sandbox_waits_for_a_short_chat_and_blocks_the_next_reply(self):
         chat, sandbox = threading.Event(), threading.Event()
         def notify(kind, text, payload):
             if kind == "reply":
@@ -89,6 +89,7 @@ class SpeechBalanceTests(unittest.TestCase):
                 pipeline.prepare_move("沙盘推演解说", {"speech_token": "demo:sandbox"}, "来，把这轮交换摆清楚。")
                 pipeline.reserve_sandbox()
                 pipeline.commit_move("demo:sandbox")
-                self.assertTrue(sandbox.wait(.5))
+                self.assertFalse(sandbox.wait(.1))
+                self.assertTrue(sandbox.wait(2.5))
             finally:
                 pipeline.close()

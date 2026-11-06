@@ -25,7 +25,15 @@ def prepared(token):
     """A token-scoped receipt proves this host understands step playback."""
     try:
         data = json.loads(marker_path(token).read_text(encoding="utf-8"))
-        return data.get("token") == token and data.get("status") in ("preparing", "started", "finished")
+        return data.get("token") == token and data.get("status") in ("preparing", "ready", "started", "finished")
+    except (OSError, ValueError):
+        return False
+
+
+def audio_ready(token):
+    try:
+        data = json.loads(marker_path(token).read_text(encoding="utf-8"))
+        return data.get("token") == token and data.get("status") in ("ready", "started", "finished")
     except (OSError, ValueError):
         return False
 
@@ -35,7 +43,7 @@ def question_budget(token):
     try:
         data = json.loads(marker_path(token).read_text(encoding="utf-8"))
         budget = float(data.get("scene_seconds", 0))
-        if (data.get("token") == token and data.get("status") in ("preparing", "started", "finished")
+        if (data.get("token") == token and data.get("status") in ("preparing", "ready", "started", "finished")
                 and 5 <= budget <= 30):
             return budget
     except (OSError, ValueError, TypeError):

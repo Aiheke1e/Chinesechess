@@ -29,7 +29,8 @@ from glm_client import DEFAULT_MODEL, respond
 from opening_library import load_opening_library
 from commentary_text import (complete_note, connected_move_note, waiting_note,
                              confirmed_win_note, opponent_wait_note, opponent_capture_note)
-from sandbox_narration import cue_token, receipt as sandbox_receipt, script as sandbox_script
+from sandbox_narration import (cue_token, receipt as sandbox_receipt, script as sandbox_script,
+                               audio_ready as sandbox_audio_ready)
 from mate_patterns import build_finisher, confirmed_finisher_note, finisher_copy, MATE_OPENINGS
 from chat_selection import ChatSelector, viewer_key
 from speech_balance import SpeechBalance
@@ -402,7 +403,8 @@ class SpeechPipeline:
     def _chat_busy(self):
         with self.condition:
             return bool(self.active_chat and self.chat_ready and self.active_chat_cancel_epoch == self.cancel_epoch
-                        and self._chat_valid("弹幕回复", self.active_chat_payload or {})
+                        and self._chat_valid("弹幕回复", self.active_chat_payload or {}, started=bool(
+                            getattr(self, "audio_active", False) and getattr(self, "current_kind", None) == "弹幕回复"))
                         and (self.balance.can_chat() or (getattr(self, "audio_active", False)
                              and self.balance.chat_may_finish()
                              and getattr(self, "current_kind", None) == "弹幕回复")))
@@ -570,8 +572,10 @@ class SpeechPipeline:
     def resume_chess(self):
         self.chess_suspended = False
 
-    def _chat_valid(self, kind, payload):
-        return (time.monotonic() <= payload.get("_expires_at", float("inf"))
+    def _chat_valid(self, kind, payload, *, started=False):
+        # Freshness is a gate to START speaking, not a timer that cuts an
+        # accepted utterance in half. Room/feature cancellation still applies.
+        return ((started or time.monotonic() <= payload.get("_expires_at", float("inf")))
                 and (kind not in INTERACTION_SPEECH_KINDS or (
                     not getattr(self, "interactions_suspended", False)
                     and payload.get("_chat_epoch", self.chat_epoch) == self.chat_epoch)))
@@ -691,9 +695,9 @@ class SpeechPipeline:
         until = None
         valid = lambda: (self._state_live(state)
                          and self.settings.speech_enabled
-                         and self._chat_valid(kind, payload)
+                         and self._chat_valid(kind, payload, started=state.get("audio_started", False))
                          and ((state.get("finish_sentence") and state.get("audio_started")
-                               and not self._mate_busy() and not self._chat_busy())
+                               and not self._mate_busy())
                               or self._has_turn(kind, payload) or (
                              until is not None and until - time.monotonic() <= .9
                              and not self._mate_busy() and (self._chat_busy() or (
@@ -708,10 +712,11 @@ class SpeechPipeline:
         winsound.PlaySound(str(audio), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
         playback_started = time.monotonic()
         state["audio_started"] = True
-        # Finish a short factual move call already on air. New positions still
-        # discard unstarted jobs; pause, speech-off and mate priority remain immediate.
+        # Keep short speech intact at ordinary scheduling boundaries. Pending
+        # chat stays ahead of UNSTARTED chess; mate and manual stop still win.
         state["finish_sentence"] = (0 < duration <= 9 and not payload.get("_sandbox_cue")
-            and kind in ("关键走棋解说", "我方走棋播报", "我方走棋解说", GAP_KIND, *TRANSITION_KINDS))
+            and kind in ("关键走棋解说", "我方走棋播报", "我方走棋解说", GAP_KIND,
+                         *TRANSITION_KINDS, *INTERACTION_SPEECH_KINDS))
         with self.playback_state_lock:
             self.audio_active = True
         if kind == "弹幕回复":
@@ -725,16 +730,14 @@ class SpeechPipeline:
             until = time.monotonic() + duration
             while time.monotonic() < until:
                 if not valid():
+                    reason = self._speech_interruption_reason(kind, payload, state)
                     winsound.PlaySound(None, winsound.SND_PURGE)
                     if acknowledge:
                         self._mark_speech_failed(payload,"本段播报已中断")
                     self.notify("speech_interrupted", "播报已中断", {"kind":kind,
                         "speech_token":payload.get("speech_token"),
                         "elapsed":round(time.monotonic()-playback_started,2), "duration":round(duration,2),
-                        "reason":("语音已关闭" if not self.settings.speech_enabled else
-                                  "停止或暂停" if self.closed.is_set() or getattr(self,"suspended",False) or getattr(self,"chess_suspended",False) else
-                                  "关键将杀优先" if self._mate_busy() else
-                                  "新局面或演示已结束" if not self._state_live(state) else "弹幕或讲棋优先级切换")})
+                        "reason":reason})
                     return False
                 self.closed.wait(min(0.03, max(0, until - time.monotonic())))
             if not valid():
@@ -746,6 +749,28 @@ class SpeechPipeline:
             self.balance.record(kind, min(duration, time.monotonic() - playback_started))
             with self.playback_state_lock:
                 self.audio_active = False
+
+    def _speech_interruption_reason(self, kind, payload, state):
+        if not self.settings.speech_enabled:
+            return "语音已关闭"
+        if (self.closed.is_set() or self.suspended or
+                kind in CHESS_SPEECH_KINDS and self.chess_suspended):
+            return "停止或暂停"
+        if kind in INTERACTION_SPEECH_KINDS and not self._chat_valid(kind, payload, started=True):
+            return "弹幕互动已暂停或直播间已切换"
+        if state.get("approved") is False:
+            return "本段播报已取消"
+        if state["epoch"] != self.cancel_epoch:
+            return "播报队列已清空"
+        if not self._state_live(state):
+            return "棋局或讲解状态已更新"
+        if not self._is_mate(kind, payload) and self._mate_busy():
+            return "关键将杀优先"
+        if self._chat_busy():
+            return "切换到已就绪的弹幕回复"
+        if kind in INTERACTION_SPEECH_KINDS and not self.balance.chat_may_finish():
+            return "进入沙盘讲解"
+        return "播报优先级已切换"
 
     @staticmethod
     def _clean_text(text):
@@ -865,12 +890,27 @@ class SpeechPipeline:
                 self._mark_speech_failed(payload, "没有可播报的有效台词")
                 return
             if self.settings.speech_enabled:
+                dependencies = payload.get("_tts_after_sandbox") or ()
+                # Do not let a long finisher occupy the single TTS request
+                # slot ahead of its own demo steps. Preheat it once all cues
+                # have audio, or once a safe return releases the real move.
+                ready_deadline = time.monotonic() + 65
+                while dependencies and not all(sandbox_audio_ready(item) for item in dependencies):
+                    if not self._state_live(state) or time.monotonic() >= ready_deadline:
+                        raise SynthesisCancelled()
+                    if state["decision"].is_set():
+                        if not state["approved"]:
+                            raise SynthesisCancelled()
+                        break
+                    self.closed.wait(.03)
                 self.notify("speech_status", "正在预热走棋语音", payload)
                 audio = self._synthesize(text, kind, payload, state)
                 if payload.get("_sandbox_cue") and not audio:
                     self._mark_speech_failed(payload, "沙盘本步语音未生成")
                     return
-            if not state["decision"].wait(65.0 if payload.get("_sandbox_cue") else 30.0) or not state["approved"]:
+                if payload.get("_sandbox_cue"):
+                    sandbox_receipt(payload, "ready")
+            if not state["decision"].wait(65.0 if payload.get("_sandbox_cue") or payload.get("_tts_after_sandbox") else 30.0) or not state["approved"]:
                 return
             if (state["epoch"] != self.cancel_epoch or self.closed.is_set() or
                     getattr(self, "suspended", False)):
@@ -1733,6 +1773,7 @@ class LiveController:
                 "_sandbox_scene_seconds": plan.get("scene_seconds") if cue == "question" else None,
             }, direct_text=text, replace_older=index == 0)
         self.sandbox_speech_by_move[token] = mapping
+        return list(mapping.values())
 
 
 
@@ -2211,7 +2252,10 @@ class LiveController:
                 if event.get("sandbox_plan") and getattr(getattr(self, "settings", None), "sandtable_enabled", True):
                     plan = self._sandtable_plan(event)
                     if plan:
-                        self._prepare_sandbox_narration(token, plan, payload)
+                        dependencies = self._prepare_sandbox_narration(token, plan, payload)
+                        if plan.get("phase") == "before_move":
+                            self.commentary_analyses[token]["_pre_move_demo"] = True
+                            payload = {**payload, "_tts_after_sandbox": dependencies}
                         prepared_sandbox = True
                 self.pipeline.prepare_move("绝杀长解说", payload,
                                            direct_text=finisher["text"], replace_older=not prepared_sandbox)
@@ -2322,7 +2366,9 @@ class LiveController:
                 if sandtable:
                     # The move call and sandbox explanation are independent:
                     # failed sandbox entry must never silence the real move.
-                    self._prepare_sandbox_narration(token, sandtable, important_payload)
+                    dependencies = self._prepare_sandbox_narration(token, sandtable, important_payload)
+                    if sandtable.get("phase") == "before_move":
+                        important_payload = {**important_payload, "_tts_after_sandbox": dependencies}
                     self.pipeline.prepare_move(
                         kind, important_payload, direct_text=direct,
                         replace_older=False)

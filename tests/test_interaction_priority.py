@@ -134,7 +134,7 @@ class InteractionPriorityTests(unittest.TestCase):
             self.assertTrue(chat_heard.wait(.5))
             self.assertEqual(llm.call_count, 1)
 
-    def test_chat_preempts_an_ordinary_move_audio(self):
+    def test_chat_waits_for_an_already_playing_short_move_sentence(self):
         move_heard, chat_heard = threading.Event(), threading.Event()
         def notify(kind, text, data):
             if kind == "reply":
@@ -146,7 +146,8 @@ class InteractionPriorityTests(unittest.TestCase):
             self.assertTrue(move_heard.wait(1))
             self.assertTrue(pipeline.can_reply_chat())
             pipeline.submit(3, "弹幕回复", {"观众": "小王", "弹幕": "主播晚上好"})
-            self.assertTrue(chat_heard.wait(.5))
+            self.assertFalse(chat_heard.wait(.1))
+            self.assertTrue(chat_heard.wait(2.5))
 
     def test_slow_chat_generation_does_not_block_an_ordinary_move_call(self):
         generating, release, acknowledged = (threading.Event() for _ in range(3))
@@ -231,7 +232,7 @@ class InteractionPriorityTests(unittest.TestCase):
                 self.assertFalse(chat_heard.wait(.06))
                 self.assertFalse(any(call.args[0] is None for call in self.sound.call_args_list))
                 release.set()
-                self.assertTrue(chat_heard.wait(1))
+                self.assertTrue(chat_heard.wait(2.5))
             finally:
                 release.set()
 
