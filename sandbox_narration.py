@@ -136,6 +136,9 @@ def script(plan):
                    if plan.get("reason") == "关键交换" else
                    ("这里有后续吃子，咱们摆一下接法。", "咱们顺着这条线，看后手怎么接。", "把后面这段吃子摆给大家看。", "这条接法有后手，咱们展开看一眼。"))
         intro = options[variant]
+        if plan.get("thinking_wait"):
+            intro = ("对面还没落子，摆一条可能的接法。", "趁对面还没走，咱们摆一种变化。",
+                     "这手还没落定，先用沙盘看看接法。", "实战还没新招，咱们摆一条参考线。")[variant]
     cues = {}
     if scene:
         cues["question"] = scene["question"]

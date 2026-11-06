@@ -494,7 +494,7 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
         failure_image = screenshot(device)
         probe = _position_probe(live_board, failure_image, orientation)
         advanced = (_advance_after_observed_reply(live_board, legal_route, probe)
-                    if (plan or {}).get("phase") != "before_move" else None)
+                    if (plan or {}).get("phase") != "before_move" and not (plan or {}).get("thinking_wait") else None)
         if advanced is not None:
             # JJ answered during our gate check.  The first PV ply is already
             # real, so copy that position and demonstrate the remaining three

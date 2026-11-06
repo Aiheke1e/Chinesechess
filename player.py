@@ -25,6 +25,7 @@ from queen_commentary import build_queen_evidence
 from game_control import auto_continue_enabled
 from opponent_status import OpponentWaitMonitor
 from opponent_nudge import send_wait_cloud
+from thinking_sandbox import ThinkingSandbox, thinking_candidate
 from game_rules import RULE_REJECTED
 from engine_history import PositionHistory
 
@@ -349,6 +350,11 @@ def wait_for_postgame_screen(device, timeout=5.0, interval=0.5):
         time.sleep(interval)
 
 
+def result_screen_details(device, image=None):
+    from game_result import read_result
+    return read_result(image if image is not None else screenshot(device))
+
+
 def read_stable_board(device, turn, min_pieces=20, stable_delay=0.35,
                       orientation="auto"):
     """Only accept two identical, structurally possible recognition frames."""
@@ -663,6 +669,7 @@ def main():
     from game_sandbox import SandboxCadence
     sandbox_cadence = SandboxCadence()
     opponent_wait = OpponentWaitMonitor()
+    thinking_sandbox = ThinkingSandbox()
     started_at_move = n
     # JJ 会给移动后的棋子换字形。这里保存这些可信占位，只放宽字形，
     # 仍严格检查颜色、空格和合法的一步转移。
@@ -699,10 +706,11 @@ def main():
                     total_waited = time.monotonic() - wait_started
                     waited = total_waited - timeout_reported_at
                     if postgame_screen_visible(device, image):
-                        result = "finished"
+                        finish = result_screen_details(device, image)
+                        result = finish.pop("result", "finished")
                         print("[本局结束] 检测到 JJ 结算页面，本局已结束。")
                         events.emit("game_over", result=result,
-                                    reason="jj_result_screen", fen=b.to_fen())
+                                    reason="jj_result_screen", fen=b.to_fen(), **finish)
                         break
                     presence = opponent_wait.observe_screen(image)
                     if presence:
@@ -727,6 +735,25 @@ def main():
                                 b, image, orientation, occupancy_history))
                         if check_status == "unchanged":
                             reference_image = image
+                    waiting_demo = thinking_sandbox.take(
+                        b, n, total_waited,
+                        stable=check_status == "unchanged" and current_candidate is None,
+                        disconnected=opponent_wait.offline_notified)
+                    if waiting_demo and not cfg["dry_run"] and not stop_requested():
+                        demo = run_game_sandbox(
+                            device, b, orientation, waiting_demo["plan"],
+                            waiting_demo["token"], n, events, stop_requested)
+                        sandbox_cadence.record(n, waiting_demo["plan"])
+                        if not demo.get("safe_exit"):
+                            result = "recognition_pause"
+                            break
+                        # The real opponent is free to move during the demo.
+                        # Re-read before any status, emoji or real move.
+                        reference_image = None
+                        pending_opponent_move = None
+                        occupancy_history.clear()
+                        last_full_recognition = 0.0
+                        continue
                     presence = opponent_wait.observe_board(
                         check_status == "unchanged" and current_candidate is None)
                     if presence:
@@ -831,14 +858,15 @@ def main():
                         timeout_reported_at = total_waited
                 if stop_requested():
                     break
-                if result == "finished":
+                if result in ("won", "lost", "finished", "recognition_pause"):
                     break
                 if not got and not stop_requested():
                     if wait_for_postgame_screen(device):
-                        result = "finished"
+                        finish = result_screen_details(device)
+                        result = finish.pop("result", "finished")
                         print("[本局结束] 等待期间检测到延迟出现的结算页面。")
                         events.emit("game_over", result=result,
-                                    reason="delayed_jj_result_screen", fen=b.to_fen())
+                                    reason="delayed_jj_result_screen", fen=b.to_fen(), **finish)
                     break
                 if result == "lost":
                     break
@@ -909,6 +937,7 @@ def main():
                     d, analysis, pv_line, u, board=b)
                 if sandbox_plan and not sandbox_cadence.allowed(sandbox_plan, n + 1):
                     sandbox_plan = None
+                sandbox_plan = thinking_candidate(sandbox_plan)
             except Exception:
                 sandbox_plan = None
 
@@ -1032,10 +1061,11 @@ def main():
                 # 将死后 JJ 可能依次播放棋盘特效、段位动画，再显示结算按钮。
                 # 只在落子无法确认的异常路径多等待，不增加正常每步用时。
                 if wait_for_postgame_screen(device, timeout=18.0):
-                    result = "finished"
+                    finish = result_screen_details(device)
+                    result = finish.pop("result", "finished")
                     print("[本局结束] 最后一步后已进入 JJ 结算页面，准备进入下一局。")
                     events.emit("game_over", result=result,
-                                reason="jj_result_screen", fen=b.to_fen())
+                                reason="jj_result_screen", fen=b.to_fen(), **finish)
                 else:
                     # A precondition failure explicitly means mover did not
                     # send either tap.  Keep the trusted session active so the
@@ -1076,12 +1106,15 @@ def main():
             if (not cfg["dry_run"] and sandbox_plan and
                     sandbox_plan.get("phase", "after_move") == "after_move" and
                     fast_reply is None and not stop_requested()):
-                demo = run_game_sandbox(device, b, orientation, sandbox_plan, speech_token,
-                                        n, events, stop_requested)
-                sandbox_cadence.record(n, sandbox_plan)
-                if not demo.get("safe_exit"):
-                    result = "recognition_pause"
-                    break
+                if sandbox_plan.get("thinking_wait"):
+                    thinking_sandbox.arm(b, sandbox_plan, speech_token, n)
+                else:
+                    demo = run_game_sandbox(device, b, orientation, sandbox_plan, speech_token,
+                                            n, events, stop_requested)
+                    sandbox_cadence.record(n, sandbox_plan)
+                    if not demo.get("safe_exit"):
+                        result = "recognition_pause"
+                        break
             if fast_reply is not None:
                 b.apply(fast_reply)
                 history.append(fast_reply, b)

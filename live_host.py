@@ -1662,6 +1662,7 @@ class LiveController:
             "kind": plan.get("kind", "tactic"),
             "pattern": plan.get("pattern", "组合将杀"),
             "phase": plan.get("phase", "after_move"),
+            "thinking_wait": bool(plan.get("thinking_wait")),
             "own": plan.get("own", board.turn),
             "summary": plan.get("summary"),
             "max_seconds": plan.get("max_seconds"),
@@ -1944,7 +1945,9 @@ class LiveController:
         if event.get("event") == "game_over":
             if not hasattr(self, "broadcast_flow"):
                 self.broadcast_flow = BroadcastFlow()
-            ending = self.broadcast_flow.end(event)
+            ending = self.broadcast_flow.end(
+                {**event, "opponent_disconnected": bool(getattr(self, "opponent_disconnected", False))},
+                playful=humor_enabled(getattr(getattr(self, "settings", None), "persona", DEFAULT_PERSONA)))
             if self.broadcast_flow.is_terminal(event) and not ending:
                 return  # Repeated settlement must not cancel its own closing line.
             if hasattr(self, "sandbox_story"):
@@ -1977,15 +1980,15 @@ class LiveController:
                                            解说对应走法=last_move.get("notation"))
                 self.pipeline.submit(
                     0, "获胜收官", victory_payload,
-                    direct_text=win_note or ending or self._victory_text())
+                    direct_text=(ending if event.get("finish_evidence") == "jj_result_text" else
+                                 win_note or ending or self._victory_text()))
             elif (event.get("result") == "finished" and
                   event.get("reason") in (
                        "jj_result_screen", "delayed_jj_result_screen",
                        "rank_promotion_screen")):
                 self.pipeline.submit(
                     0, "结算收官", event,
-                    direct_text=("对面断线后，这局已经结束了。" if getattr(
-                        self, "opponent_disconnected", False) else ending or "这盘已经结束了。"))
+                    direct_text=ending or "这盘已经结束了。")
             elif ending:
                 self.pipeline.submit(0,"结算收官",event,direct_text=ending)
             self.opponent_disconnected = False
@@ -2213,7 +2216,7 @@ class LiveController:
         sandtable = (self._sandtable_plan(event)
                      if getattr(getattr(self, "settings", None),
                                 "sandtable_enabled", True) else None)
-        if getattr(self, "enabled", False):
+        if getattr(self, "enabled", False) and not (sandtable or {}).get("thinking_wait"):
             if not hasattr(self, "audience_scenes"):
                 self.audience_scenes = AudienceSceneDirector()
             scene = self.audience_scenes.choose(event, sandtable)
