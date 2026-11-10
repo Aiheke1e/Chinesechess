@@ -295,17 +295,23 @@ def _position_probe(board, image, orientation):
 
     sequence = resolve_legal_sequence_by_occupancy(
         board, presence, max_plies=1, max_mismatches=1)
+    strong_sequence = resolve_legal_sequence_by_occupancy(
+        board, strong, max_plies=1)
     return {
         "strong_differences": differences(strong),
         "presence_differences": differences(presence),
         "presence_sequence": (None if sequence is None else
                               [Board.ucci(move) for move in sequence]),
+        "strong_sequence": (None if strong_sequence is None else
+                            [Board.ucci(move) for move in strong_sequence]),
     }
 
 
 def _advance_after_observed_reply(live_board, legal_route, probe):
     """Shift a PV sandbox to our turn when JJ already played its first ply."""
-    observed = (probe or {}).get("presence_sequence")
+    observed = (probe or {}).get("strong_sequence")
+    if observed is None:
+        observed = (probe or {}).get("presence_sequence")
     if (not isinstance(observed, list) or len(observed) != 1 or
             not legal_route or len(legal_route) < 2):
         return None
@@ -707,7 +713,18 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
     safe_exit = _return_to_live(
         device, live_board, orientation,
         initial_image=last_sandbox_frame)
+    diagnostic_path = None
+    if locals().get("failed_step") is not None and last_sandbox_frame is not None:
+        try:
+            from diagnostics import capture_diagnostic
+            diagnostic_path = capture_diagnostic(device, "sandbox_step_unconfirmed", image=last_sandbox_frame,
+                extra={"failed_step": failed_step, "expected_fen": sandbox_board.to_fen(),
+                       "mode_visible": _detect_sandbox_exit(last_sandbox_frame) is not None,
+                       "safe_exit": safe_exit, **_position_probe(sandbox_board, last_sandbox_frame, orientation)})
+        except Exception:
+            pass
     return {"entered": True, "safe_exit": safe_exit,
+            "diagnostic": diagnostic_path,
             "completed": completed,
             "failed_step": locals().get("failed_step"),
             "observed_reply": observed_reply,
