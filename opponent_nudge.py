@@ -14,6 +14,7 @@ import numpy as np
 from adb_bridge import TaskCancelled, screenshot, tap
 from game_sandbox import _detect_sandbox_exit
 from recognizer import recognize_occupancy, recognize_presence_occupancy
+from opponent_status import countdown_side
 
 
 ROOT = Path(__file__).resolve().parent
@@ -86,6 +87,18 @@ def _unchanged(board, image, orientation):
     return False
 
 
+def still_waiting(device, fen, orientation, my_color):
+    from board import Board
+    try:
+        board = Board.from_fen(fen)
+        if my_color not in ("r", "b") or board.turn == my_color:
+            return False
+        image = screenshot(device)
+        return countdown_side(image) == "opponent" and _unchanged(board, image, orientation)
+    except (ValueError, OSError, subprocess.SubprocessError, cv2.error):
+        return False
+
+
 def send_wait_cloud(device, board, orientation, my_color, stop_requested=lambda: False):
     """One bounded attempt; the caller owns the wait/cooldown and dry-run gate.
 
@@ -93,7 +106,8 @@ def send_wait_cloud(device, board, orientation, my_color, stop_requested=lambda:
     it is not a claim of server delivery. Never mutate the trusted position.
     """
     def result(sent=False, reason="未发送", changed=False):
-        return {"sent": sent, "reason": reason, "board_changed": changed}
+        return {"sent": sent, "reason": reason, "board_changed": changed,
+                "turn_evidence": "opponent_countdown" if sent else None}
 
     opened = False
     io_errors = (OSError, subprocess.SubprocessError, cv2.error)
@@ -103,6 +117,7 @@ def send_wait_cloud(device, board, orientation, my_color, stop_requested=lambda:
         image = screenshot(device)
         button = emoji_button(image)
         if (emoji_panel_visible(image) or button is None
+                or countdown_side(image) != "opponent"
                 or not _unchanged(board, image, orientation)):
             return result(reason="实战棋盘或表情入口未确认", changed=True)
         if stop_requested():
@@ -116,12 +131,12 @@ def send_wait_cloud(device, board, orientation, my_color, stop_requested=lambda:
             return result(reason="未确认乌云面板，不再点击")
         if stop_requested():
             return result(reason="已暂停")
-        if not _unchanged(board, panel, orientation):
+        if countdown_side(panel) != "opponent" or not _unchanged(board, panel, orientation):
             return result(reason="对手已落子或棋盘有变化", changed=True)
         # Catch a move arriving during picker animation/recognition.
         panel = screenshot(device)
         cloud = cloud_button(panel)
-        if cloud is None or not _unchanged(board, panel, orientation):
+        if cloud is None or countdown_side(panel) != "opponent" or not _unchanged(board, panel, orientation):
             return result(reason="发送前棋盘或面板有变化", changed=True)
         if stop_requested():
             return result(reason="已暂停")

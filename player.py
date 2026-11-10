@@ -759,20 +759,27 @@ def main():
                         check_status == "unchanged" and current_candidate is None)
                     if presence:
                         nudge = None
-                        if presence == "waiting_long" and not cfg["dry_run"]:
+                        if presence == "waiting_long":
+                            if cfg["dry_run"]:
+                                continue
                             nudge = send_wait_cloud(
                                 device, b, orientation, my, stop_requested)
                             print(f"[对手等待] {nudge['reason']}。", flush=True)
+                            events.emit("opponent_nudge", action="selected" if nudge["sent"] else "skipped",
+                                        fen=b.to_fen(), after_move_number=n, **nudge)
                             if stop_requested():
                                 break
-                            if nudge["board_changed"]:
-                                reference_image = None
-                                pending_opponent_move = None
+                            reference_image = None
+                            pending_opponent_move = None
+                            last_full_recognition = 0.0
+                            if not nudge["sent"]:
                                 continue
                         events.emit("opponent_status", status=presence,
                                     fen=b.to_fen(), after_move_number=n,
                                     waited_seconds=round(total_waited, 1),
                                     evidence="stable_board_wait", nudge=nudge)
+                        if presence == "waiting_long":
+                            continue
                     if check_status in ("retry", "illegal", "screenshot_failed"):
                         pending_opponent_move = None
                         anomaly_count += 1

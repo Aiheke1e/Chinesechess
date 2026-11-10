@@ -17,6 +17,7 @@ class OpponentNudgeTests(unittest.TestCase):
     def setUp(self):
         self.live = cv2.resize(cv2.imread(str(ROOT / "fixture/jj_opponent_countdown.png")), (1080, 1920))
         self.panel = cv2.imread(str(ROOT / "fixture/jj_emoji_panel.png"))
+        self.panel[20:225, 420:660] = self.live[20:225, 420:660]
         self.board = Board.from_fen(START_FEN)
         self.board.turn = "b"
 

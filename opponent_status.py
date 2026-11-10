@@ -36,6 +36,34 @@ def opponent_disconnected(image):
     return cv2.minMaxLoc(scores)[1] >= .76
 
 
+def countdown_side(image):
+    """Read JJ's active large digit clock; never infer a turn from stillness.
+
+    The running clock has a saturated yellow progress arc and large outlined
+    digits. Inactive portraits, the small total-time label and 断线 do not.
+    Ambiguous or missing evidence is intentionally unknown.
+    """
+    if (image is None or getattr(image, "ndim", 0) != 3 or image.shape[0] < 800
+            or image.shape[1] < 450 or not .50 <= image.shape[1] / image.shape[0] <= .60):
+        return None
+    hsv = cv2.cvtColor(cv2.resize(image, (1080, 1920)), cv2.COLOR_BGR2HSV)
+    yy, xx = np.ogrid[:205, :220]
+    radius = (xx - 110) ** 2 + (yy - 90) ** 2
+    ring = (radius >= 70 ** 2) & (radius <= 102 ** 2)
+    active = []
+    for side, y in (("opponent", 20), ("self", 1650)):
+        face = hsv[y:y + 205, 430:650]
+        yellow = cv2.inRange(face, (25, 150, 150), (40, 255, 255))
+        if np.count_nonzero(yellow[ring]) < 600:
+            continue
+        digits = cv2.inRange(face[45:140, 35:185], (0, 0, 170), (179, 110, 255))
+        _, _, components, _ = cv2.connectedComponentsWithStats(digits)
+        if any(10 <= w <= 65 and 45 <= h <= 70 and area >= 180
+               for _, _, w, h, area in components[1:]):
+            active.append(side)
+    return active[0] if len(active) == 1 else None
+
+
 class OpponentWaitMonitor:
     def __init__(self, clock=time.monotonic):
         self.clock = clock

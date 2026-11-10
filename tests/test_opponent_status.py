@@ -161,7 +161,8 @@ class OpponentStatusTests(unittest.TestCase):
     def test_long_wait_uses_the_requested_nudge_line_once_and_the_same_speech_log(self):
         controller = self.controller()
         controller.submit_chess(self.wait_event())
-        event = {**self.status_event("waiting_long"), "nudge": {"sent": True}}
+        event = {**self.status_event("waiting_long"), "nudge": {
+            "sent": True, "turn_evidence": "opponent_countdown"}}
         controller.submit_chess(event)
         controller.submit_chess(event)
         prepared = controller.pipeline.prepare_idle
@@ -172,7 +173,8 @@ class OpponentStatusTests(unittest.TestCase):
         self.assertEqual((header, body), ("对手状态", "阁下神速些吧。"))
 
     def test_player_nudges_only_a_stable_long_wait_and_never_in_read_only_mode(self):
-        for dry, changed in ((False, False), (False, True), (True, False)):
+        for dry, changed, sent in ((False, False, True), (False, True, False),
+                                   (False, False, False), (True, False, False)):
             with self.subTest(dry=dry, changed=changed), ExitStack() as stack:
                 board = Board.from_fen(START_FEN)
                 board.turn = "b"
@@ -199,13 +201,14 @@ class OpponentStatusTests(unittest.TestCase):
                 ):
                     stack.enter_context(item)
                 sender = stack.enter_context(patch.object(player, "send_wait_cloud", return_value={
-                    "sent": not changed, "reason": "test", "board_changed": changed}))
+                    "sent": sent, "reason": "test", "board_changed": changed,
+                    "turn_evidence": "opponent_countdown" if sent else None}))
                 move = stack.enter_context(patch.object(player, "move_piece_retry"))
                 with redirect_stdout(io.StringIO()):
                     self.assertEqual(player.main(), 0)
                 self.assertEqual(sender.call_count, int(not dry))
                 notices = [c for c in events.emit.call_args_list if c.args[0] == "opponent_status"]
-                self.assertEqual(len(notices), int(not changed))
+                self.assertEqual(len(notices), int(sent and not dry))
                 move.assert_not_called()
 
     def test_late_status_or_unverified_claim_cannot_create_speech(self):

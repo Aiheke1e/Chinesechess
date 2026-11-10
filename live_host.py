@@ -708,6 +708,11 @@ class SpeechPipeline:
         duration = self._audio_duration(audio)
         if payload.get("_sandbox_cue") and time.monotonic()+duration+.05 > state.get("deadline",float("inf")):
             self._mark_speech_failed(payload,"沙盘剩余时间不足，本段未起播")
+            state["approved"] = False
+            return False
+        guard = state.get("start_guard")
+        if guard is not None and (not guard() or not valid()):
+            state["approved"] = False
             return False
         winsound.PlaySound(str(audio), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
         playback_started = time.monotonic()
@@ -1029,7 +1034,7 @@ class SpeechPipeline:
                         self.high_mates = max(0, self.high_mates - 1)
             self.notify("speech_status", "等待下一条内容", payload)
 
-    def prepare_idle(self, payload, kind="等待期长讲解", direct_text=None):
+    def prepare_idle(self, payload, kind="等待期长讲解", direct_text=None, start_guard=None):
         """Pre-generate low-priority speech; play only in a wait window."""
         if (self.closed.is_set() or getattr(self, "suspended", False)
                 or getattr(self, "chess_suspended", False)):
@@ -1042,6 +1047,7 @@ class SpeechPipeline:
             "epoch": self.cancel_epoch, "payload": dict(payload),
             "chess_epoch": self.chess_epoch,
             "kind": str(kind), "direct_text": direct_text,
+            "start_guard": start_guard,
         }
         with self.idle_lock:
             if (self.closed.is_set() or getattr(self, "suspended", False)
@@ -1085,6 +1091,9 @@ class SpeechPipeline:
                 self._prune_audio(Path(audio).parent)
             else:
                 if not self._wait_turn(kind, payload, state):
+                    return
+                guard = state.get("start_guard")
+                if guard is not None and (not guard() or not self._state_live(state)):
                     return
                 self.notify("reply", text, {"kind": kind, **payload, "_speech_mode": "text"})
                 self.style.remember(text)
@@ -1898,6 +1907,18 @@ class LiveController:
         )
         return self._speech_flair().pick("获胜收官", variants, required=True)
 
+    def _nudge_still_due(self, event):
+        scope = (event.get("fen"), event.get("after_move_number", 0))
+        if (getattr(self, "suspended", False) or getattr(self, "chess_suspended", False)
+                or scope != getattr(self, "opponent_wait_scope", None)
+                or not getattr(self, "chess_device", None)
+                or getattr(self, "chess_my_color", None) not in ("r", "b")
+                or getattr(self, "chess_orientation", None) not in ("red_bottom", "black_bottom")):
+            return False
+        from opponent_nudge import still_waiting
+        valid = still_waiting(self.chess_device, event["fen"], self.chess_orientation, self.chess_my_color)
+        return valid and scope == getattr(self, "opponent_wait_scope", None) and not getattr(self, "chess_suspended", False)
+
     def submit_chess(self, event):
         if getattr(self, "suspended", False):
             return
@@ -1924,6 +1945,7 @@ class LiveController:
             if event.get("event") != "game_over":
                 self.opponent_disconnected = False
         if event.get("event") == "start":
+            self.chess_device = event.get("device")
             self.pipeline.reset_opening_speech()
             if not hasattr(self, "broadcast_flow"):
                 self.broadcast_flow = BroadcastFlow()
@@ -2052,6 +2074,8 @@ class LiveController:
                 self.pipeline.submit(5, CLOCK_KIND, {"已完成盘数": self.clock_cadence.completed})
             return
         if event.get("event") == "position":
+            self.chess_my_color = event.get("my_color")
+            self.chess_orientation = event.get("orientation")
             if not hasattr(self,"broadcast_flow"):
                 self.broadcast_flow = BroadcastFlow()
             opening = self.broadcast_flow.position(event)
@@ -2077,6 +2101,9 @@ class LiveController:
                 return
             if status not in ("disconnected", "waiting_long"):
                 return
+            if status == "waiting_long" and (not (event.get("nudge") or {}).get("sent")
+                    or (event.get("nudge") or {}).get("turn_evidence") != "opponent_countdown"):
+                return
             evidence = event.get("evidence")
             if (status == "disconnected" and evidence != "avatar_disconnect_label"
                     or status == "waiting_long" and evidence != "stable_board_wait"):
@@ -2098,7 +2125,8 @@ class LiveController:
                 text = "阁下神速些吧。"
             payload = {**event, "解说对应手数": None, "解说对应走法": None,
                        "_expires_at": now + 12}
-            if self.pipeline.prepare_idle(payload, kind="对手状态解说", direct_text=text):
+            options = {"start_guard": lambda: self._nudge_still_due(event)} if status == "waiting_long" else {}
+            if self.pipeline.prepare_idle(payload, kind="对手状态解说", direct_text=text, **options):
                 self.pipeline.open_idle_window()
                 self.opponent_wait_line_count = count + 1
                 if status == "disconnected":
