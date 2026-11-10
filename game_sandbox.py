@@ -530,8 +530,9 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
     # same frame; route clicks remain impossible until then.
     entered_frame = None
     controls_changed = exit_visible = copied_position = False
-    entry_deadline = time.monotonic() + 1.8
-    for _ in range(6):
+    entry_deadline = time.monotonic() + 3.2
+    ever_changed = ever_exit = False
+    for _ in range(8):
         if time.monotonic() >= entry_deadline or stop_requested():
             break
         time.sleep(0.25)
@@ -542,10 +543,13 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
         controls_changed = _region_difference(
             before, candidate, 0.0, 0.79, 0.28, 0.90) >= 3.0
         exit_visible = _detect_sandbox_exit(candidate) is not None
+        ever_changed |= controls_changed
+        ever_exit |= exit_visible
         copied_position = _position_matches(
             live_board, candidate, orientation)
         if (controls_changed and exit_visible and not copied_position
-                and observed_reply is None and (plan or {}).get("phase") != "before_move"):
+                and observed_reply is None and (plan or {}).get("phase") != "before_move"
+                and not (plan or {}).get("thinking_wait")):
             advanced = _advance_after_observed_reply(
                 live_board, legal_route, _position_probe(live_board, candidate, orientation))
             if advanced is not None and _position_matches(advanced[0], candidate, orientation):
@@ -557,10 +561,21 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
         # If a modal or partial transition did appear, BACK is safer than any
         # board tap.  A completely unchanged screen needs no cleanup.
         safe = True
-        if controls_changed:
+        if ever_changed or ever_exit:
             safe = _return_to_live(device, live_board, orientation)
+        diagnostic = None
+        try:
+            from diagnostics import capture_diagnostic
+            diagnostic = capture_diagnostic(device, "sandbox_entry_unconfirmed", image=entered_frame,
+                extra={"controls_changed": controls_changed, "exit_visible": exit_visible,
+                       "copied_position": copied_position, "ever_exit": ever_exit,
+                       "safe_exit": safe, "fen": live_board.to_fen()})
+        except Exception:
+            pass
         return {"entered": False, "safe_exit": safe,
-                "reason": "未确认进入JJ沙盘"}
+                "entry_check": {"controls_changed": controls_changed, "exit_visible": exit_visible,
+                                "copied_position": copied_position}, "diagnostic": diagnostic,
+                "reason": "沙盘棋盘未匹配，已略过" if ever_exit else "沙盘入口未响应，已略过"}
 
     if on_enter:
         on_enter()

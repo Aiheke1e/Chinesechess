@@ -76,10 +76,10 @@ class MatePatternTests(unittest.TestCase):
                 self.assertEqual(plan["name"], name)
                 self.assertEqual(plan["terminal_fen"], final.to_fen())
                 self.assertIn(plan["notation"].split(" ", 1)[-1].replace("，吃", "吃"), plan["text"])
-                self.assertTrue(90 <= len(plan["text"]) <= 220)
+                self.assertTrue(12 <= len(plan["text"]) <= 65)
                 self.assertTrue(SpeechPipeline._chess_line_valid(plan["text"], "绝杀长解说", {}))
                 self.assertIn(name, plan["text"])
-                self.assertTrue(plan["text"].startswith(f"这里有一手{name}。"))
+                self.assertTrue(plan["text"].startswith("走"))
                 before = rotate(Board.from_fen(event["fen_before"]))
                 a, b = Board.from_ucci(event["ucci"])
                 mirrored = build_finisher({**event, "fen_before": before.to_fen(),

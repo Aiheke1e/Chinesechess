@@ -21,7 +21,7 @@ class SandboxStory:
         self.forecast = self.branch = None
 
     def prepare(self, token, plan):
-        plan = {**plan, "narration_variant":self.sequence % 4}
+        plan = {**plan, "narration_variant":self.sequence % 8}
         self.sequence += 1
         self.plans[token] = plan
         while len(self.plans) > 4:

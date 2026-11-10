@@ -67,7 +67,7 @@ class CommentaryClarityTests(unittest.TestCase):
         _, _, plan = plan_fixture()
         cues = script(plan)
         self.assertIn("这是回吃", cues["4"])
-        self.assertIn("双方各换掉一门炮", cues["summary"])
+        self.assertIn("兑炮", cues["summary"])
 
     def test_sandbox_keeps_check_and_escape_facts_in_the_exact_step(self):
         cues = script({"own": "r", "route": [
@@ -82,7 +82,8 @@ class CommentaryClarityTests(unittest.TestCase):
         original = board.to_fen()
         finisher = build_finisher({"fen_before": original, "ucci": "b6c8", "number": 25})
         self.assertEqual(finisher["name"], "卧槽马")
-        self.assertIn("想将5平4，那个落点有咱们的车看着", finisher["text"])
+        self.assertIn("想将5平4，那个落点有咱们的车看着", finisher["detail"])
+        self.assertLessEqual(len(finisher["text"]), 65)
         self.assertIn("马八进七", finisher["text"])
         self.assertNotIn("别光看", finisher["text"])
         self.assertNotIn("先别急着庆祝", finisher["text"])

@@ -30,10 +30,10 @@ ALIASES = {"列马车": ("立马车",), "铁门栓": ("铁门闩",),
            "对面笑": ("白脸将",), "侧面虎": ("高钓马",)}
 
 MATE_OPENINGS = (
-    ("稳住", "咱们就差最后这一手了。"),
-    ("看棋", "这一手的妙处，得连着将的退路一起看。"),
-    ("配合", "配合到这儿，最后一手可以收口了。"),
-    ("手稳", "最后这一手，看清楚再落。"),
+    ("门", "将军想出门，咱们没给批假。"),
+    ("下班", "棋子们到岗了，将军该下班了。"),
+    ("收口", "这下门都关上了，钥匙咱们收着。"),
+    ("座位", "九宫这么大，愣是没给他留座。"),
 )
 MATE_PUNCHLINES = {
     "马后炮": "这回的马后炮，可是真有炮在后面撑腰。",
@@ -58,18 +58,17 @@ MATE_PUNCHLINES = {
 
 
 def finisher_copy(name, notation, number=1, *, opening=None, playful=True, detail=""):
-    explanation = PATTERNS.get(name, "几路子力合着把将门收住，挡、吃、挪将都没有解围的路。")
-    if opening is None:
-        opening = MATE_OPENINGS[(int(number or 1) - 1) % len(MATE_OPENINGS)][1]
     spoken = notation.split(" ", 1)[-1].replace("，吃", "吃")
-    heading = f"这里有一手{name}。"
-    ending = (f"接下来走{spoken}，落下就是困毙，对面无棋可走。" if name == "困毙" else
-              f"接下来走{spoken}，这一手落下，就是{name}。")
-    if not detail:
-        detail = ("不只是将走不了，其他棋子也全没有合法着法，轮到对面只能结束这一盘。" if name == "困毙" else
-                  "这一将之后，挪将、挡子、吃掉进攻的棋子，都找不到合法的解法。")
-    return heading + (opening if playful else "") + explanation + detail + (
-        MATE_PUNCHLINES.get(name, "") if playful else "") + ending
+    # Keep the full verified escape details in build_finisher's facts, while
+    # the live voice calls the move, names the finish and adds ONE short joke.
+    if name == "困毙":
+        line = f"走{spoken}，困毙，对面无棋可走。"
+        joke = ("全队站得挺齐，可惜谁也动不了。", "轮到对面走，全队一起请假了。")[(int(number or 1)-1) % 2]
+    else:
+        line = f"走{spoken}，{name}收口。"
+        joke = (opening or MATE_OPENINGS[(int(number or 1)-1) % len(MATE_OPENINGS)][1]
+                if int(number or 1) % 3 else MATE_PUNCHLINES.get(name, "这下将军也没处打卡了。"))
+    return line + (joke if playful else "")
 
 
 def _escape_detail(final):

@@ -110,22 +110,29 @@ def _pieces(pieces):
     return "、".join(amount(piece) for piece in dict.fromkeys(pieces))
 
 
-def result_note(route, own, mate=False, pattern="组合将杀"):
+def result_note(route, own, mate=False, pattern="组合将杀", variant=0):
+    index = int(variant) % 8
     if mate:
-        return f"这路{pattern}摆到这里，吃将收尾。回到实战。"
+        return (f"{pattern}，吃将收尾，演示到这儿。", f"吃将收尾，这路{pattern}摆清楚了。")[index % 2]
     ours = [item["capture"] for item in route if item.get("capture") and item.get("side") == own]
     theirs = [item["capture"] for item in route if item.get("capture") and item.get("side") != own]
     if ours and theirs:
         if Counter(p.upper() for p in ours) == Counter(p.upper() for p in theirs):
-            return f"这条线双方各换掉{_pieces(ours)}，交换的代价相同。回到实战。"
-        return f"按这条变化，咱们吃到{_pieces(ours)}，对面吃到{_pieces(theirs)}。回到实战。"
+            trade = "兑" + PIECE_CN[ours[0]] if len(ours) == 1 else f"双方各换掉{_pieces(ours)}"
+            return (f"这么接就是{trade}，后手也得一起看。", f"这段{trade}摆清楚了，看实战怎么接。",
+                    f"这一来一回是{trade}，可别当成白捡。", f"{trade}这段先看到这儿，接着盯棋盘。",
+                    f"按这条接法是{trade}，不是单方面赚子。", f"眼前这口还有回吃，合起来是{trade}。",
+                    f"{trade}的来回都摆了，等对面亮实招。", f"这套{trade}的接法看清楚了，继续看棋。")[index]
+        return (f"这么接，咱们拿{_pieces(ours)}，对面拿{_pieces(theirs)}，两边都得算。",
+                f"咱们吃{_pieces(ours)}也要付出{_pieces(theirs)}，可不是白拿。")[index % 2]
     if ours:
-        return f"这条线能拿到{_pieces(ours)}。回到实战。"
+        return (f"按这条接法能拿到{_pieces(ours)}，看实战接不接得上。",
+                f"这套接法的目标是{_pieces(ours)}，继续看对面的选择。")[index % 2]
     if theirs:
-        return f"沿这条变化，对面能吃到{_pieces(theirs)}，这个代价得看清。回到实战。"
+        return f"这么接会让对面拿到{_pieces(theirs)}，这个代价可别漏算。"
     if any(item.get("check") or item.get("escape") for item in route):
-        return "将军和应将这几步接上了。回到实战，看对面的选择。"
-    return "这段接法摆清楚了，回到实战。"
+        return ("将军和应将串起来了，继续看实战。", "这几步怎么解将摆清楚了，等实战落子。")[index % 2]
+    return "这段接法先看到这儿，咱们接着看棋。"
 
 
 def script(plan):
@@ -184,7 +191,7 @@ def script(plan):
                     and item.get("ucci")):
                 text += "，这是回吃"
         cues[str(index)] = text.rstrip("。") + "。"
-    cues["summary"] = plan.get("summary") or result_note(route, own, mate, plan.get("pattern", "组合将杀"))
+    cues["summary"] = result_note(route, own, mate, plan.get("pattern", "组合将杀"), plan.get("narration_variant", 0))
     if scene:
         ours = [item["capture"] for item in route if item.get("capture") and item.get("side") == own]
         theirs = [item["capture"] for item in route if item.get("capture") and item.get("side") != own]
