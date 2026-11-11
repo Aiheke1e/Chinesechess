@@ -35,3 +35,18 @@ class EventLog:
             with open(self.path, "a", encoding="utf-8") as stream:
                 stream.write(line + "\n")
 
+
+class SpeechLog(EventLog):
+    """Compact playback evidence, retained independently of noisy diagnostics."""
+
+    def record(self, kind, text, data=None):
+        if kind not in ("reply", "speech_interrupted"):
+            return
+        data = data or {}
+        fields = {key: data[key] for key in (
+            "speech_token", "解说对应手数", "解说对应走法", "沙盘步骤",
+            "_speech_seconds", "elapsed", "duration", "reason") if key in data}
+        self.emit(kind, category=data.get("kind", ""), text=str(text),
+                  mode=data.get("_speech_mode", "audio" if kind == "speech_interrupted" else "unknown"),
+                  **fields)
+

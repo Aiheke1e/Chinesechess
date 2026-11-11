@@ -3,12 +3,14 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import asdict, dataclass
+from datetime import datetime
 import heapq
 import json
 import os
 from pathlib import Path
 
 from runtime_status import rotate_log
+from events import SpeechLog
 import re
 import subprocess
 import sys
@@ -1316,6 +1318,8 @@ class LiveController:
         self.sandtable_active = False
         self.sandtable_timer = None
         self.log_lock = threading.Lock()
+        self.speech_log = SpeechLog(str(HERE / "work/speech_transcript.jsonl"))
+        self.last_stats_logged = -1e9
         self.gift_lock = threading.Lock()
         self.pending_gifts = {}
         self.gift_timers = {}
@@ -1330,15 +1334,24 @@ class LiveController:
         threading.Thread(target=self._chat_loop, name="live-chat-selector", daemon=True).start()
 
     def _notify(self, kind, text, data=None):
-        record = {"time": time.strftime("%H:%M:%S"), "kind": kind,
+        now = datetime.now().astimezone()
+        record = {"time": now.strftime("%H:%M:%S"), "timestamp": now.isoformat(timespec="milliseconds"), "kind": kind,
                   "text": str(text), "data": data or {}}
         try:
+            self.speech_log.record(kind, text, data)
             LIVE_LOG.parent.mkdir(parents=True, exist_ok=True)
             with self.log_lock:
-                rotate_log(str(LIVE_LOG), max_bytes=8 * 1024 * 1024,
-                           backups=2)
-                with open(LIVE_LOG, "a", encoding="utf-8") as stream:
-                    stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+                # UI statistics still refresh normally. Disk diagnostics need
+                # only a minute sample, so an idle connection cannot push a
+                # day's spoken history out of the rotating files.
+                moment = time.monotonic()
+                if kind != "room_stats" or moment - self.last_stats_logged >= 60:
+                    if kind == "room_stats":
+                        self.last_stats_logged = moment
+                    rotate_log(str(LIVE_LOG), max_bytes=8 * 1024 * 1024,
+                               backups=2)
+                    with open(LIVE_LOG, "a", encoding="utf-8") as stream:
+                        stream.write(json.dumps(record, ensure_ascii=False) + "\n")
         except OSError:
             pass
         try:

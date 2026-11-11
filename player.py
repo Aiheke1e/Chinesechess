@@ -1055,10 +1055,9 @@ def main():
                     print("落子确认成功；对方回应很快，已同时识别："
                           + reply_text + f"（{Board.ucci(fast_reply)}）", flush=True)
             if not ok:
-                events.emit("move_rejected", number=n + 1, ucci=u,
-                            notation=d, speech_token=speech_token,
-                            reason=msg)
                 if rule_rejected:
+                    events.emit("move_rejected", number=n + 1, ucci=u,
+                                notation=d, speech_token=speech_token, reason=msg)
                     banned = rejected_moves.setdefault(b.to_fen(), [])
                     if u not in banned:
                         banned.append(u)
@@ -1069,12 +1068,20 @@ def main():
                 # 将死后 JJ 可能依次播放棋盘特效、段位动画，再显示结算按钮。
                 # 只在落子无法确认的异常路径多等待，不增加正常每步用时。
                 if wait_for_postgame_screen(device, timeout=18.0):
+                    # Result animations can hide the moved piece completely.
+                    # Preserve the unresolved input as evidence, without
+                    # labelling it rejected or inventing an applied move.
+                    events.emit("move_unconfirmed", number=n + 1, ucci=u,
+                                notation=d, speech_token=speech_token,
+                                resolution="postgame", reason=msg)
                     finish = result_screen_details(device)
                     result = finish.pop("result", "finished")
                     print("[本局结束] 最后一步后已进入 JJ 结算页面，准备进入下一局。")
                     events.emit("game_over", result=result,
                                 reason="jj_result_screen", fen=b.to_fen(), **finish)
                 else:
+                    events.emit("move_rejected", number=n + 1, ucci=u,
+                                notation=d, speech_token=speech_token, reason=msg)
                     # A precondition failure explicitly means mover did not
                     # send either tap.  Keep the trusted session active so the
                     # watcher can re-read a stable frame and safely resume.

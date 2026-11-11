@@ -12,6 +12,57 @@ import player
 
 
 class GameOverDetectionTests(unittest.TestCase):
+    def run_unconfirmed_input(self, postgame):
+        board = Board.from_fen(START_FEN)
+        original = board.to_fen()
+        move = Board.from_ucci("h2e2")
+        cfg = dict(player.DEFAULT_CFG, my_color="r", max_moves=1, dry_run=False,
+                   auto_continue_after_game=False)
+        events, engine = Mock(), Mock(last_analysis={}, last_candidates=[])
+        with ExitStack() as stack:
+            for item in (
+                patch.object(player.sys, "argv", ["player.py", "--once"]),
+                patch.object(player, "load_cfg", return_value=cfg),
+                patch.object(player, "list_devices", return_value=["mock"]),
+                patch.object(player, "match_live_session", return_value=None),
+                patch.object(player, "read_stable_board", return_value=(board, "red_bottom")),
+                patch.object(player, "save_session"), patch.object(player, "block_position"),
+                patch.object(player, "write_runtime_status"), patch.object(player, "capture_diagnostic"),
+                patch.object(player, "EventLog", return_value=events),
+                patch("pikafish.get_engine", return_value=engine),
+                patch.object(player, "pick_move", return_value=(move, "mock engine")),
+                patch.object(player, "wait_for_speech_start", return_value=False),
+                patch.object(player, "move_piece_retry", return_value=(False, "FAIL 输入已发送但未确认")),
+                patch.object(player, "read_squares", return_value=(None, None)),
+                patch.object(player, "screenshot", return_value=None),
+                patch.object(player, "wait_for_postgame_screen", return_value=postgame),
+                patch.object(player, "result_screen_details", return_value={}),
+            ):
+                stack.enter_context(item)
+            with redirect_stdout(io.StringIO()):
+                result = player.main()
+        self.assertEqual(board.to_fen(), original)
+        return result, [(c.args[0], c.kwargs) for c in events.emit.call_args_list]
+
+    def test_result_animation_is_unconfirmed_input_not_a_rejected_move(self):
+        result, events = self.run_unconfirmed_input(True)
+        self.assertEqual(result, 0)
+        names = [name for name, _ in events]
+        self.assertIn("move_unconfirmed", names)
+        self.assertIn("game_over", names)
+        self.assertNotIn("move_rejected", names)
+        self.assertNotIn("move_applied", names)
+        self.assertEqual(next(data for name, data in events if name == "move_unconfirmed")["resolution"], "postgame")
+        self.assertEqual(next(data for name, data in events if name == "game_over")["result"], "finished")
+
+    def test_an_unexplained_input_failure_still_requires_recovery(self):
+        result, events = self.run_unconfirmed_input(False)
+        self.assertEqual(result, 14)
+        names = [name for name, _ in events]
+        self.assertIn("move_rejected", names)
+        self.assertNotIn("move_unconfirmed", names)
+        self.assertNotIn("game_over", names)
+
     def test_result_is_detected_even_when_board_may_still_be_visible(self):
         image = np.zeros((1920, 1080, 3), dtype=np.uint8)
         with (patch("postgame.detect_large_action_button",
