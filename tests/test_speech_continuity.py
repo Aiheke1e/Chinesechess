@@ -129,7 +129,7 @@ class SpeechContinuityTests(unittest.TestCase):
         controller.submit_chess(event)
         prepared = controller.pipeline.prepare_move.call_args
         self.assertEqual(prepared.args[0], "绝杀长解说")
-        self.assertEqual(len(prepared.args[1]["_tts_after_sandbox"]), 4)
+        self.assertEqual(len(prepared.args[1]["_tts_after_sandbox"]), 3)  # Intro, legal mate, summary.
         controller.submit_chess({"event": "move_command", "speech_token": event["speech_token"], "notation": notation})
         controller.pipeline.commit_move.assert_not_called()
         controller.submit_chess({"event": "game_sandbox", "action": "end", "phase": "before_move",

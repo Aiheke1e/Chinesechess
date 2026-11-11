@@ -1,5 +1,4 @@
 import unittest
-import itertools
 from unittest.mock import Mock, patch
 
 from board import Board, START_FEN
@@ -18,7 +17,7 @@ class SandboxFinishTests(unittest.TestCase):
         return board, game_sandbox.build_plan(notation, {"score_type": "mate", "score": 1},
                                               [(ucci, notation)], ucci, board)
 
-    def test_mate_demos_for_both_colors_end_with_an_illustrative_king_capture(self):
+    def test_mate_demos_for_both_colors_stop_at_the_legal_checkmate(self):
         for name, fen in POSITIONS.items():
             if name == "困毙":
                 continue
@@ -37,14 +36,16 @@ class SandboxFinishTests(unittest.TestCase):
                     original = board.to_fen()
                     self.assertEqual(plan["kind"], "mate")
                     self.assertEqual(plan["phase"], "before_move")
-                    self.assertEqual(plan["route"][-1]["illustration"], "king_capture")
+                    self.assertFalse(any(item.get("illustration") for item in plan["route"]))
                     loser = "b" if board.turn == "r" else "r"
                     probe = board.copy()
                     steps = game_sandbox.validated_route(board, plan["route"], mate=True)
                     self.assertEqual(len(steps), len(plan["route"]))
                     for item, move in steps:
                         probe.apply(move)
-                    self.assertEqual(probe.king_pos(loser), -1)
+                    self.assertGreaterEqual(probe.king_pos(loser), 0)
+                    self.assertTrue(probe.in_check(loser))
+                    self.assertFalse(probe.legal_moves())
                     self.assertEqual(board.to_fen(), original)
 
     def test_unfinished_or_forged_mate_routes_never_reach_device_input(self):
@@ -61,35 +62,42 @@ class SandboxFinishTests(unittest.TestCase):
         board, plan = custom or self.plan()
         original = board.to_fen()
         frame = object()
+        mode = {"visible": True}
+        calls = [0]
+        def endpoint(*args):
+            calls[0] += 1
+            ok = calls[0] < len(plan["route"]) or capture_confirmed
+            if exit_after_mate and calls[0] >= len(plan["route"]):
+                mode["visible"] = False
+            return ok
         with patch.object(game_sandbox, "_wait_for_position", return_value=frame), patch.object(
                 game_sandbox, "screenshot", return_value=frame), patch.object(
                 game_sandbox, "_region_difference", return_value=5), patch.object(
                 game_sandbox, "_sandbox_button", return_value=(100, 1600)), patch.object(
-                game_sandbox, "_detect_sandbox_exit", side_effect=[(200, 1850), (200, 1850), None] if exit_after_mate else None,
-                return_value=(200, 1850)), patch.object(
+                game_sandbox, "_detect_sandbox_exit", side_effect=lambda *a: (200, 1850) if mode["visible"] else None), patch.object(
                 game_sandbox, "_position_matches", return_value=True), patch.object(
-                game_sandbox, "_endpoint_confirmed", side_effect=itertools.chain(
-                    [True] * (len(plan["route"]) - 1), itertools.repeat(capture_confirmed))), patch.object(
+                game_sandbox, "_endpoint_confirmed", side_effect=endpoint), patch.object(
                 game_sandbox, "_return_to_live", return_value=True), patch.object(
                 game_sandbox, "tap") as taps, patch.object(game_sandbox.time, "sleep"):
             result = game_sandbox.play_plan("mock", board, "red_bottom", plan, review_seconds=0)
         self.assertEqual(board.to_fen(), original)
         return result, taps.call_count
 
-    def test_success_is_reported_only_after_the_king_capture_is_confirmed(self):
+    def test_success_requires_the_mating_move_and_its_sandbox_position_to_be_confirmed(self):
         result, clicks = self.exercise()
-        self.assertTrue(result["king_captured"])
-        self.assertEqual(result["completed"], 2)
-        self.assertEqual(clicks, 5)
-        result, clicks = self.exercise(capture_confirmed=False)
+        self.assertTrue(result["mate_confirmed"])
         self.assertFalse(result["king_captured"])
-        self.assertIn("未完成吃将收尾", result["reason"])
-        self.assertEqual(clicks, 5)  # No retry after a potentially terminal animation.
+        self.assertEqual(result["completed"], 1)
+        self.assertEqual(clicks, 3)
+        result, clicks = self.exercise(capture_confirmed=False)
+        self.assertFalse(result["mate_confirmed"])
+        self.assertIn("绝杀局面尚未确认", result["reason"])
+        self.assertEqual(clicks, 5)  # One retry only when the unchanged sandbox is verified.
 
     def test_platform_leaving_sandbox_at_mate_cannot_cause_a_live_board_click(self):
         result, clicks = self.exercise(exit_after_mate=True)
-        self.assertFalse(result["king_captured"])
-        self.assertEqual(clicks, 3)  # Open + the legal mating move, no capture tap.
+        self.assertFalse(result["mate_confirmed"])
+        self.assertEqual(clicks, 3)
 
     def test_long_mate_route_is_not_cut_at_three_plies(self):
         board = Board.from_fen("3aka3/9/C8/9/4C4/9/9/9/9/4K4 w - - 0 1")
@@ -100,12 +108,12 @@ class SandboxFinishTests(unittest.TestCase):
             line.append((ucci, move_description(probe, move)))
             probe.apply(move)
         plan = game_sandbox.build_plan(line[0][1], {}, line, line[0][0], board)
-        self.assertEqual(len(plan["route"]), 6)
-        self.assertEqual(plan["route"][-1]["illustration"], "king_capture")
+        self.assertEqual(len(plan["route"]), 5)
+        self.assertFalse(any(item.get("illustration") for item in plan["route"]))
         result, clicks = self.exercise(custom=(board, plan))
-        self.assertTrue(result["king_captured"])
-        self.assertEqual(result["completed"], 6)
-        self.assertEqual(clicks, 13)
+        self.assertTrue(result["mate_confirmed"])
+        self.assertEqual(result["completed"], 5)
+        self.assertEqual(clicks, 11)
 
     def test_pre_move_demo_narration_precedes_the_ordinary_real_move_call(self):
         board = Board.from_fen("3aka3/9/C8/9/4C4/9/9/9/9/4K4 w - - 0 1")

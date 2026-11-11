@@ -113,7 +113,7 @@ def _pieces(pieces):
 def result_note(route, own, mate=False, pattern="组合将杀", variant=0):
     index = int(variant) % 8
     if mate:
-        return (f"{pattern}，吃将收尾，演示到这儿。", f"吃将收尾，这路{pattern}摆清楚了。")[index % 2]
+        return (f"{pattern}，对面已经无棋可解。", f"这路{pattern}摆到这儿，就是绝杀。")[index % 2]
     ours = [item["capture"] for item in route if item.get("capture") and item.get("side") == own]
     theirs = [item["capture"] for item in route if item.get("capture") and item.get("side") != own]
     if ours and theirs:

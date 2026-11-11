@@ -19,9 +19,9 @@ class SandboxOrderTests(unittest.TestCase):
         order = []
         def demo(device, current, orientation, plan, *args):
             self.assertEqual(current.to_fen(), original)
-            self.assertEqual(plan["route"][-1]["illustration"], "king_capture")
+            self.assertFalse(any(item.get("illustration") for item in plan["route"]))
             order.append("demo")
-            return {"entered": True, "safe_exit": safe_exit, "king_captured": safe_exit}
+            return {"entered": True, "safe_exit": safe_exit, "mate_confirmed": safe_exit}
         def speech(*args, **kwargs):
             order.append("speech")
             return True

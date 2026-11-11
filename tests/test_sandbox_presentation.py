@@ -211,7 +211,7 @@ class SandboxPresentationTests(unittest.TestCase):
         self.assertEqual(result["failed_step"], 2)
         self.assertEqual(taps, 3)
 
-    def test_multistep_mate_budget_includes_the_king_capture_and_voice(self):
+    def test_multistep_mate_budget_includes_all_legal_plies_and_voice(self):
         board = Board.from_fen("3aka3/9/C8/9/4C4/9/9/9/9/4K4 w - - 0 1")
         probe, line = board.copy(), []
         for ucci in ("a7a6", "e9e8", "a6a7", "e8e9", "a7e7"):
@@ -221,18 +221,18 @@ class SandboxPresentationTests(unittest.TestCase):
         plan = gs.build_plan(line[0][1], {}, line, line[0][0], board)
         self.assertGreater(plan["max_seconds"], 12)
         self.assertLessEqual(plan["max_seconds"], 42)
-        self.assertEqual(plan["route"][-1]["illustration"], "king_capture")
-        self.assertIn("吃将收尾", sn.script(plan)["summary"])
+        self.assertFalse(any(item.get("illustration") for item in plan["route"]))
+        self.assertIn("无棋可解", sn.script(plan)["summary"])
         now = [100.0]
         def callback(*args, **kwargs):
             now[0] += 1.0
             return True
         with patch.object(gs.time, "monotonic", side_effect=lambda: now[0]):
             result, taps = self.exercise(callback, plan_override=plan, board_override=board)
-        self.assertGreater(now[0], 112)
-        self.assertTrue(result["king_captured"])
-        self.assertEqual(result["completed"], 6)
-        self.assertEqual(taps, 13)
+        self.assertGreaterEqual(now[0], 112)
+        self.assertTrue(result["mate_confirmed"])
+        self.assertEqual(result["completed"], 5)
+        self.assertEqual(taps, 11)
 
     def test_actual_speech_pipeline_and_player_wait_for_each_cue_without_touching_real_ack(self):
         board, line, plan = plan_fixture()

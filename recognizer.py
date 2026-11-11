@@ -251,6 +251,45 @@ def recognize_presence_indices(img, orientation, indices, stroke_thr=3500,
                          ("R" if red_ratio > red_thr else "r"))
     return result
 
+
+def recognize_highlight_indices(img, orientation, indices):
+    """Extra glyph evidence for occupied squares under JJ's sandbox glow.
+
+    Only callers which have independently confirmed sandbox mode may use
+    these observations. This does not use the expected piece or side.
+    """
+    if img is None or getattr(img, "ndim", 0) != 3:
+        return {}
+    red, black = load_templates()
+    result = {}
+    for index in dict.fromkeys(indices):
+        row, column = divmod(_screen_index(index, orientation), 9)
+        cx, cy = OX + column * DX + SHIFT_X, OY + row * DY + SHIFT_Y
+        evidence = []
+        for half in (44, 40, 36):
+            tile = crop(img, cx, cy, half=half)
+            if not tile.size:
+                continue
+            count, ratio = analyze(tile)
+            if count < 1400:
+                continue
+            red_letter, red_score = match_shape(tile, red)
+            black_letter, black_score = match_shape(tile, black)
+            # A red last-move effect can contaminate a black glyph's hue.
+            # Override hue only when one side's template wins decisively.
+            if black_score >= .65 and black_score - red_score >= .2:
+                letter, score = black_letter.lower(), black_score
+            elif red_score >= .65 and red_score - black_score >= .2:
+                letter, score = red_letter, red_score
+            else:
+                letter, score = ((red_letter, red_score) if ratio > .36 else
+                                 (black_letter.lower() if black_letter else None, black_score))
+            floor = 1400 if score >= .4 else 2000
+            if letter and count >= floor and score >= .34:
+                evidence.append((score, letter))
+        result[index] = max(evidence)[1] if evidence else None
+    return result
+
 if __name__ == "__main__":
     from board import Board
     img = cv2.imread(os.path.join(HERE, "jj_live.png"))
