@@ -123,8 +123,32 @@ def result_note(route, own, mate=False, pattern="组合将杀", variant=0):
                     f"这一来一回是{trade}，可别当成白捡。", f"{trade}这段先看到这儿，接着盯棋盘。",
                     f"按这条接法是{trade}，不是单方面赚子。", f"眼前这口还有回吃，合起来是{trade}。",
                     f"{trade}的来回都摆了，等对面亮实招。", f"这套{trade}的接法看清楚了，继续看棋。")[index]
-        return (f"这么接，咱们拿{_pieces(ours)}，对面拿{_pieces(theirs)}，两边都得算。",
-                f"咱们吃{_pieces(ours)}也要付出{_pieces(theirs)}，可不是白拿。")[index % 2]
+        # Cancel like-for-like exchanges before describing the balance, rather
+        # than reading a long shopping list which hides the point of the line.
+        shared = Counter(p.upper() for p in ours) & Counter(p.upper() for p in theirs)
+        if shared:
+            def subtract(pieces):
+                counts, remaining, traded = shared.copy(), [], []
+                for piece in pieces:
+                    if counts[piece.upper()]:
+                        counts[piece.upper()] -= 1
+                        traded.append(piece)
+                    else:
+                        remaining.append(piece)
+                return remaining, traded
+            gain, traded = subtract(ours)
+            cost, _ = subtract(theirs)
+            balance = (f"咱们还能拿{_pieces(gain)}" if gain and not cost else
+                       f"咱们还要付出{_pieces(cost)}" if cost and not gain else
+                       f"咱们用{_pieces(cost)}换{_pieces(gain)}")
+            return (f"按这条线，双方先兑掉{_pieces(traded)}，{balance}。",
+                    f"把{_pieces(traded)}的互换抵掉，{balance}。",
+                    f"这条接法不只兑掉{_pieces(traded)}，{balance}。",
+                    f"交换的部分是{_pieces(traded)}，算下来{balance}。")[index % 4]
+        return (f"按这条线，咱们用{_pieces(theirs)}换{_pieces(ours)}。",
+                f"这套接法能拿{_pieces(ours)}，代价是{_pieces(theirs)}。",
+                f"咱们拿到{_pieces(ours)}，也得交出{_pieces(theirs)}。",
+                f"这段交换摆全了：用{_pieces(theirs)}换{_pieces(ours)}。")[index % 4]
     if ours:
         return (f"按这条接法能拿到{_pieces(ours)}，看实战接不接得上。",
                 f"这套接法的目标是{_pieces(ours)}，继续看对面的选择。")[index % 2]
@@ -138,22 +162,26 @@ def result_note(route, own, mate=False, pattern="组合将杀", variant=0):
 def script(plan):
     route = plan.get("route") or []
     mate = plan.get("kind") == "mate"
-    intro = (f"看这路{plan.get('pattern', '组合将杀')}，摆到吃将收尾。" if mate else
+    intro = (f"这路{plan.get('pattern', '组合将杀')}，用沙盘摆一下。" if mate else
              "摆一下这段连续将军，看应将怎么接。" if plan.get("target_kind") == "连续将军" else
              "这段交换要连着看，咱们摆清后手。" if plan.get("reason") == "关键交换" else
              "这里有后续吃子，咱们摆一下接法。")
     scene = plan.get("audience_scene") if not mate else None
-    variant = int(plan.get("narration_variant", 0)) % 4
+    variant = int(plan.get("narration_variant", 0)) % 8
     if not mate:
-        options = (("摆一下这段连续将军，看应将怎么接。", "这几步将军得连起来看。", "咱们摆摆将军和应将的衔接。", "把这串应将摆清楚。")
-                   if plan.get("target_kind") == "连续将军" else
-                   ("这段交换要连着看，咱们摆清后手。", "先别只看眼前这口，摆一下后面的回吃。", "咱们把交换摆完，再看两边的代价。", "这几步有来有回，连起来摆一下。")
-                   if plan.get("reason") == "关键交换" else
-                   ("这里有后续吃子，咱们摆一下接法。", "咱们顺着这条线，看后手怎么接。", "把后面这段吃子摆给大家看。", "这条接法有后手，咱们展开看一眼。"))
+        target = next((PIECE_CN[item["capture"]] for item in route
+                       if item.get("side") == plan.get("own") and item.get("capture")
+                       and item["capture"].upper() in "RNC"), "")
+        focus = ("连续将军的应对" if plan.get("target_kind") == "连续将军" else
+                 f"吃{target}之后的接法" if target else "这段交换的后手")
+        options = (f"用沙盘看看{focus}。", f"咱们摆一条线，看{focus}。",
+                   f"这里值得展开：{focus}。", f"先摆清楚{focus}，再看实战。",
+                   f"咱们把{focus}连起来看。", f"这一段看{focus}，沙盘里过一遍。",
+                   f"顺着这条线，看看{focus}。", f"沙盘推一条参考线，重点看{focus}。")
         intro = options[variant]
         if plan.get("thinking_wait"):
             intro = ("对面还没落子，摆一条可能的接法。", "趁对面还没走，咱们摆一种变化。",
-                     "这手还没落定，先用沙盘看看接法。", "实战还没新招，咱们摆一条参考线。")[variant]
+                     "这手还没落定，先用沙盘看看接法。", "实战还没新招，咱们摆一条参考线。")[variant % 4]
     cues = {}
     if scene:
         cues["question"] = scene["question"]

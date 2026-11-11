@@ -1,4 +1,5 @@
 import unittest
+import itertools
 from unittest.mock import Mock, patch
 
 from board import Board, START_FEN
@@ -67,7 +68,8 @@ class SandboxFinishTests(unittest.TestCase):
                 game_sandbox, "_detect_sandbox_exit", side_effect=[(200, 1850), (200, 1850), None] if exit_after_mate else None,
                 return_value=(200, 1850)), patch.object(
                 game_sandbox, "_position_matches", return_value=True), patch.object(
-                game_sandbox, "_endpoint_confirmed", side_effect=[True] * (len(plan["route"]) - 1) + [capture_confirmed]), patch.object(
+                game_sandbox, "_endpoint_confirmed", side_effect=itertools.chain(
+                    [True] * (len(plan["route"]) - 1), itertools.repeat(capture_confirmed))), patch.object(
                 game_sandbox, "_return_to_live", return_value=True), patch.object(
                 game_sandbox, "tap") as taps, patch.object(game_sandbox.time, "sleep"):
             result = game_sandbox.play_plan("mock", board, "red_bottom", plan, review_seconds=0)
@@ -122,7 +124,7 @@ class SandboxFinishTests(unittest.TestCase):
             "number": 8, "analysis": {}, "sandbox_plan": plan})
         narration = controller.pipeline.prepare_move.call_args_list[0].kwargs["direct_text"]
         self.assertIn("重炮", narration)
-        self.assertIn("吃将收尾", narration)
+        self.assertNotIn("吃将收尾", narration)  # Entry cannot promise an unconfirmed terminal action.
         controller.submit_chess({"event": "move_command", "speech_token": "demo", "notation": line[0][1]})
         controller.pipeline.commit_move.assert_not_called()
         controller.submit_chess({"event": "game_sandbox", "action": "entered", "speech_token": "demo"})

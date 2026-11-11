@@ -44,7 +44,7 @@ class SandboxPresentationTests(unittest.TestCase):
         text = LiveController._sandbox_speech(plan)
         for item in plan["route"]:
             self.assertIn(LiveController._spoken_notation(item["notation"]), text)
-        self.assertIn("交换", text)
+        self.assertIn("吃炮之后的接法", text)
 
     def test_pv_ending_before_a_known_recapture_does_not_invent_a_result(self):
         board, line, _ = plan_fixture()

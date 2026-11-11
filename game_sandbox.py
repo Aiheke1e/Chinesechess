@@ -31,10 +31,13 @@ class SandboxCadence:
         self.clock = clock
         self.last_move, self.last_at = -100, -1e9
         self.recent = {}
+        self.failed_mate_at = -1e9
 
     def allowed(self, plan, number):
         signature = tuple(item.get("ucci") for item in plan.get("route", []))
         kind, now = plan.get("kind"), self.clock()
+        if kind == "mate" and now - self.failed_mate_at < 150:
+            return False
         for (previous_kind, previous), at in self.recent.items():
             if previous_kind != kind or now - at >= 150 or not signature:
                 continue
@@ -45,8 +48,10 @@ class SandboxCadence:
         return (kind == "mate" or
                 number - self.last_move >= 3 and now - self.last_at >= 25)
 
-    def record(self, number, plan=None):
+    def record(self, number, plan=None, result=None):
         self.last_move, self.last_at = number, self.clock()
+        if (plan or {}).get("kind") == "mate" and result is not None and not result.get("king_captured"):
+            self.failed_mate_at = self.last_at
         signature = tuple(item.get("ucci") for item in (plan or {}).get("route", []))
         self.recent = {key: at for key, at in self.recent.items() if self.clock() - at < 150}
         if signature:
@@ -270,6 +275,17 @@ def _position_matches(board, image, orientation):
     # a real opponent move changes at least source and destination and is not
     # accepted here.
     presence = recognize_presence_occupancy(image, orientation)
+    # Under the dim sandbox overlay the two recognizers can each lose a
+    # different piece. Repair only a primary missing occupied square whose
+    # side is independently seen by presence recognition. Still require all
+    # 90 coloured occupancies to match; extras and wrong-side pieces fail.
+    if observed is not None and presence is not None and len(observed) == len(presence) == 90:
+        merged = [seen if seen is not None else extra if wanted is not None else None
+                  for wanted, seen, extra in zip(board.sq, observed, presence)]
+        if all((wanted is None) == (seen is None) and
+               (wanted is None or wanted.isupper() == seen.isupper())
+               for wanted, seen in zip(board.sq, merged)):
+            return True
     sequence = resolve_legal_sequence_by_occupancy(
         board, presence, max_plies=0, max_mismatches=1)
     return sequence == []
@@ -419,6 +435,19 @@ def _endpoint_confirmed(board, move, image, orientation):
     return bool(moving and presence.get(frm) is None and
                 presence.get(to) is not None and
                 presence[to].isupper() == moving.isupper())
+
+
+def _settle_endpoint(device, board, move, image, orientation, deadline, cancelled):
+    """Read an in-flight animation without submitting another board input."""
+    for _ in range(4):
+        if _endpoint_confirmed(board, move, image, orientation):
+            return image, True
+        if (cancelled() or time.monotonic() + .15 >= deadline or
+                _detect_sandbox_exit(image) is None):
+            break
+        time.sleep(.15)
+        image = screenshot(device)
+    return image, _endpoint_confirmed(board, move, image, orientation)
 
 
 def _live_sequence(board, image, orientation, max_plies=1):
@@ -636,9 +665,10 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
         time.sleep(0.18)
         tap(tx, ty, device=device)
         time.sleep(0.42)
-        frame = screenshot(device)
+        frame, endpoint_ok = _settle_endpoint(device, sandbox_board, move,
+            screenshot(device), orientation, hard_deadline, stop_requested)
         last_sandbox_frame = frame
-        if not _endpoint_confirmed(sandbox_board, move, frame, orientation):
+        if not endpoint_ok:
             if item.get("illustration"):
                 # A king-capture animation can close the mode; do not retry
                 # board input on what could now be the live game.
