@@ -42,7 +42,10 @@ class SandboxCadence:
         for (previous_kind, previous), at in self.recent.items():
             if previous_kind != kind or now - at >= 150 or not signature:
                 continue
-            if signature == previous or any(
+            # A one-ply mate is also the suffix of a longer verified mate.
+            # Pair-only overlap misses exactly this final live continuation.
+            same_finish = kind == "mate" and len(signature) == 1 and signature == previous[-1:]
+            if signature == previous or same_finish or any(
                     signature[i:i + 2] == previous[j:j + 2]
                     for i in range(len(signature) - 1) for j in range(len(previous) - 1)):
                 return False
@@ -536,7 +539,7 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
     # game and must not control the lifetime of our local demonstration.
     before = _wait_for_position(
         device, live_board, orientation, timeout=gate_timeout,
-        required_hits=1)
+        required_hits=2)
     if before is None:
         failure_image = screenshot(device)
         probe = _position_probe(live_board, failure_image, orientation)
@@ -549,7 +552,7 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
             live_board, legal_route, observed_reply = advanced
             before = _wait_for_position(
                 device, live_board, orientation, timeout=1.2,
-                required_hits=1)
+                required_hits=2)
         if before is not None:
             probe = None
         else:
@@ -611,17 +614,20 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
         if ever_changed or ever_exit:
             safe = _return_to_live(device, live_board, orientation)
         diagnostic = None
+        entry_probe = {}
         try:
+            entry_probe = _position_probe(live_board, entered_frame, orientation)
             from diagnostics import capture_diagnostic
             diagnostic = capture_diagnostic(device, "sandbox_entry_unconfirmed", image=entered_frame,
                 extra={"controls_changed": controls_changed, "exit_visible": exit_visible,
                        "copied_position": copied_position, "ever_exit": ever_exit,
-                       "safe_exit": safe, "fen": live_board.to_fen()})
+                       "safe_exit": safe, "fen": live_board.to_fen(), **entry_probe})
         except Exception:
             pass
         return {"entered": False, "safe_exit": safe,
                 "entry_check": {"controls_changed": controls_changed, "exit_visible": exit_visible,
-                                "copied_position": copied_position}, "diagnostic": diagnostic,
+                                "copied_position": copied_position}, "entry_probe": entry_probe,
+                "diagnostic": diagnostic,
                 "reason": "沙盘棋盘未匹配，已略过" if ever_exit else "沙盘入口未响应，已略过"}
 
     if on_enter:
