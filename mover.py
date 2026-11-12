@@ -140,6 +140,8 @@ def move_piece(frm: int, to: int, device, expected_before=None,
         return False, f"FAIL 起点 idx{frm} 未识别到棋子，未发送点击"
     trusted_before = expected_before if expected_before is not None else before
     expected_after = after_move(trusted_before, (frm, to))
+    from game_result import mating_move_after, mating_animation_confirms_move
+    mating_candidate = mating_move_after(trusted_before, (frm, to)) is not None
 
     tap(fx, fy, device)
     time.sleep(settle_first)
@@ -153,6 +155,7 @@ def move_piece(frm: int, to: int, device, expected_before=None,
     last_image = image
     last_occupancy = None
     relaxed_hits = 0
+    mating_animation_hits = 0
     rule_rejection_hits = 0
     next_full_check = time.monotonic() + 0.8
     while time.monotonic() < deadline:
@@ -181,6 +184,11 @@ def move_piece(frm: int, to: int, device, expected_before=None,
         if _probe_matches(expected_after, repaired, (frm, to)):
             return True, (f"OK {piece} {frm}->{to} 落子成功"
                           "（高亮容错局部校验）")
+        if mating_candidate:
+            mating_animation_hits = (mating_animation_hits + 1 if mating_animation_confirms_move(
+                image, trusted_before, (frm, to), orientation) else 0)
+            if mating_animation_hits >= 2:
+                return True, f"OK {piece} {frm}->{to} 落子成功（连续两帧绝杀动画与棋子核验）"
         # A rule-rejected tap leaves both endpoints unchanged.  Require two
         # explicit warning frames and the trusted pre-move occupancy before
         # allowing a different move; a toast alone cannot rewind the board.

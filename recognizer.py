@@ -253,10 +253,10 @@ def recognize_presence_indices(img, orientation, indices, stroke_thr=3500,
 
 
 def recognize_highlight_indices(img, orientation, indices):
-    """Extra glyph evidence for occupied squares under JJ's sandbox glow.
+    """Extra glyph evidence under JJ's glow and dark terminal overlays.
 
-    Only callers which have independently confirmed sandbox mode may use
-    these observations. This does not use the expected piece or side.
+    Callers must independently confirm sandbox mode or JJ's terminal overlay
+    before using these observations. No expected piece or side is supplied.
     """
     if img is None or getattr(img, "ndim", 0) != 3:
         return {}

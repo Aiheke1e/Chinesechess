@@ -1,13 +1,76 @@
-"""Read only explicit finish causes from an already confirmed JJ result page."""
+"""Verify JJ terminal animation evidence and explicit result-page causes."""
 import os
 from pathlib import Path
 import re
 import subprocess
 import tempfile
+from functools import lru_cache
 
 import cv2
 
 ROOT = Path(__file__).resolve().parent
+
+
+def mating_move_after(squares, move):
+    """Only a legal move leaving the opponent in actual checkmate qualifies."""
+    from board import Board
+    try:
+        piece = squares[move[0]]
+        if not piece or (squares[move[1]] or "").upper() == "K":
+            return None
+        board = Board(list(squares), "r" if piece.isupper() else "b")
+        if board.king_pos("r") < 0 or board.king_pos("b") < 0 or move not in board.legal_moves():
+            return None
+        board.apply(move)
+        return board if board.in_check(board.turn) and not board.legal_moves() else None
+    except (ValueError, IndexError, TypeError):
+        return None
+
+
+@lru_cache(maxsize=1)
+def _mate_banner_template():
+    return cv2.imread(str(ROOT / "assets/jj-mate-banner-mask.png"), cv2.IMREAD_GRAYSCALE)
+
+
+def mating_animation_confirms_move(image, squares, move, orientation):
+    """Read JJ's live mate animation AND verify the moved piece and both kings.
+
+    A planned mate or a banner alone proves nothing. The image must show the
+    empty source, actual moved piece at the destination and both unchanged
+    kings, plus two board anchors, despite the dark celebration overlay.
+    """
+    if (image is None or getattr(image, "ndim", 0) != 3 or image.shape[0] < 800 or
+            not .5 <= image.shape[1] / image.shape[0] <= .6):
+        return False
+    board = mating_move_after(squares, move)
+    if board is None:
+        return False
+    template = _mate_banner_template()
+    if template is None:
+        return False
+    resized = cv2.resize(image, (1080, 1920))
+    mask = cv2.inRange(cv2.cvtColor(resized, cv2.COLOR_BGR2HSV), (12, 90, 100), (40, 255, 255))
+    mask = cv2.resize(mask[760:1270, 180:950], (256, 170), interpolation=cv2.INTER_AREA)
+    if float(cv2.matchTemplate(mask, template, cv2.TM_CCORR_NORMED)[0, 0]) < .92:
+        return False
+    from recognizer import recognize_highlight_indices
+    frm, to = move
+    kings = [board.king_pos("r"), board.king_pos("b")]
+    indices = list(dict.fromkeys([frm, to, *kings]))
+    anchors = [i for i, piece in enumerate(board.sq) if piece and i not in indices and
+               (i // 9 <= 2 or i // 9 >= 8)]
+    indices += anchors
+    # Hue is contaminated by JJ's red/gold flashes. The glyph recognizer
+    # requires decisive independent shape evidence before overriding hue.
+    observed = recognize_highlight_indices(cv2.convertScaleAbs(resized, alpha=2), orientation, indices)
+    if (observed.get(frm) is not None or observed.get(to) != squares[frm] or
+            any(observed.get(i) != board.sq[i] for i in kings)):
+        return False
+    conflicts = [i for i in anchors if observed.get(i) is not None and
+                 observed[i].isupper() != board.sq[i].isupper()]
+    matches = sum(observed.get(i) is not None and observed[i].isupper() == board.sq[i].isupper()
+                  for i in anchors)
+    return not conflicts and matches >= 2
 
 
 def classify_result(text):

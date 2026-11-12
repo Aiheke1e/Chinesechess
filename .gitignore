@@ -46,6 +46,7 @@ data/opening_book*.json.gz
 !assets/jj-emoji-cloud.png
 !assets/jj-emoji-coin.png
 !assets/jj-rule-long-chase.png
+!assets/jj-mate-banner-mask.png
 
 # Pikafish runtime files are downloaded separately; keep only its licenses/docs.
 engine_bin/*.7z
