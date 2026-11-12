@@ -101,6 +101,7 @@ class LiveClockTests(unittest.TestCase):
 
     def test_paused_commentary_does_not_advance_the_cadence(self):
         controller = object.__new__(LiveController)
+        controller._notify = Mock()
         controller.settings = LiveSettings(commentary_enabled=False)
         controller.pipeline = Mock()
         controller.clock_cadence = GameClockCadence()
@@ -108,6 +109,7 @@ class LiveClockTests(unittest.TestCase):
         controller.submit_chess({"event": "game_over", "result": "won", "reason": "no_legal_moves"})
         self.assertEqual(controller.clock_cadence.completed, 0)
         controller.pipeline.submit.assert_not_called()
+        self.assertEqual(controller._notify.call_args.args[0], "game_lifecycle")
 
 
 if __name__ == "__main__":

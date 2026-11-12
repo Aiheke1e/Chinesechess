@@ -39,6 +39,8 @@ from soft_ui import SoftCard, install_button_styles, ui_scale, blend
 from desktop_display import enable_high_dpi
 from stream_brand import APP_TITLE, AREA_A_TITLE
 from game_control import CONTROL_PATH as GAME_CONTROL_PATH, write_auto_continue
+from stream_shutdown import StreamShutdown
+from companion_shutdown import CompanionShutdown
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STOP_FILE = os.path.join(HERE, "work", "stop.request")
@@ -204,6 +206,11 @@ class ControlPanel:
         self._prepare_generation = 0
         self.task_cancel = threading.Event()
         self.closing = False
+        self.stream_shutdown = StreamShutdown()
+        self.shutdown_cancel = threading.Event()
+        self.shutdown_time = tk.StringVar(value="23:30")
+        self.shutdown_scheduled = tk.BooleanVar(value=False)
+        self.shutdown_status = tk.StringVar(value="")
         self.live_controller = None
         live = load_settings()
         self.live_room = tk.StringVar(value=live.room)
@@ -272,6 +279,7 @@ class ControlPanel:
         self.refresh_device()
         root.after(80, self._poll)
         root.after(1500, self._watchdog_tick)
+        root.after(250, self._shutdown_tick)
         root.protocol("WM_DELETE_WINDOW", self.close)
         if autostart:
             self._schedule_prepare(delay=400, automatic=False)
@@ -794,6 +802,24 @@ class ControlPanel:
         self.persona_text.grid(row=8, column=1, columnspan=5, sticky="ew", pady=(12, 0))
         self.persona_text.insert("1.0", load_settings().persona)
         self.persona_text.bind("<FocusOut>", lambda event: self.save_live_settings(quiet=True))
+
+        label("下播", 3)
+        shutdown_area = ttk.Frame(form, style="Card.TFrame")
+        shutdown_area.grid(row=3, column=1, columnspan=5, sticky="ew", pady=(6, 0))
+        shutdown_row = ttk.Frame(shutdown_area, style="Card.TFrame")
+        shutdown_row.pack(fill="x")
+        self.shutdown_button = ttk.Button(shutdown_row, text="本局后下播", width=12,
+            style="Primary.TButton", command=self.toggle_stream_shutdown)
+        self.shutdown_button.pack(side="left")
+        ttk.Checkbutton(shutdown_row, text="定时", variable=self.shutdown_scheduled,
+            style="Settings.TCheckbutton", command=self.toggle_shutdown_schedule).pack(side="left", padx=(18, 6))
+        self.shutdown_time_entry = ttk.Entry(shutdown_row, textvariable=self.shutdown_time, width=7)
+        self.shutdown_time_entry.pack(side="left")
+        self.shutdown_time_entry.bind("<Return>", lambda event: self._update_shutdown_schedule())
+        self.shutdown_time_entry.bind("<FocusOut>", lambda event: self._update_shutdown_schedule())
+        ttk.Label(shutdown_row, text="到点后下完当局", style="Muted.TLabel").pack(side="left", padx=(8, 0))
+        ttk.Label(shutdown_area, textvariable=self.shutdown_status, style="Muted.TLabel").pack(
+            anchor="w", pady=(4, 0))
         self._layout_logs()
 
         self.tools_menu = tk.Menu(self.root, tearoff=False, bg=THEME["panel"], fg=THEME["text"],
@@ -1696,6 +1722,8 @@ class ControlPanel:
         self.live_connect_button.configure(state="normal", text=text)
 
     def connect_live(self):
+        if self._shutdown_active():
+            self._cancel_stream_shutdown()
         if getattr(self, "live_connect_request", None) is not None:
             return
         if not self.live_controller or not self.save_live_settings(quiet=True):
@@ -1720,6 +1748,8 @@ class ControlPanel:
         threading.Thread(target=worker, name="douyin-connect", daemon=True).start()
 
     def disconnect_live(self):
+        if self._shutdown_active():
+            self._cancel_stream_shutdown()
         self.live_connect_request = None
         self.connection_state = "disconnected"
         self._sync_connection_button()
@@ -1965,6 +1995,112 @@ class ControlPanel:
             pass
         return cfg
 
+    def _shutdown_active(self):
+        flow = getattr(self, "stream_shutdown", None)
+        return bool(flow and flow.active)
+
+    def _sync_shutdown(self):
+        flow = self.stream_shutdown
+        self.shutdown_status.set(flow.message)
+        self.shutdown_button.configure(text="正在下播" if flow.state == "closing" else
+                                       "取消下播" if flow.active else "本局后下播")
+        self.shutdown_button.state(["disabled"] if flow.state == "closing" else ["!disabled"])
+        self.shutdown_time_entry.state(["disabled"] if flow.active else ["!disabled"])
+        if self.live_controller:
+            self.live_controller.set_shutdown(
+                "final" if flow.finalizing else "waiting_game" if flow.active else None, flow.epoch)
+
+    def _cancel_stream_shutdown(self):
+        self.shutdown_cancel.set()
+        self.stream_shutdown.cancel()
+        self.shutdown_scheduled.set(False)
+        self._sync_shutdown()
+
+    def toggle_stream_shutdown(self):
+        if self.stream_shutdown.active:
+            self._cancel_stream_shutdown()
+        else:
+            self._arm_stream_shutdown()
+
+    def toggle_shutdown_schedule(self):
+        if self.stream_shutdown.active:
+            self.shutdown_scheduled.set(False)
+            return
+        if self.shutdown_scheduled.get():
+            self._update_shutdown_schedule()
+        else:
+            self.stream_shutdown.cancel()
+            self.stream_shutdown.message = "已取消定时下播"
+            self._sync_shutdown()
+
+    def _update_shutdown_schedule(self):
+        if not self.shutdown_scheduled.get() or self.stream_shutdown.active:
+            return
+        try:
+            self.stream_shutdown.schedule(self.shutdown_time.get().strip())
+        except ValueError as error:
+            self.shutdown_scheduled.set(False)
+            self.stream_shutdown.fail(str(error))
+        self._sync_shutdown()
+
+    def _arm_stream_shutdown(self):
+        controller = self.live_controller
+        self.shutdown_scheduled.set(False)
+        if controller is None or not controller.settings.speech_enabled:
+            self.stream_shutdown.fail("请先开启语音，保证告别说完再结束直播")
+            self._sync_shutdown()
+            return
+        if not self._publish_auto_continue(False):
+            self.stream_shutdown.fail("自动连局关闭失败，尚未启用下播")
+            self._sync_shutdown()
+            return
+        self.continuous.set(False)
+        self.auto_retry = False
+        self._cancel_scheduled_prepare()
+        running = bool(self.process and self.process.poll() is None)
+        active_game = (controller.game_active or (running and self.chess_session_requested
+                       and not controller.game_terminal and not self.dry.get()))
+        was_waiting = self.waiting_for_board
+        if was_waiting and not running:
+            self.task_cancel.set()
+            self.waiting_for_board = False
+        self.shutdown_cancel.set()
+        self.shutdown_cancel = threading.Event()
+        self.stream_shutdown.arm(active_game)
+        self._save_ui_settings()
+        self._sync_shutdown()
+        self.append("[下播] 已关闭下一局匹配；" + ("当前这盘照常下完。\n" if active_game else "当前没有进行中的棋局，准备告别。\n"))
+        if active_game and was_waiting and not running:
+            self.task_cancel = threading.Event()
+            self._schedule_prepare(automatic=False, resume_only=True)
+
+    def _shutdown_tick(self):
+        if self.closing:
+            return
+        flow = self.stream_shutdown
+        if flow.due():
+            self._arm_stream_shutdown()
+        controller = self.live_controller
+        if flow.active and controller:
+            idle, safe = controller.shutdown_activity()
+            action = flow.tick(idle=idle, prelude_safe=safe)
+            self._sync_shutdown()
+            if action and action[0] == "speak":
+                _, kind, line, payload = action
+                if not controller.shutdown_speech(kind, line, payload):
+                    flow.speech_done({**payload, "kind": kind, "completed": False})
+                    self._sync_shutdown()
+            elif action and action[0] == "close":
+                epoch, cancel = action[1], self.shutdown_cancel
+                def finish():
+                    try:
+                        success, message = CompanionShutdown().end_live(cancel)
+                    except Exception as error:
+                        success, message = False, "未完成下播：" + str(error)[:160]
+                    self.output.put(("shutdown_result", epoch, success, message))
+                threading.Thread(target=finish, name="companion-end-live", daemon=True).start()
+        self.root.after(250, self._shutdown_tick)
+
     def _publish_auto_continue(self, enabled):
         try:
             write_auto_continue(enabled, path=GAME_CONTROL_PATH)
@@ -1975,6 +2111,10 @@ class ControlPanel:
 
     def toggle_auto_continue(self):
         enabled = bool(self.continuous.get())
+        if enabled and self._shutdown_active():
+            self.continuous.set(False)
+            self.status.set("已安排本局后下播；取消下播后可重新开启自动连局")
+            return
         self.auto_retry = enabled
         synced = self._publish_auto_continue(enabled)
         self._save_ui_settings()
@@ -2005,7 +2145,12 @@ class ControlPanel:
             else:
                 self.append("[自动连局] 已开启：点击开始下棋后生效。\n")
 
-    def prepare_and_wait(self, *, automatic=False):
+    def prepare_and_wait(self, *, automatic=False, resume_only=False):
+        if self._shutdown_active():
+            if self.stream_shutdown.state != "waiting_game":
+                self.status.set("正在准备下播，请先取消下播再开始下棋")
+                return
+            resume_only = True
         if automatic and not (self.auto_retry and bool(self.continuous.get())):
             return
         self.append("[控制指令] 一键准备并等待新棋\n")
@@ -2031,17 +2176,17 @@ class ControlPanel:
             self.append("[持续下棋] 已开启：胜负、投降或超时后都会继续监听下一局。\n")
         requested_turn = TURN_LABEL_TO_CODE.get(self.turn_choice.get(), "auto")
         threading.Thread(target=self._prepare_worker,
-                         args=(requested_turn, self.task_cancel), daemon=True).start()
+                         args=(requested_turn, self.task_cancel, resume_only), daemon=True).start()
 
-    def _prepare_worker(self, requested_turn="auto", cancel=None):
+    def _prepare_worker(self, requested_turn="auto", cancel=None, resume_only=False):
         cancel = cancel or self.task_cancel
         try:
             with cancellable_adb(cancel):
-                self._prepare_worker_body(requested_turn, cancel)
+                self._prepare_worker_body(requested_turn, cancel, resume_only=resume_only)
         except TaskCancelled:
             pass
 
-    def _prepare_worker_body(self, requested_turn, cancel):
+    def _prepare_worker_body(self, requested_turn, cancel, resume_only=False):
         import time
 
         def publish(item):
@@ -2052,6 +2197,8 @@ class ControlPanel:
         try:
             devices = list_devices()
             if not devices:
+                if resume_only:
+                    raise RuntimeError("等待原局恢复时未找到模拟器，未启动新局")
                 emulator = cfg["emulator_path"]
                 if not os.path.isfile(emulator):
                     raise FileNotFoundError("未找到模拟器：" + emulator)
@@ -2068,6 +2215,8 @@ class ControlPanel:
             device = devices[0]
             package, _ = current_package(device)
             if package != cfg["jj_package"]:
+                if resume_only:
+                    raise RuntimeError("JJ象棋不在前台，未启动新局；请回到原局后开始下棋")
                 publish(("status", "正在打开 JJ 象棋…"))
                 adb(["shell", "monkey", "-p", cfg["jj_package"],
                      "-c", "android.intent.category.LAUNCHER", "1"],
@@ -2097,6 +2246,10 @@ class ControlPanel:
                         confirm = screenshot(device)
                         if (confirm is not None and
                                 has_actionable_postgame(confirm)):
+                            if resume_only:
+                                publish(("shutdown_game_over", {
+                                    "event": "game_over", "result": "finished", "reason": "jj_result_screen"}))
+                                return
                             publish(("status", "已连续确认结算页面，正在自动进入下一局…"))
                             actions = handle_postgame(device, continue_allowed=lambda:
                                 not cancel.is_set() and (not getattr(self, "waiter_automatic", False)
@@ -2125,6 +2278,9 @@ class ControlPanel:
                         "resume": True,
                     }))
                     return
+                if resume_only:
+                    cancel.wait(.15)
+                    continue  # Never match, dismiss overlays, or adopt a new board.
                 squares, orientation = ((None, None) if image is None else
                                         recognize_position(image, "auto"))
                 visible_pieces = sum(
@@ -2300,7 +2456,10 @@ class ControlPanel:
         self.append("[控制指令] 开始自动标定\n")
         self._launch(["calibrate_live.py"], "正在从标准开局自动标定…")
 
-    def start(self, once, initial_turn=None, min_pieces=None):
+    def start(self, once, initial_turn=None, min_pieces=None, resume_shutdown=False):
+        if self._shutdown_active() and not (resume_shutdown and self.stream_shutdown.state == "waiting_game"):
+            self.status.set("已安排下播；只恢复当前棋局，不开启新局")
+            return
         self.append("[控制指令] " + ("运行一手" if once else "开始自动对弈") + "\n")
         try:
             movetime = int(self.movetime.get())
@@ -2333,6 +2492,8 @@ class ControlPanel:
         self._launch(args, "只读检查中…" if self.dry.get() else "自动对弈运行中…")
 
     def stop(self):
+        if self._shutdown_active():
+            self._cancel_stream_shutdown()
         self._cancel_scheduled_prepare()
         self._publish_auto_continue(False)
         self.chess_session_requested = False
@@ -2378,7 +2539,7 @@ class ControlPanel:
             except tk.TclError:
                 pass
 
-    def _schedule_prepare(self, delay=120, *, automatic=True):
+    def _schedule_prepare(self, delay=120, *, automatic=True, resume_only=False):
         self._cancel_scheduled_prepare()
         cancel = self.task_cancel
         generation = self._prepare_generation
@@ -2390,7 +2551,10 @@ class ControlPanel:
             self._prepare_job = None
             if automatic and not (self.auto_retry and bool(self.continuous.get())):
                 return
-            self.prepare_and_wait(automatic=automatic)
+            if resume_only:
+                self.prepare_and_wait(automatic=automatic, resume_only=True)
+            else:
+                self.prepare_and_wait(automatic=automatic)
 
         self._prepare_job = self.root.after(delay, restart)
 
@@ -2444,17 +2608,34 @@ class ControlPanel:
                         self.status.set("落子未确认，当前局面已锁定")
                         self.append("[助手] 为防止重复点击，持续下棋已暂停；当前局面变化或进入新一局后再手动开始。\n")
                     elif item[1] == 14:
+                        recovering_for_shutdown = (self._shutdown_active() and self.stream_shutdown.state == "waiting_game")
                         self.status.set("识别短暂不稳定，正在从断点重新接管…" if keep_running
                                         else "当前落子未确认，已暂停并保留断点")
                         self.append("[助手] 本次未点击棋盘，已保留可信断点；等待画面稳定后自动恢复。\n" if keep_running
                                     else "[助手] 本次未点击棋盘，已保留可信断点；画面稳定后可手动开始。\n")
-                        if keep_running:
+                        if recovering_for_shutdown:
+                            self._schedule_prepare(automatic=False, resume_only=True)
+                            self.status.set("本局后下播 · 仅恢复当前棋局")
+                        elif keep_running:
                             self._schedule_prepare()
                     else:
                         self.status.set("本次接管未成功，继续等待稳定棋盘…")
                         self.append("[助手] 本次画面识别未通过，未执行点击；继续等待。\n")
                         if keep_running:
                             self._schedule_prepare()
+                elif isinstance(item, tuple) and item[0] == "shutdown_game_over":
+                    self.waiting_for_board = False
+                    if self.live_controller:
+                        self.live_controller.submit_chess(item[1])
+                elif isinstance(item, tuple) and item[0] == "shutdown_result":
+                    if self.stream_shutdown.closed(item[1], success=item[2], message=item[3]):
+                        if item[2] and self.live_controller:
+                            self.chess_session_requested = False
+                            self.live_controller.pause()
+                            self.live_controller.disconnect()
+                            self._sync_interaction_button()
+                        self._sync_shutdown()
+                        self.append("[下播] " + item[3] + "\n")
                 elif isinstance(item, tuple) and item[0] == "status":
                     self.status.set(item[1])
                     self.append("[助手] " + item[1] + "\n")
@@ -2474,7 +2655,8 @@ class ControlPanel:
                                 f"当前轮到{side}），启动自动对弈。\n")
                     self.start(False, initial_turn=details["turn"],
                                min_pieces=self._assistant_cfg().get(
-                                   "endgame_min_pieces", 4))
+                                   "endgame_min_pieces", 4),
+                               resume_shutdown=bool(details.get("resume") and self._shutdown_active()))
                 elif isinstance(item, tuple) and item[0] == "assistant_error":
                     self.waiting_for_board = False
                     self.status.set("一键助手失败：" + item[1])
@@ -2525,6 +2707,15 @@ class ControlPanel:
                     kind = record.get("kind", "status")
                     data = record.get("data") or {}
                     if data.get("测试输入"):
+                        continue
+                    if kind in ("game_lifecycle", "shutdown_speech_done"):
+                        flow = getattr(self, "stream_shutdown", None)
+                        if flow:
+                            if kind == "game_lifecycle":
+                                flow.observe_game(data)
+                            else:
+                                flow.speech_done(data)
+                            self._sync_shutdown()
                         continue
                     if self.task_cancel.is_set() and (
                             kind in ("chess", "sandtable") or (
@@ -2597,6 +2788,8 @@ class ControlPanel:
 
     def close(self):
         self.closing = True
+        if hasattr(self, "shutdown_cancel"):
+            self.shutdown_cancel.set()
         self._cancel_interaction_clear()
         self._cancel_scheduled_prepare()
         self._publish_auto_continue(False)

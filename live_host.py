@@ -27,6 +27,7 @@ from live_clock import CLOCK_KIND, GameClockCadence, beijing_now, clock_line, mi
 from audience_scene import AudienceSceneDirector
 from sandbox_story import SandboxStory
 from broadcast_flow import BroadcastFlow, GAP_KIND, TRANSITION_KINDS
+from stream_shutdown import SHUTDOWN_KINDS, PRELUDE_KIND
 from glm_client import DEFAULT_MODEL, respond
 from opening_library import load_opening_library
 from commentary_text import (complete_note, connected_move_note, waiting_note,
@@ -270,6 +271,7 @@ class SpeechPipeline:
         self.sequence = 0
         self.cancel_epoch = 0
         self.chess_epoch = 0
+        self.shutdown_epoch = 0
         self.history = deque(maxlen=8)
         self.style = CommentaryStyle()
         self.balance = SpeechBalance()
@@ -431,6 +433,9 @@ class SpeechPipeline:
 
     def _state_live(self, state):
         return (state.get("approved", True) is not False and state["epoch"] == self.cancel_epoch
+                and state.get("shutdown_epoch", getattr(self, "shutdown_epoch", 0)) == getattr(self, "shutdown_epoch", 0)
+                and not (state.get("kind") == PRELUDE_KIND and getattr(self, "shutdown_final", False)
+                         and not state.get("audio_started"))
                 and not self.closed.is_set() and not getattr(self, "suspended", False)
                 and not (state.get("cancel") and state["cancel"].is_set())
                 and not ("chess_epoch" in state and getattr(self, "chess_suspended", False))
@@ -544,6 +549,16 @@ class SpeechPipeline:
             playing = bool(getattr(self, "audio_active", False))
         return {"queued": queued, "working": working, "preparing": preparing,
                 "playing": playing, "suspended": bool(getattr(self, "suspended", False))}
+
+    def set_shutdown_epoch(self, epoch, *, final=False):
+        with self.condition:
+            self.shutdown_final = final
+            if epoch == getattr(self, "shutdown_epoch", 0):
+                return
+            self.shutdown_epoch = epoch
+            self.jobs = [job for job in self.jobs if job[4] not in SHUTDOWN_KINDS]
+            heapq.heapify(self.jobs)
+            self.condition.notify_all()
 
     def cancel_chats(self):
         """Cancel room speech only, including welcomes and gift thanks."""
@@ -708,6 +723,8 @@ class SpeechPipeline:
                 or time.monotonic() >= state.get("deadline", float("inf"))):
             return False
         duration = self._audio_duration(audio)
+        if kind in SHUTDOWN_KINDS and duration <= 0:
+            raise RuntimeError("告别语音文件为空，未播放")
         if payload.get("_sandbox_cue") and time.monotonic()+duration+.05 > state.get("deadline",float("inf")):
             self._mark_speech_failed(payload,"沙盘剩余时间不足，本段未起播")
             state["approved"] = False
@@ -767,6 +784,8 @@ class SpeechPipeline:
             return "弹幕互动已暂停或直播间已切换"
         if state.get("approved") is False:
             return "本段播报已取消"
+        if state.get("shutdown_epoch", self.shutdown_epoch) != self.shutdown_epoch:
+            return "下播安排已取消或棋局续接"
         if state["epoch"] != self.cancel_epoch:
             return "播报队列已清空"
         if not self._state_live(state):
@@ -1173,7 +1192,10 @@ class SpeechPipeline:
     def _run_job(self, job):
         priority, sequence, created, epoch, kind, payload, direct = job
         completed = False
-        state = {"epoch": epoch, "approved": True}
+        speech_mode = None
+        state = {"epoch": epoch, "approved": True, "kind": kind}
+        if "_shutdown_epoch" in payload:
+            state["shutdown_epoch"] = payload["_shutdown_epoch"]
         if kind in TRANSITION_KINDS:
             state.update(lifecycle=True,deadline=created+12)
             if kind == "新局开场":
@@ -1224,6 +1246,7 @@ class SpeechPipeline:
                 mode = "low" if kind in CHESS_SPEECH_KINDS else "interaction"
                 if not self._play_in_turn(audio, payload, state, text, kind, mode):
                     return
+                speech_mode = "audio"
                 self._prune_audio(Path(audio).parent)
             else:
                 if kind == "弹幕回复":
@@ -1233,6 +1256,7 @@ class SpeechPipeline:
                 if not self._wait_turn(kind, payload, state):
                     return
                 self.notify("reply", text, {"kind": kind, **payload, "_speech_mode": "text"})
+                speech_mode = "text"
                 self.balance.record(kind, min(10, max(2, len(text) / 5)))
                 self._remember_speech(text, kind, payload)
                 self.notify("speech_status", "仅文本模式：未调用 TTS", payload)
@@ -1249,6 +1273,9 @@ class SpeechPipeline:
             if self._state_live(state) and self._chat_valid(kind, payload):
                 self.notify("error", str(error)[:200], {"kind": kind})
         finally:
+            if payload.get("_shutdown_token"):
+                self.notify("shutdown_speech_done", "下播播报结束", {
+                    **payload, "kind": kind, "completed": completed, "_speech_mode": speech_mode})
             if kind == "弹幕回复":
                 self.notify("interaction_done", "本条弹幕互动结束", {**payload, "completed": completed})
 
@@ -1301,6 +1328,10 @@ class LiveController:
         self.audience_scenes = AudienceSceneDirector()
         self.sandbox_story = SandboxStory()
         self.broadcast_flow = BroadcastFlow()
+        self.game_active = False
+        self.game_terminal = False
+        self.game_dry = False
+        self.shutdown_mode = None
         self.quiet_move_count = 0
         self.next_prediction_move = 4
         self.prediction_count = 0
@@ -1426,6 +1457,26 @@ class LiveController:
     def jump_to_latest(self):
         self.pipeline.jump_to_latest()
         self._notify("status", "已清除旧播报，语音将跟随最新局面")
+
+    def set_shutdown(self, mode, epoch):
+        self.shutdown_mode = mode
+        self.pipeline.set_shutdown_epoch(epoch, final=mode == "final")
+        if mode == "final":
+            with self.pipeline.idle_lock:
+                idle = self.pipeline.idle_state
+                cancel_pending = idle is not None and not idle.get("audio_started")
+            if cancel_pending:
+                self.pipeline.cancel_idle()
+
+    def shutdown_speech(self, kind, line, payload):
+        return self.pipeline.submit(5, kind, payload, direct_text=line)
+
+    def shutdown_activity(self):
+        activity = self.pipeline.activity_snapshot()
+        idle = not any(activity.get(key) for key in ("queued", "working", "preparing", "playing"))
+        # Do not delay moves, pre-empt chat, or compete with mate/sandbox.
+        safe = bool(getattr(self, "opponent_wait_scope", None)) and not self.pipeline._mate_busy()
+        return idle, safe
 
     def _complex_chess_event(self, event):
         notation = str(event.get("notation") or "")
@@ -1935,6 +1986,22 @@ class LiveController:
     def submit_chess(self, event):
         if getattr(self, "suspended", False):
             return
+        name = event.get("event")
+        if name == "start":
+            self.game_dry = bool(event.get("dry_run"))
+            self.game_terminal = False
+            self.game_active = not self.game_dry
+        if not getattr(self, "game_dry", False):
+            if name == "position":
+                self.game_active = True
+                self.game_terminal = False
+            elif name == "game_over" and BroadcastFlow.is_terminal(event):
+                self.game_active = False
+                self.game_terminal = True
+            if name in ("start", "position", "game_over"):
+                # Lifecycle must reach the end-live director even if chess
+                # commentary is switched off. Recognition pauses are not ends.
+                self._notify("game_lifecycle", "棋局状态更新", event)
         set_active = getattr(getattr(self, "pipeline", None), "set_chess_active", None)
         if callable(set_active) and event.get("event") in ("start", "engine_analysis", "move_applied", "opponent_move", "game_over"):
             set_active(event.get("event") != "game_over" and not getattr(self, "chess_suspended", False)
@@ -2040,6 +2107,11 @@ class LiveController:
                 playful=humor_enabled(getattr(getattr(self, "settings", None), "persona", DEFAULT_PERSONA)))
             if self.broadcast_flow.is_terminal(event) and not ending:
                 return  # Repeated settlement must not cancel its own closing line.
+            if ending and getattr(self, "shutdown_mode", None):
+                ending = {"won":"最后这盘拿下，今天的棋就下到这里。",
+                          "lost":"最后这盘没拿下，咱们记住教训，今天先收棋。",
+                          "draw":"最后这盘和棋收场，今天的棋就下到这里。",
+                          "finished":"今天最后这盘已经结束，咱们先收棋。"}[event["result"]]
             self.pipeline.reset_opening_speech()
             if hasattr(self, "sandbox_story"):
                 self.sandbox_story.clear()
@@ -2083,7 +2155,7 @@ class LiveController:
             elif ending:
                 self.pipeline.submit(0,"结算收官",event,direct_text=ending)
             self.opponent_disconnected = False
-            if clock_due:
+            if clock_due and not getattr(self, "shutdown_mode", None):
                 self.pipeline.submit(5, CLOCK_KIND, {"已完成盘数": self.clock_cadence.completed})
             return
         if event.get("event") == "position":
@@ -2547,6 +2619,8 @@ class LiveController:
             if kind == "chat" and hasattr(self, "chat_selector"):
                 self.chat_selector.offer(event, eligible=False)
             return
+        if getattr(self, "shutdown_mode", None) == "final":
+            return  # Keep the incoming room log, stop selecting new speech.
         if kind == "gift":
             self._notify(kind, f"{user}：{text}", event)
         if kind == "chat" and not force:
@@ -2585,6 +2659,7 @@ class LiveController:
         self._publish_chat_stats()
         with self.chat_selector.lock:
             if (not self.enabled or getattr(self, "suspended", False)
+                    or getattr(self, "shutdown_mode", None) == "final"
                     or not self.pipeline.can_reply_chat()):
                 return
             selected = self.chat_selector.take()
@@ -2614,6 +2689,7 @@ class LiveController:
     def _between_games_tick(self):
         flow = getattr(self,"broadcast_flow",None)
         if (flow is None or self.suspended or self.chess_suspended
+                or getattr(self, "shutdown_mode", None)
                 or not self.settings.commentary_enabled or self.pipeline.balance.chess_active
                 or time.monotonic()-getattr(self,"last_spoken_until",0)<12):
             return
@@ -2656,7 +2732,7 @@ class LiveController:
         if pending is None:
             return
         count, force = pending
-        if self.enabled or force:
+        if (self.enabled or force) and getattr(self, "shutdown_mode", None) != "final":
             self.pipeline.submit(0, "礼物答谢", {
                 "观众": key[0], "礼物": key[1], "数量": count, "测试输入": bool(force)})
 
