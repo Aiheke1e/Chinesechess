@@ -27,7 +27,8 @@ from state import position_errors, validate_board
 from session_state import (blocked_position_matches, clear_blocked_position,
                            infer_turn_from_standard, match_live_session)
 from cache_cleanup import cleanup_generated_cache, scan_generated_cache
-from bailian_tts import available_voices
+from tts_backend import available_voices
+from local_tts_client import ensure_service as ensure_local_tts
 from douyin_auth import clear_cookie
 from live_host import CHESS_SPEECH_KINDS, LiveController, load_settings
 from health_check import collect_readiness, readiness_level
@@ -279,10 +280,17 @@ class ControlPanel:
         self.refresh_device()
         root.after(80, self._poll)
         root.after(1500, self._watchdog_tick)
+        threading.Thread(target=self._start_local_tts, name="local-tts-startup", daemon=True).start()
         root.after(250, self._shutdown_tick)
         root.protocol("WM_DELETE_WINDOW", self.close)
         if autostart:
             self._schedule_prepare(delay=400, automatic=False)
+
+    def _start_local_tts(self):
+        try:
+            ensure_local_tts()
+        except Exception as error:
+            self.output.put(("local_tts_startup_error", str(error)))
 
     def _build(self):
         style = ttk.Style(self.root)
@@ -781,7 +789,7 @@ class ControlPanel:
 
         label("音色", 7)
         voice_combo = ttk.Combobox(form, textvariable=self.live_voice, values=available_voices(),
-            state="readonly", width=10)
+            state="readonly", width=16)
         voice_combo.grid(row=7, column=1, sticky="ew", pady=(8, 0))
         ttk.Label(form, text="解说频率", style="Card.TLabel").grid(row=7, column=2, sticky="e", padx=(0, 10))
         density_combo = ttk.Combobox(form, textvariable=self.live_density,
@@ -2661,6 +2669,8 @@ class ControlPanel:
                     self.waiting_for_board = False
                     self.status.set("一键助手失败：" + item[1])
                     self.append("[助手] 失败：" + item[1] + "\n")
+                elif isinstance(item, tuple) and item[0] == "local_tts_startup_error":
+                    self._note_issue("本地语音", item[1])
                 elif isinstance(item, tuple) and item[0] == "diagnostic":
                     self.append("[故障截图] 已保存现场：" + item[1] +
                                 "（原因：" + item[2] + "）\n")

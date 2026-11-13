@@ -6,8 +6,10 @@ import json
 import os
 
 from adb_bridge import current_package, list_devices, resolution
-from bailian_tts import (CONFIG_PATH as TTS_CONFIG, available_voices,
+from bailian_tts import (CONFIG_PATH as TTS_CONFIG,
                          load_api_key as load_tts_key)
+from tts_backend import available_voices, LOCAL_VOICE
+from local_tts_client import local_readiness
 from glm_client import load_api_key as load_llm_key
 from live_host import room_input
 from pikafish import DEFAULT_EXE
@@ -32,7 +34,8 @@ def collect_readiness(settings, *, device_provider=list_devices,
                       tts_config_path=TTS_CONFIG,
                       llm_key_loader=load_llm_key,
                       tts_key_loader=load_tts_key,
-                      voice_loader=available_voices):
+                      voice_loader=available_voices,
+                      local_tts_check=local_readiness):
     """Collect local readiness without sending model or TTS requests."""
     items = []
     devices = []
@@ -73,15 +76,19 @@ def collect_readiness(settings, *, device_provider=list_devices,
         ("解说开关未开启" if not commentary else "未找到智谱密钥")))
 
     speech = bool(settings.get("speech_enabled"))
+    tts_detail = "百炼配置、密钥或音色不可用"
     try:
-        tts_ready = (os.path.isfile(tts_config_path) and bool(tts_key_loader()) and
-                     settings.get("voice") in voice_loader())
+        if settings.get("voice") == LOCAL_VOICE:
+            tts_ready, tts_detail = local_tts_check()
+        else:
+            tts_ready = (os.path.isfile(tts_config_path) and bool(tts_key_loader()) and
+                         settings.get("voice") in voice_loader())
     except (OSError, ValueError, json.JSONDecodeError):
         tts_ready = False
     items.append(_item(
         "tts", "开播语音", "ok" if speech and tts_ready else "warn",
         f"音色 {settings.get('voice')} 已就绪" if speech and tts_ready else
-        ("语音开关未开启" if not speech else "百炼配置、密钥或音色不可用")))
+        ("语音开关未开启" if not speech else tts_detail)))
 
     room = str(settings.get("room") or "").strip()
     try:

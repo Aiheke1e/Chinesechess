@@ -21,7 +21,7 @@ from urllib.request import Request, urlopen
 import winsound
 import wave
 
-from bailian_tts import available_voices, synthesize
+from tts_backend import available_voices, synthesize, generation_status
 from tts_requests import SynthesisCancelled, synthesis_context
 from live_clock import CLOCK_KIND, GameClockCadence, beijing_now, clock_line, minute_key
 from audience_scene import AudienceSceneDirector
@@ -1237,7 +1237,7 @@ class SpeechPipeline:
             if not self._state_live(state) or not self._chat_valid(kind, payload):
                 return
             if self.settings.speech_enabled and not payload.get("测试输入"):
-                self.notify("speech_status", "正在生成百炼语音", payload)
+                self.notify("speech_status", generation_status(self.settings.voice), payload)
                 audio = self._synthesize(text, kind, payload, state)
                 if kind == "弹幕回复":
                     with self.condition:
@@ -1398,6 +1398,7 @@ class LiveController:
 
     def configure(self, **values):
         was_speech_enabled = self.settings.speech_enabled
+        previous_voice = self.settings.voice
         was_sandtable_enabled = self.settings.sandtable_enabled
         was_commentary_enabled = self.settings.commentary_enabled
         for key, value in values.items():
@@ -1409,6 +1410,8 @@ class LiveController:
         if self.settings.voice not in available_voices():
             self.settings.voice = available_voices()[0]
         save_settings(self.settings)
+        if previous_voice != self.settings.voice:
+            self.pipeline.clear(stop_audio=True)
         if was_speech_enabled and not self.settings.speech_enabled:
             self.pipeline.stop_audio()
         if ((was_sandtable_enabled and not self.settings.sandtable_enabled) or

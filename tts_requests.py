@@ -27,6 +27,12 @@ def synthesis_context(**options):
         _context.reset(token)
 
 
+def check_synthesis_valid():
+    valid = _context.get().get("valid")
+    if valid is not None and not valid():
+        raise SynthesisCancelled()
+
+
 class RequestLimiter:
     """One API request at a time; priority applies to requests not yet sent."""
     def __init__(self, interval=.5, backoffs=(1., 2.), clock=time.monotonic):
