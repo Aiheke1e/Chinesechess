@@ -123,6 +123,21 @@ class LocalTTSIntegrationTests(unittest.TestCase):
             start.assert_called_once_with()
         self.assertEqual(panel.output.get_nowait(),("local_tts_startup_error","加载失败"))
 
+    def test_start_button_requests_background_tts_and_existing_chess_flow(self):
+        panel=object.__new__(ControlPanel)
+        panel._launch_local_tts=Mock();panel.prepare_and_wait=Mock()
+        panel._request_start()
+        panel._launch_local_tts.assert_called_once_with()
+        panel.prepare_and_wait.assert_called_once_with()
+
+    def test_repeated_clicks_do_not_create_another_startup_thread(self):
+        panel=object.__new__(ControlPanel)
+        with patch("control_panel.threading.Thread") as thread:
+            thread.return_value.is_alive.return_value=True
+            panel._launch_local_tts();panel._launch_local_tts()
+            self.assertEqual(thread.call_count,1)
+            thread.return_value.start.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()

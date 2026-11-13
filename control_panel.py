@@ -280,11 +280,23 @@ class ControlPanel:
         self.refresh_device()
         root.after(80, self._poll)
         root.after(1500, self._watchdog_tick)
-        threading.Thread(target=self._start_local_tts, name="local-tts-startup", daemon=True).start()
+        self._launch_local_tts()
         root.after(250, self._shutdown_tick)
         root.protocol("WM_DELETE_WINDOW", self.close)
         if autostart:
             self._schedule_prepare(delay=400, automatic=False)
+
+    def _launch_local_tts(self):
+        previous = getattr(self, "_local_tts_startup", None)
+        if previous is not None and previous.is_alive():
+            return
+        self._local_tts_startup = threading.Thread(
+            target=self._start_local_tts, name="local-tts-startup", daemon=True)
+        self._local_tts_startup.start()
+
+    def _request_start(self):
+        self._launch_local_tts()
+        self.prepare_and_wait()
 
     def _start_local_tts(self):
         try:
@@ -320,7 +332,7 @@ class ControlPanel:
         actions = self.actionbar = ttk.Frame(control_row, style="Card.TFrame", padding=(4, 6))
         actions.pack(side="left")
         self.start_button = ttk.Button(actions, text="▶ 开始下棋", width=11,
-            style="Action.Primary.TButton", command=self.prepare_and_wait)
+            style="Action.Primary.TButton", command=self._request_start)
         self.start_button.pack(side="left")
         self.stop_button = ttk.Button(actions, text="暂停下棋", width=11,
             style="Action.Danger.TButton", command=self.stop)
