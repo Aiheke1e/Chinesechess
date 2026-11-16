@@ -2777,9 +2777,11 @@ class ControlPanel:
                         count = stats.get("online")
                         self.audience_text.set(f"在线 {count:,} 人" if isinstance(count, int)
                                                else "在线人数 · 待获取")
-                        self.chat_sampling_text.set(
-                            f"自动抽选 · 约每 {stats.get('interval', 15)} 秒最多回复一条 · "
-                            f"弹幕 {stats.get('chat_rate', 0):g} 条/秒")
+                        if stats.get("mode") == "逐条互动":
+                            mode_text = "低流量直播间 · 按到达顺序逐条互动"
+                        else:
+                            mode_text = (f"自动抽选 · 约每 {stats.get('interval', 15)} 秒最多回复一条")
+                        self.chat_sampling_text.set(f"{mode_text} · 弹幕 {stats.get('chat_rate', 0):g} 条/秒")
                         self._queue_monitor()
                     elif kind == "interaction_done":
                         self._finish_current_interaction(record.get("data") or {})

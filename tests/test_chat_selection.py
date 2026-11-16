@@ -34,7 +34,7 @@ class ChatSelectionTests(unittest.TestCase):
 
     def test_online_population_and_actual_chat_rate_both_control_interval(self):
         self.selector.update_online(12)
-        self.assertEqual(self.selector.stats()["interval"], 15)
+        self.assertEqual(self.selector.stats()["mode"], "逐条互动")
         self.selector.update_online(120)
         self.assertEqual(self.selector.stats()["interval"], 18)
         self.selector.update_online(1200)
@@ -47,11 +47,34 @@ class ChatSelectionTests(unittest.TestCase):
         self.assertEqual(self.selector.stats()["interval"], 24)
         self.now += 46
         self.assertIsNone(self.selector.stats()["online"])
-        self.assertEqual(self.selector.stats()["interval"], 15)
+        self.assertEqual(self.selector.stats()["mode"], "逐条互动")
         self.assertFalse(self.selector.update_online(-1))
         self.assertFalse(self.selector.update_online("invalid"))
 
+    def test_quiet_small_room_reads_each_message_in_arrival_order(self):
+        self.selector.update_online(12)
+        first = self.event(1, "小王", "今天怎么走这步？")
+        second = self.event(2, "小王", "刚才那步是弃子吗？")
+        self.assertTrue(self.selector.offer(first))
+        self.now += .1
+        self.assertTrue(self.selector.offer(second))
+        self.assertEqual(self.selector.stats()["mode"], "逐条互动")
+        self.now += .3
+        self.assertEqual(self.selector.take()["text"], first["text"])
+        self.now += .5
+        self.assertEqual(self.selector.take()["text"], second["text"])
+
+    def test_large_room_still_samples(self):
+        self.selector.update_online(1500)
+        for number in range(4):
+            self.selector.offer(self.event(number))
+        self.assertEqual(self.selector.stats()["mode"], "抽选互动")
+        self.now += 2
+        self.assertIsNotNone(self.selector.take())
+        self.assertFalse(self.selector.pending)
+
     def test_spam_duplicates_and_repeated_users_do_not_dominate(self):
+        self.selector.update_online(120)
         for text in ("666666", "哈哈哈哈哈", "👍👍👍", "[九转大肠]", "[捂脸][鼓掌]", "https://example.com/ad", "买" * 200):
             self.assertFalse(self.selector.offer(self.event(text=text)))
         self.assertTrue(self.selector.offer(self.event(user="小王", text="为什么不走车？")))

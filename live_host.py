@@ -60,7 +60,7 @@ CHESS_SPEECH_KINDS = {
     "沙盘推演解说", "QUEEN式等待期解说", "收官解说", "获胜收官", "结算收官", "对手状态解说",
     "新局开场", GAP_KIND,
 }
-INTERACTION_SPEECH_KINDS = {"弹幕回复", "欢迎观众", "礼物答谢"}
+INTERACTION_SPEECH_KINDS = {"弹幕回复", "欢迎观众", "礼物答谢", "点赞感谢", "关注感谢"}
 OWN_SPEECH_KINDS = {
     "我方走棋播报", "关键走棋解说", "沙盘推演解说",
     "获胜收官", "结算收官", "绝杀长解说",
@@ -1354,6 +1354,9 @@ class LiveController:
         self.gift_lock = threading.Lock()
         self.pending_gifts = {}
         self.gift_timers = {}
+        self.pending_likes = {}
+        self.like_timers = {}
+        self.like_epoch = 0
         self.pipeline = SpeechPipeline(self.settings, self._notify)
         self.speech_style = self.pipeline.style
         self.chat_chess_context = ChessChatContext()
@@ -1434,6 +1437,11 @@ class LiveController:
                 timer.cancel()
             self.gift_timers.clear()
             self.pending_gifts.clear()
+            for timer in self.like_timers.values():
+                timer.cancel()
+            self.like_timers.clear()
+            self.pending_likes.clear()
+            self.like_epoch += 1
         self._notify("status", "弹幕互动已暂停")
 
     def stop_chess_tasks(self):
@@ -2644,12 +2652,53 @@ class LiveController:
             self.pipeline.submit(1, "弹幕回复", payload)
         elif (kind == "member" and self.settings.welcome_enabled and
               viewer_key(event) not in self.welcomed and
-              now - self.last_welcome >= 60 and self.pipeline.can_reply_chat()):
+              (self.chat_selector.stats()["mode"] == "逐条互动" or
+               now - self.last_welcome >= 60 and self.pipeline.can_reply_chat())):
             self.welcomed.add(viewer_key(event))
             self.last_welcome = now
             self.pipeline.submit(4, "欢迎观众", {"观众": user,
                                  "测试输入": bool(force),
-                                 "_expires_at": now + 10}, direct_text=welcome_line(user))
+                                 "_expires_at": now + (25 if self.chat_selector.stats()["mode"] == "逐条互动" else 10)},
+                                 direct_text=welcome_line(user))
+        elif kind == "like" and self.chat_selector.stats()["mode"] == "逐条互动":
+            self._queue_like(user, event.get("count") or text)
+        elif kind == "social" and self.chat_selector.stats()["mode"] == "逐条互动":
+            if "关注" in text:
+                self.pipeline.submit(5, "关注感谢", {"观众": user, "_expires_at": now + 20},
+                                     direct_text=f"谢谢{user}关注豆包象棋。")
+            elif "分享" in text:
+                self.pipeline.submit(5, "关注感谢", {"观众": user, "_expires_at": now + 20},
+                                     direct_text=f"谢谢{user}帮忙分享直播间。")
+
+    def _queue_like(self, user, count):
+        try:
+            match = re.search(r"\d+", str(count))
+            amount = max(1, int(match.group()) if match else 1)
+        except (TypeError, ValueError):
+            amount = 1
+        key = str(user or "观众")[:256]
+        with self.gift_lock:
+            previous = self.pending_likes.get(key, 0)
+            self.pending_likes[key] = previous + amount
+            timer = self.like_timers.pop(key, None)
+            if timer:
+                timer.cancel()
+            timer = threading.Timer(2.0, self._flush_like, args=(key, self.like_epoch))
+            timer.daemon = True
+            self.like_timers[key] = timer
+            timer.start()
+
+    def _flush_like(self, user, epoch=None):
+        with self.gift_lock:
+            if epoch is not None and epoch != self.like_epoch:
+                return
+            count = self.pending_likes.pop(user, None)
+            self.like_timers.pop(user, None)
+        if (count and self.enabled and getattr(self, "shutdown_mode", None) != "final"
+                and not getattr(self, "suspended", False)):
+            now = time.monotonic()
+            self.pipeline.submit(5, "点赞感谢", {"观众": user, "点赞数": count,
+                "_expires_at": now + 20}, direct_text=f"谢谢{user}点了{count}个赞，欢迎继续看棋。")
 
     def _publish_chat_stats(self, force=False):
         now = time.monotonic()
@@ -2708,6 +2757,12 @@ class LiveController:
             with self.chat_selector.lock:
                 self.chat_selector.reset()
                 self.pipeline.cancel_chats()
+            with self.gift_lock:
+                self.like_epoch += 1
+                for timer in self.like_timers.values():
+                    timer.cancel()
+                self.like_timers.clear()
+                self.pending_likes.clear()
             self._publish_chat_stats(force=True)
 
     def _queue_gift(self, user, gift, count, force=False):

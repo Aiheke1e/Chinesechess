@@ -57,13 +57,19 @@ class ChatSelector:
         self._prune(now)
         online = self.online if now - self.online_at <= 45 else None
         rate = sum(count for _, count in self.arrivals) / 15
+        low_crowd = online is None or online < 50
+        quiet_room = low_crowd and rate < .25
+        if quiet_room:
+            return {"online": online, "chat_rate": round(rate, 1),
+                    "interval": 0, "mode": "逐条互动"}
         interval = 15 if online is None or online < 50 else (
             18 if online < 500 else 24 if online < 5000 else 30)
         if rate >= 10:
             interval = max(interval, 30)
         elif rate >= 2:
             interval = max(interval, 24)
-        return {"online": online, "chat_rate": round(rate, 1), "interval": interval}
+        return {"online": online, "chat_rate": round(rate, 1),
+                "interval": interval, "mode": "抽选互动"}
 
     def stats(self):
         with self.lock:
@@ -90,14 +96,17 @@ class ChatSelector:
                     or re.fullmatch(r"[哈呵嘿哦啊嗯好棒赞689]+", meaningful)
                     or re.search(r"(.)\1{5,}", meaningful)):
                 return False
-            normalized = meaningful.casefold()
-            if normalized in self.recent_text and now - self.recent_text[normalized] < 60:
-                return False
-            self.recent_text[normalized] = now
-            if len(self.recent_text) > 300:
-                self.recent_text.pop(next(iter(self.recent_text)))
+            stats = self._stats(now)
+            if stats["mode"] != "逐条互动":
+                normalized = meaningful.casefold()
+                if normalized in self.recent_text and now - self.recent_text[normalized] < 60:
+                    return False
+                self.recent_text[normalized] = now
+                if len(self.recent_text) > 300:
+                    self.recent_text.pop(next(iter(self.recent_text)))
             user = str(event.get("user") or "观众")[:256]
-            key = viewer_key({**event, "user": user})
+            key = (f"message:{event.get('id')}" if stats["mode"] == "逐条互动" and event.get("id")
+                   else viewer_key({**event, "user": user}))
             self.pending.pop(key, None)
             self.pending[key] = {"user": user, "user_id": key, "text": text,
                                  "received": now, "id": str(event.get("id") or "")}
@@ -111,14 +120,24 @@ class ChatSelector:
             stats = self._stats(now)
             if now < self.next_pick:
                 return None
-            rows = [row for key, row in self.pending.items()
+            if stats["mode"] == "逐条互动":
+                rows = [(key, row) for key, row in self.pending.items()
+                        if now - row["received"] >= .35]
+                if not rows:
+                    return None
+                key, picked = min(rows, key=lambda item: item[1]["received"])
+                self.pending.pop(key, None)
+                self.next_pick = now + .5
+                return picked
+            rows = [(key, row) for key, row in self.pending.items()
                     if now - row["received"] >= 1.5 and
                     now - self.recent_users.get(key, -1e9) >= max(45, min(90, stats["interval"] * 2))]
             if not rows:
                 return None
+            weighted_rows = [row for _, row in rows]
             weights = [5 if re.search(r"[?？]|为什么|怎么|能不能|请问|没看懂|漏杀|才对|早该", row["text"]) else 1
-                       for row in rows]
-            picked = self.rng.choices(rows, weights=weights, k=1)[0]
+                       for row in weighted_rows]
+            picked = self.rng.choices(weighted_rows, weights=weights, k=1)[0]
             self.pending.clear()  # Unselected comments never accumulate into a speech backlog.
             self.recent_users[picked["user_id"]] = now
             if len(self.recent_users) > 300:

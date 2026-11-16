@@ -3,6 +3,7 @@ import queue
 import threading
 import tempfile
 import shutil
+import time
 import tkinter as tk
 import unittest
 from pathlib import Path
@@ -26,6 +27,12 @@ class RoomFeedTests(unittest.TestCase):
         controller.chat_selector = ChatSelector()
         controller.pipeline = Mock()
         controller._notify = Mock()
+        controller.gift_lock = threading.Lock()
+        controller.pending_likes = {}
+        controller.like_timers = {}
+        controller.like_epoch = 0
+        controller.pending_gifts = {}
+        controller.gift_timers = {}
         return controller
 
     def test_unselected_and_spam_chat_still_appear_in_received_feed(self):
@@ -69,6 +76,29 @@ class RoomFeedTests(unittest.TestCase):
         controller.chat_selector.clock = lambda: 102
         controller._select_chat()
         self.assertEqual(controller.pipeline.submit.call_args.args[2]["观众"], nickname)
+
+    def test_small_room_welcomes_each_new_viewer(self):
+        controller = self.controller()
+        controller.enabled = True
+        controller.welcomed = set()
+        controller.last_welcome = 0
+        controller.chat_stats_at = time.monotonic()
+        controller.receive({"type": "member", "id": "m1", "user": "小王"})
+        controller.receive({"type": "member", "id": "m2", "user": "小李"})
+        self.assertEqual(controller.pipeline.submit.call_count, 2)
+        self.assertEqual(controller.pipeline.submit.call_args_list[0].args[1], "欢迎观众")
+
+    def test_small_room_batches_likes_into_a_short_thanks(self):
+        controller = self.controller()
+        controller.enabled = True
+        with patch("live_host.threading.Timer") as timer:
+            controller.receive({"type": "like", "id": "l1", "user": "小王", "text": "点赞 × 4"})
+            controller.receive({"type": "like", "id": "l2", "user": "小王", "text": "点赞 × 3"})
+            self.assertEqual(controller.pending_likes["小王"], 7)
+            timer.return_value.cancel.assert_called_once()
+            controller._flush_like("小王")
+        self.assertEqual(controller.pipeline.submit.call_args.args[1], "点赞感谢")
+        self.assertIn("7个赞", controller.pipeline.submit.call_args.kwargs["direct_text"])
 
     def test_busy_room_uses_bounded_queue_without_blocking_control_events(self):
         panel = object.__new__(ControlPanel)
