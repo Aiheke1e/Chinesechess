@@ -20,6 +20,11 @@ AVATAR_PRESETS = (
     ("长发头像", DEFAULT_AVATAR.with_name("xiaoyi-douyin-avatar-v1.png")),
     ("电脑前下棋", DEFAULT_AVATAR.with_name("doubao-chess-computer.png")),
     ("初版棋手", DEFAULT_AVATAR.with_name("doubao-chess-avatar.png")),
+    ("暖心3D", DEFAULT_AVATAR.with_name("doubao-chess-warm-3d-v1.png")),
+    ("清新手绘", DEFAULT_AVATAR.with_name("doubao-chess-handpaint-v1.png")),
+    ("软萌黏土", DEFAULT_AVATAR.with_name("doubao-chess-clay-v5.png")),
+    ("国潮暖笑", DEFAULT_AVATAR.with_name("doubao-chess-guochao-v1.png")),
+    ("柔和水彩", DEFAULT_AVATAR.with_name("doubao-chess-watercolor-v1.png")),
 )
 DEFAULT_INTRODUCTION = f"大家好，我是{HOST_NAME}，你的AI象棋搭子。棋路认真算，包袱顺嘴来，有问题直接发弹幕就好。"
 LEGACY_INTRODUCTION = "大家好，我是棋小雅。这里会一边下象棋，一边和大家聊棋、聊生活，欢迎来到直播间。"

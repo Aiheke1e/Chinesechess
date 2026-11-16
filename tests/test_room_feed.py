@@ -529,7 +529,7 @@ class RoomFeedUITests(unittest.TestCase):
         self.panel.interaction_message.set("请保留这条原始弹幕")
         self.panel.avatar_presets_button.invoke()
         picker = self.panel.avatar_picker_window
-        self.assertEqual(len(AVATAR_PRESETS), 10)
+        self.assertEqual(len(AVATAR_PRESETS), 15)
         self.assertEqual(len(picker._buttons), len(AVATAR_PRESETS))
         for (button, preset), (_, expected) in zip(picker._buttons, AVATAR_PRESETS):
             self.assertEqual(preset, expected)
