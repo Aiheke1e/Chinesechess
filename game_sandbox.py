@@ -670,12 +670,16 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
     last_frame_at = time.monotonic()
     narration_failed = False
     def cue(name, finish=False):
+        nonlocal timed_out
         if on_cue is None:
             return True
-        return on_cue(str(name), finish=finish, deadline=hard_deadline) is not False
+        accepted = on_cue(str(name), finish=finish, deadline=hard_deadline) is not False
+        if not accepted and time.monotonic() >= hard_deadline:
+            timed_out = True
+        return accepted
 
     if not cue("intro", finish=True):
-        narration_failed = True
+        narration_failed = not timed_out
     for number, (item, move) in enumerate(legal_route, 1):
         if stop_requested() or narration_failed:
             break
@@ -695,7 +699,7 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
             failed_step = number
             break
         if not cue(cue_number):
-            narration_failed = True
+            narration_failed = not timed_out
             break
         if on_cue is not None:
             if time.monotonic() - last_frame_at > .25:
@@ -756,7 +760,7 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
                     if on_step:
                         on_step(number, item)
                     if not cue(cue_number, finish=True):
-                        narration_failed = True
+                        narration_failed = not timed_out
                     continue
                 if (_detect_sandbox_exit(frame) is None or
                         not _position_matches(sandbox_board, frame, orientation)):
@@ -776,7 +780,7 @@ def play_plan(device, live_board, orientation, plan, stop_requested=None,
         if on_step:
             on_step(number, item)
         if not cue(cue_number, finish=True):
-            narration_failed = True
+            narration_failed = not timed_out
             break
         if time.monotonic() >= hard_deadline:
             timed_out = completed < len(legal_route)

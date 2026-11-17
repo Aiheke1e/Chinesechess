@@ -5,12 +5,39 @@ import numpy as np
 
 from board import Board
 import game_sandbox as gs
+import sandbox_narration as sn
 from sandbox_narration import script
 from sandbox_story import SandboxStory
 from tests.test_sandbox_presentation import plan_fixture, LINE
 
 
 class SandboxRefinementTests(unittest.TestCase):
+    def test_step_lines_explain_verified_recaptures_and_rotate_the_wording(self):
+        route = [
+            {"ucci": "a0a1", "notation": "红方 车一平二", "side": "r", "capture": "n"},
+            {"ucci": "b0a1", "notation": "黑方 车九平八", "side": "b", "capture": "R"},
+            {"ucci": "a1a2", "notation": "红方 马三进四", "side": "r", "capture": None},
+        ]
+        first = script({"kind": "tactic", "phase": "after_move", "own": "r",
+                        "reason": "关键交换", "route": route, "narration_variant": 0})
+        second = script({"kind": "tactic", "phase": "after_move", "own": "r",
+                         "reason": "关键交换", "route": route, "narration_variant": 1})
+        self.assertIn("回吃", first["1"])
+        self.assertIn("回吃", second["1"])
+        self.assertNotEqual(first["1"], second["1"])
+        self.assertNotEqual(first["2"], second["2"])
+
+    def test_route_budget_scales_past_the_old_thirty_second_cutoff(self):
+        route = [{"ucci": f"a{index % 10}b{index % 10}",
+                  "notation": ("红方 " if index % 2 == 0 else "黑方 ") + "车一平二",
+                  "side": "r" if index % 2 == 0 else "b"}
+                 for index in range(8)]
+        plan = {"kind": "tactic", "phase": "after_move", "own": "r",
+                "reason": "关键交换", "route": route}
+        budget = sn.demo_budget(plan)
+        self.assertGreater(budget, 30)
+        self.assertLessEqual(budget, 65)
+
     def test_cached_summary_does_not_override_eight_rotating_natural_endings(self):
         _, _, plan = plan_fixture()
         plan["summary"] = "这条线双方各换掉一辆车，交换的代价相同。回到实战。"

@@ -46,6 +46,28 @@ class SandboxReadinessTests(unittest.TestCase):
         play.assert_not_called()
         wait.assert_not_called()
 
+    def test_active_audience_audio_skips_optional_sandbox_without_cutting_reply(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config = Path(folder) / "live.json"
+            config.write_text(json.dumps({"commentary_enabled": True,
+                                          "speech_enabled": True}), encoding="utf-8")
+            events = Mock()
+            plan = {"phase": "after_move", "reason": "关键交换",
+                    "route": [{"ucci": "a0a1", "notation": "车一平二"}]}
+            with patch.object(player, "LIVE_CFG_PATH", str(config)), \
+                 patch.object(player, "active_interaction_audio", return_value=True), \
+                 patch.object(player, "write_runtime_status"), \
+                 patch("game_sandbox.enabled", return_value=True), \
+                 patch("game_sandbox.play_plan") as simulate:
+                result = player.run_game_sandbox(
+                    "mock", Board(), "black_bottom", plan, "move-1", 1,
+                    events, lambda: False)
+        self.assertFalse(result["entered"])
+        self.assertTrue(result["safe_exit"])
+        self.assertIn("观众语音", result["reason"])
+        simulate.assert_not_called()
+        self.assertEqual(events.emit.call_args.kwargs["action"], "end")
+
     def test_defending_against_mate_does_not_open_an_optional_sandbox(self):
         board = Board.from_fen("9/3k5/9/4R4/9/2C6/9/3A5/4AK3/r8 b - - 0 1")
         analysis = {"score_type": "mate", "score": -6}

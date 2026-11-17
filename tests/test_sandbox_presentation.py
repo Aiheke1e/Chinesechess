@@ -220,7 +220,7 @@ class SandboxPresentationTests(unittest.TestCase):
             probe.apply(move)
         plan = gs.build_plan(line[0][1], {}, line, line[0][0], board)
         self.assertGreater(plan["max_seconds"], 12)
-        self.assertLessEqual(plan["max_seconds"], 42)
+        self.assertLessEqual(plan["max_seconds"], 90)
         self.assertFalse(any(item.get("illustration") for item in plan["route"]))
         self.assertIn("无棋可解", sn.script(plan)["summary"])
         now = [100.0]

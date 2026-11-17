@@ -6,6 +6,7 @@ from pathlib import Path
 import threading
 import time
 from collections import Counter
+import math
 
 from board import PIECE_CN
 
@@ -143,8 +144,12 @@ def result_note(route, own, mate=False, pattern="组合将杀", variant=0):
                        f"咱们用{_pieces(cost)}换{_pieces(gain)}")
             return (f"按这条线，双方先兑掉{_pieces(traded)}，{balance}。",
                     f"把{_pieces(traded)}的互换抵掉，{balance}。",
-                    f"这条接法不只兑掉{_pieces(traded)}，{balance}。",
-                    f"交换的部分是{_pieces(traded)}，算下来{balance}。")[index % 4]
+                    f"这口交换两边都付了{_pieces(traded)}，最后{balance}。",
+                    f"这条线先兑掉{_pieces(traded)}，再看剩下的得失：{balance}。",
+                    f"{_pieces(traded)}是双方互换的部分，额外算下来{balance}。",
+                    f"别只看先吃到的子，兑掉{_pieces(traded)}后，{balance}。",
+                    f"这段不是白吃，兑掉{_pieces(traded)}以后，{balance}。",
+                    f"把来回的{_pieces(traded)}算平，结果是{balance}。")[index]
         return (f"按这条线，咱们用{_pieces(theirs)}换{_pieces(ours)}。",
                 f"这套接法能拿{_pieces(ours)}，代价是{_pieces(theirs)}。",
                 f"咱们拿到{_pieces(ours)}，也得交出{_pieces(theirs)}。",
@@ -157,6 +162,69 @@ def result_note(route, own, mate=False, pattern="组合将杀", variant=0):
     if any(item.get("check") or item.get("escape") for item in route):
         return ("将军和应将串起来了，继续看实战。", "这几步怎么解将摆清楚了，等实战落子。")[index % 2]
     return "这段接法先看到这儿，咱们接着看棋。"
+
+
+def _step_narration(route, index, own, variant):
+    item = route[index]
+    move = str(item.get("notation") or "")
+    for prefix in ("红方 ", "黑方 ", "演示收尾："):
+        move = move.replace(prefix, "")
+    side = item.get("side") or (
+        "r" if str(item.get("notation", "")).startswith("红方") else
+        "b" if str(item.get("notation", "")).startswith("黑方") else own)
+    subject = "咱们" if side == own else "对面"
+    previous = route[index - 1] if index > 0 else {}
+    following = route[index + 1] if index + 1 < len(route) else {}
+    recaptures_previous = bool(
+        item.get("capture") and previous.get("capture") and
+        str(item.get("ucci") or "")[2:] == str(previous.get("ucci") or "")[2:])
+    same_square_recapture = bool(
+        item.get("capture") and following.get("capture") and
+        str(item.get("ucci") or "")[2:] == str(following.get("ucci") or "")[2:])
+    if item.get("check") and item.get("escape"):
+        lines = (f"{subject}{move}，解将反将，对面得先应这一手。",
+                 f"{move}先解将再反将，这条线还得接着看。",
+                 f"{subject}这步{move}两件事一起办了：解将、反将。")
+    elif item.get("check"):
+        lines = (f"{subject}{move}，将军先手，对面得先应这一着。",
+                 f"{move}将军了，接下来先看对面怎么解。",
+                 f"{subject}这步{move}带将军，路线还得顺着应手看完。")
+    elif item.get("escape"):
+        lines = (f"{subject}{move}，先解将，这条线才接得下去。",
+                 f"{move}，先解将，再看后面的应手。",
+                 f"这步{move}先处理将军，不能跳过这层防守。")
+    elif recaptures_previous:
+        piece = PIECE_CN.get(str(previous.get("capture") or ""), "子")
+        lines = (f"{subject}{move}，这是回吃，这口{piece}的交换就算齐了。",
+                 f"{move}是回吃，前后两口得放一起算。",
+                 f"这步{move}把{piece}接回来，交换账终于完整了。")
+    elif same_square_recapture:
+        piece = PIECE_CN.get(str(item.get("capture") or ""), "子")
+        lines = (f"{subject}{move}吃到{piece}，对面马上能回吃，账得连着算。",
+                 f"这步{move}先拿{piece}，下一手就在同一格回吃。",
+                 f"{move}吃{piece}之后还有回吃，眼前这口不等于白赚。")
+    elif item.get("capture"):
+        piece = PIECE_CN.get(str(item.get("capture") or ""), "子")
+        lines = (f"{subject}{move}，先拿下{piece}，还要看后手能不能站住。",
+                 f"{move}吃到{piece}，这口值不值要把后续接完。",
+                 f"{subject}这步{move}拿了{piece}，接下来盯对面的应法。")
+    else:
+        next_capture = next((future for future in route[index + 1:]
+                             if future.get("capture")), None)
+        if next_capture:
+            piece = PIECE_CN.get(str(next_capture.get("capture") or ""), "子")
+            lines = (f"{subject}{move}先把路线接上，后面这口{piece}才是看点。",
+                     f"先走{move}，后续变化会落到{piece}的交换上。",
+                     f"{move}先落下，别急着下结论，后面还要处理{piece}。")
+        else:
+            next_move = str(following.get("notation") or "")
+            for prefix in ("红方 ", "黑方 ", "演示收尾："):
+                next_move = next_move.replace(prefix, "")
+            lines = (f"{subject}{move}，这步先调子，后面看应手。",
+                     f"先把{move}走出来，攻防还要看下一回合。",
+                     f"{move}先落位，这条变化还没到结果。" if not next_move else
+                     f"{subject}{move}之后，下一手接{next_move}。")
+    return lines[(int(variant) + index) % len(lines)]
 
 
 def script(plan):
@@ -190,35 +258,15 @@ def script(plan):
     cues["intro"] = intro
     first_side = (route[0].get("side") or ("r" if str(route[0].get("notation", "")).startswith("红方") else "b")) if route else "r"
     own = plan.get("own") or (first_side if plan.get("phase") == "before_move" else "b" if first_side == "r" else "r")
-    for index, item in enumerate(route, 1):
-        text = str(item.get("notation") or "")
-        for prefix in ("红方 ", "黑方 ", "演示收尾："):
-            text = text.replace(prefix, "")
-        side = item.get("side") or ("r" if str(item.get("notation", "")).startswith("红方") else
-                                    "b" if str(item.get("notation", "")).startswith("黑方") else own)
-        subject = "咱们" if side == own else "对面"
+    for index, item in enumerate(route):
         if item.get("illustration"):
-            text = "最后摆一步，" + text
-        elif scene and side != own:
-            text = "要是对面" + text
-        elif scene and side == own and any(previous.get("side") == own for previous in route[:index - 1]):
-            text = "那咱们" + text
-        elif index == 1 and side != own:
-            text = "假设对面" + text
+            text = str(item.get("notation") or "")
+            for prefix in ("红方 ", "黑方 ", "演示收尾："):
+                text = text.replace(prefix, "")
+            cues[str(index + 1)] = "最后摆一步，" + text.rstrip("。") + "。"
         else:
-            text = subject + text
-        if not item.get("illustration"):
-            if item.get("check") and item.get("escape"):
-                text += "，解将反将"
-            elif item.get("check"):
-                text += "，将军"
-            elif item.get("escape"):
-                text += "，先解将"
-            if (index > 1 and item.get("capture") and route[index - 2].get("capture")
-                    and str(item.get("ucci") or "")[2:] == str(route[index - 2].get("ucci") or "")[2:]
-                    and item.get("ucci")):
-                text += "，这是回吃"
-        cues[str(index)] = text.rstrip("。") + "。"
+            cues[str(index + 1)] = _step_narration(
+                route, index, own, plan.get("narration_variant", 0))
     cues["summary"] = result_note(route, own, mate, plan.get("pattern", "组合将杀"), plan.get("narration_variant", 0))
     if scene:
         ours = [item["capture"] for item in route if item.get("capture") and item.get("side") == own]
@@ -237,11 +285,17 @@ def script(plan):
 
 
 def demo_budget(plan):
-    """Include speech, ADB/animation overhead and a visible final position."""
-    if plan.get("audience_scene") and plan.get("kind") != "mate":
-        # Questions share the ordinary cap.  Real TTS pauses make the compact
-        # exchange longer than a plain character-count estimate suggests.
-        return 30
+    """Budget a complete line, including each spoken cue and board animation."""
     cues = script(plan)
-    seconds = len(plan.get("route") or []) * 1.9 + sum(len(t) for t in cues.values()) / 6 + 3
-    return min(42 if plan.get("kind") == "mate" else 30, max(12, seconds))
+    route = plan.get("route") or []
+    spoken = sum(len(text) for cue, text in cues.items() if cue != "question") / 5.2
+    board_and_ui = len(route) * 2.2 + 4.0
+    seconds = math.ceil((spoken + board_and_ui) * 1.18)
+    return min(90 if plan.get("kind") == "mate" else 65,
+               max(18, seconds))
+
+
+def question_seconds(scene):
+    """Give a short audience prompt its own budget before the route starts."""
+    text = str((scene or {}).get("question") or "")
+    return min(8, max(5, math.ceil(len(text) / 5.2 + 2)))

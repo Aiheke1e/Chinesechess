@@ -37,6 +37,7 @@ LIVE_CFG_PATH = os.path.join(HERE, "live_config.json")
 SPEECH_PREPARING_PATH = os.path.join(HERE, "work", "speech_preparing.json")
 SPEECH_STARTED_PATH = os.path.join(HERE, "work", "speech_started.json")
 SPEECH_PRIORITY_PATH = os.path.join(HERE, "work", "speech_priority.json")
+SPEECH_ACTIVITY_PATH = os.path.join(HERE, "work", "speech_activity.json")
 SPEECH_SKIPPED_PATH = os.path.join(HERE, "work", "speech_skipped.json")
 DEFAULT_CFG = {
     "my_color": "r",
@@ -96,6 +97,16 @@ def _read_speech_marker(path):
             return marker if isinstance(marker, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def active_interaction_audio(path=SPEECH_ACTIVITY_PATH, now=None):
+    marker = _read_speech_marker(path)
+    try:
+        until = float(marker.get("until", 0))
+    except (TypeError, ValueError):
+        return False
+    return (marker.get("active") is True and marker.get("interaction") is True
+            and until > (time.time() if now is None else now))
 
 
 class SpeechSyncError(RuntimeError):
@@ -516,6 +527,13 @@ def run_game_sandbox(device, board, orientation, plan, token, number, events, ca
         synchronous = commentary and bool(live.get("speech_enabled"))
     except (OSError, ValueError, AttributeError):
         commentary = synchronous = False
+    if commentary and active_interaction_audio():
+        result = {"entered": False, "safe_exit": True,
+                  "reason": "观众语音正在播报，跳过沙盘以免打断互动",
+                  "speech_deadline": time.monotonic() + 15.0}
+        events.emit("game_sandbox", action="end", phase=plan.get("phase"),
+                    speech_token=token, **result)
+        return result
     if synchronous and plan.get("phase") == "before_move":
         ready_deadline = time.monotonic()+.8
         while not prepared(cue_token(token,"intro")) and not cancelled() and time.monotonic()<ready_deadline:
@@ -558,7 +576,7 @@ def run_game_sandbox(device, board, orientation, plan, token, number, events, ca
             return True
         write_runtime_status("sandbox_demo", "正在同步沙盘讲解",
                              details={"own_moves": number, "cue": name})
-        deadline = min(deadline, time.monotonic() + (12 if name == "summary" else 8))
+        deadline = min(deadline, time.monotonic() + 12)
         if name not in requested:
             events.emit("game_sandbox", action="cue", cue=name,
                         speech_token=token, deadline=deadline)
@@ -574,8 +592,7 @@ def run_game_sandbox(device, board, orientation, plan, token, number, events, ca
         if scene_seconds is not None:
             started = time.monotonic()
             question_finished = cue("question", finish=True, deadline=started + min(8, scene_seconds))
-            max_seconds = scene_seconds - (time.monotonic() - started)
-            if not question_finished or cancelled() or max_seconds < 3:
+            if not question_finished or cancelled():
                 result = {"entered": False, "safe_exit": True, "reason": "互动提问已取消，跳过本次沙盘"}
         if result is None:
             result = play_plan(device, board.copy(), orientation, plan, stop_requested=cancelled,

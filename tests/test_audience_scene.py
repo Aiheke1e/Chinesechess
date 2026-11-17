@@ -88,11 +88,13 @@ class AudienceSceneTests(unittest.TestCase):
         board.apply(Board.from_ucci(event["ucci"]))
         self.assertEqual(len(game_sandbox.validated_route(board, plan["route"])), len(plan["route"]))
 
-    def test_question_and_exchange_share_the_ordinary_thirty_second_cap(self):
+    def test_question_has_a_separate_short_budget_from_the_complete_route(self):
         _, plan, event = event_fixture()
         scene = AudienceSceneDirector().choose(event, plan)
-        self.assertEqual(sn.demo_budget({**plan, "audience_scene": scene}), 30)
-        self.assertLessEqual(sn.demo_budget(plan), 30)
+        self.assertGreater(sn.demo_budget({**plan, "audience_scene": scene}), 30)
+        self.assertGreaterEqual(sn.demo_budget({**plan, "audience_scene": scene}),
+                                sn.demo_budget(plan))
+        self.assertLessEqual(sn.question_seconds(scene), 8)
 
     def test_controller_only_adds_the_scene_when_interaction_is_enabled(self):
         _, _, event = event_fixture()
@@ -111,7 +113,7 @@ class AudienceSceneTests(unittest.TestCase):
             self.assertEqual(main.args[1]["我方计划走法"], event["notation"])
             self.assertEqual(controller.commentary_analyses[event["speech_token"]]["ucci"], event["ucci"])
             if enabled:
-                self.assertLessEqual(questions[0].args[1]["_sandbox_scene_seconds"], 30)
+                self.assertLessEqual(questions[0].args[1]["_sandbox_scene_seconds"], 8)
 
     def run_player(self, success=True, speech=True):
         with tempfile.TemporaryDirectory() as folder:
@@ -130,7 +132,7 @@ class AudienceSceneTests(unittest.TestCase):
                 order.append("open")
                 self.assertIsNot(copied, board)
                 self.assertEqual(received_plan["route"], plan["route"])
-                self.assertEqual(kwargs["max_seconds"], 26 if speech else 30)
+                self.assertEqual(kwargs["max_seconds"], plan["max_seconds"])
                 copied.sq[0] = None
                 return {"entered": True, "safe_exit": True, "completed": len(plan["route"])}
             with patch.object(player, "LIVE_CFG_PATH", str(config)), patch.object(player, "write_runtime_status"), patch(
@@ -176,7 +178,7 @@ class AudienceSceneTests(unittest.TestCase):
             board, plan, event = event_fixture()
             scene = AudienceSceneDirector().choose(event, plan)
             shown_plan = {**plan, "audience_scene": scene}
-            shown_plan["scene_seconds"] = sn.demo_budget(shown_plan)
+            shown_plan["scene_seconds"] = sn.question_seconds(scene)
             heard, opened = [], []
             pipeline = SpeechPipeline(LiveSettings(speech_enabled=True, cooldown=0),
                 lambda kind, text, data: heard.append((text, data)) if kind == "reply" else None,

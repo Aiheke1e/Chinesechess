@@ -33,7 +33,8 @@ from opening_library import load_opening_library
 from commentary_text import (complete_note, connected_move_note, waiting_note,
                              confirmed_win_note, opponent_wait_note, opponent_capture_note)
 from sandbox_narration import (cue_token, receipt as sandbox_receipt, script as sandbox_script,
-                               audio_ready as sandbox_audio_ready)
+                               audio_ready as sandbox_audio_ready,
+                               question_seconds as sandbox_question_seconds)
 from mate_patterns import build_finisher, confirmed_finisher_note, finisher_copy, MATE_OPENINGS
 from chat_selection import ChatSelector, viewer_key
 from speech_balance import SpeechBalance
@@ -53,6 +54,7 @@ SPEECH_STARTED = HERE / "work" / "speech_started.json"
 SPEECH_PREPARING = HERE / "work" / "speech_preparing.json"
 SPEECH_PRIORITY = HERE / "work" / "speech_priority.json"
 SPEECH_SKIPPED = HERE / "work" / "speech_skipped.json"
+SPEECH_ACTIVITY = HERE / "work" / "speech_activity.json"
 CHESS_SPEECH_KINDS = {
     CLOCK_KIND,
     "我方走棋播报", "我方走棋解说", "对手走棋播报", "对手走棋解说",
@@ -742,6 +744,10 @@ class SpeechPipeline:
         winsound.PlaySound(str(audio), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
         playback_started = time.monotonic()
         state["audio_started"] = True
+        self._write_speech_marker(SPEECH_ACTIVITY, {
+            "active": True, "interaction": kind in INTERACTION_SPEECH_KINDS,
+            "until": time.time() + duration + 1.0,
+        })
         # Keep short speech intact at ordinary scheduling boundaries. Pending
         # chat stays ahead of UNSTARTED chess; mate and manual stop still win.
         state["finish_sentence"] = (0 < duration <= 9 and not payload.get("_sandbox_cue")
@@ -777,6 +783,9 @@ class SpeechPipeline:
             return True
         finally:
             self.balance.record(kind, min(duration, time.monotonic() - playback_started))
+            self._write_speech_marker(SPEECH_ACTIVITY, {
+                "active": False, "interaction": False, "until": 0,
+            })
             with self.playback_state_lock:
                 self.audio_active = False
 
@@ -2417,9 +2426,8 @@ class LiveController:
                 self.audience_scenes = AudienceSceneDirector()
             scene = self.audience_scenes.choose(event, sandtable)
             if scene:
-                from sandbox_narration import demo_budget
                 sandtable = {**sandtable, "audience_scene": scene}
-                sandtable["scene_seconds"] = demo_budget(sandtable)
+                sandtable["scene_seconds"] = sandbox_question_seconds(scene)
         if sandtable:
             if sandtable.get("phase") == "before_move" and event.get("speech_token"):
                 self.commentary_analyses[event["speech_token"]]["_pre_move_demo"] = True
