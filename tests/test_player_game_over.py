@@ -12,6 +12,59 @@ import player
 
 
 class GameOverDetectionTests(unittest.TestCase):
+    def test_startup_recheck_runs_in_read_only_watchdog_thread(self):
+        board = Board.from_fen(START_FEN)
+        thread_names = []
+
+        def read_board(*args, **kwargs):
+            thread_names.append(player.threading.current_thread().name)
+            return (None, None) if len(thread_names) == 1 else (board, "red_bottom")
+
+        with (patch.object(player, "postgame_screen_visible", return_value=False),
+              patch.object(player, "read_stable_board", side_effect=read_board),
+              patch.object(player.time, "sleep")):
+            state, observed, orientation = player.monitor_startup_board(
+                "mock", "r", 20, 0.35, "auto", lambda: False, timeout=1.0)
+
+        self.assertEqual(state, "board")
+        self.assertIs(observed, board)
+        self.assertEqual(orientation, "red_bottom")
+        self.assertEqual(thread_names, ["startup-board-watchdog"] * 2)
+
+    def test_immediate_resignation_during_startup_is_a_completed_game(self):
+        cfg = dict(player.DEFAULT_CFG, my_color="r", auto_continue_after_game=True)
+        events = Mock()
+        with ExitStack() as stack:
+            patches = [
+                patch.object(player.sys, "argv", ["player.py"]),
+                patch.object(player, "load_cfg", return_value=cfg),
+                patch.object(player, "list_devices", return_value=["mock"]),
+                patch.object(player, "match_live_session", return_value=None),
+                patch.object(player, "read_stable_board", return_value=(None, None)),
+                patch.object(player, "postgame_screen_visible", return_value=True),
+                patch.object(player, "result_screen_details", return_value={
+                    "result": "won", "finish_cause": "opponent_resigned",
+                    "finish_evidence": "jj_result_text"}),
+                patch.object(player, "finish_session"),
+                patch.object(player, "write_runtime_status"),
+                patch.object(player, "EventLog", return_value=events),
+                patch("postgame.handle_postgame", return_value=["结算页主按钮"]),
+            ]
+            for item in patches:
+                stack.enter_context(item)
+            with redirect_stdout(io.StringIO()):
+                result = player.main()
+
+        self.assertEqual(result, 10)
+        names = [call.args[0] for call in events.emit.call_args_list]
+        self.assertIn("game_over", names)
+        self.assertIn("end", names)
+        self.assertIn("postgame_continue", names)
+        game_over = next(call.kwargs for call in events.emit.call_args_list
+                         if call.args[0] == "game_over")
+        self.assertEqual(game_over["result"], "won")
+        self.assertEqual(game_over["finish_cause"], "opponent_resigned")
+
     def run_unconfirmed_input(self, postgame):
         board = Board.from_fen(START_FEN)
         original = board.to_fen()

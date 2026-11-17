@@ -4,6 +4,8 @@
 from __future__ import annotations
 from collections import deque
 import sys, os, time, random, json, argparse
+import queue
+import threading
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from board import Board
 from adb_bridge import screenshot, list_devices
@@ -19,7 +21,7 @@ from events import EventLog
 from diagnostics import capture_diagnostic
 from notation import move_description
 from session_state import (block_position, infer_turn_from_standard,
-                           match_live_session, save_session)
+                           match_live_session, save_session, finish_session)
 from runtime_status import write_runtime_status
 from queen_commentary import build_queen_evidence
 from game_control import auto_continue_enabled
@@ -391,6 +393,38 @@ def read_stable_board(device, turn, min_pieces=20, stable_delay=0.35,
         return None, None
     return board, second_orientation
 
+
+def monitor_startup_board(device, turn, min_pieces, stable_delay,
+                          orientation, stop_requested, timeout=5.0):
+    """Read-only startup watchdog; keep transient-screen retries off the caller."""
+    result = queue.Queue(maxsize=1)
+
+    def monitor():
+        deadline = time.monotonic() + timeout
+        while not stop_requested():
+            if postgame_screen_visible(device):
+                result.put(("postgame", None, None))
+                return
+            board, board_orientation = read_stable_board(
+                device, turn, min_pieces, stable_delay, orientation)
+            if board is not None:
+                result.put(("board", board, board_orientation))
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.25, remaining))
+        result.put(("timeout", None, None))
+
+    threading.Thread(target=monitor, name="startup-board-watchdog",
+                     daemon=True).start()
+    while True:
+        try:
+            return result.get(timeout=0.1)
+        except queue.Empty:
+            if stop_requested():
+                return "timeout", None, None
+
 def pick_move(b, cfg, pf, *, excluded_moves=(), history=None):
     if pf is None:
         raise EngineMoveError("Pikafish 未启动")
@@ -630,10 +664,42 @@ def main():
         print("[断点续局] 已恢复上次保存的可信棋局。")
     else:
         initial_turn = cfg.get("initial_turn", "r")
-        b, orientation = read_stable_board(
+        # The prepare watcher can confirm the opening just before JJ runs its
+        # start/result animation. Keep rereading for five seconds so a brief
+        # transition does not become a dead board-recognition state.
+        startup_state, b, orientation = monitor_startup_board(
             device, initial_turn, cfg["min_pieces"], cfg["stable_delay"],
-            requested_orientation)
+            requested_orientation, stop_requested, timeout=5.0)
         if b is None:
+            # A very fast resignation can replace the opening board with JJ's
+            # result page between the launcher's check and our first stable
+            # pair of frames. Treat a confirmed result page as a completed
+            # game instead of leaving the controller in board-recognition.
+            if startup_state == "postgame" or wait_for_postgame_screen(
+                    device, timeout=0.5, interval=0.1):
+                finish = result_screen_details(device)
+                result = finish.pop("result", "finished")
+                print("[本局结束] 开局识别时检测到 JJ 结算页面，本局已结束。")
+                events.emit("game_over", result=result,
+                            reason="jj_result_screen", **finish)
+                finish_session()
+                write_runtime_status("stopped", "开局后立即结算，等待下一局",
+                                     details={"result": result, "own_moves": 0})
+                events.emit("end", result=result, own_moves=0)
+                if not cfg["dry_run"] and continue_allowed():
+                    try:
+                        from postgame import handle_postgame
+                        actions = handle_postgame(
+                            device, continue_allowed=continue_allowed)
+                    except Exception as error:
+                        print(f"[结算处理] 开局结算处理异常：{error}")
+                        actions = []
+                    if actions:
+                        print("[结算处理] 已点击：" + " → ".join(actions))
+                        events.emit("postgame_continue", actions=actions)
+                        return 10
+                    print("[结算处理] 未找到可信的继续按钮，没有执行点击。")
+                return 0
             print("[!] 未识别到对局棋盘, 请先进入人机对局并停在棋盘界面")
             events.emit("error", code="board_not_found", message="未识别到稳定合法棋盘")
             return 2
