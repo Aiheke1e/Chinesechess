@@ -2754,7 +2754,7 @@ class LiveController:
                 or not self.settings.commentary_enabled or not self.settings.speech_enabled
                 or getattr(self, "sandtable_active", False)
                 or self.silence_filler_count >= 2
-                or now - self.last_any_speech_at < 30
+                or now - self.last_any_speech_at < 10
                 or now - self.last_silence_filler_at < 35
                 or now < getattr(self, "last_spoken_until", 0)):
             return False

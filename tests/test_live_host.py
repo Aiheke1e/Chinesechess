@@ -48,9 +48,9 @@ class LiveHostTests(unittest.TestCase):
         controller.last_spoken_until = 0.0
         controller.pipeline = Pipeline()
 
-        with patch("live_host.time.monotonic", return_value=129.0):
+        with patch("live_host.time.monotonic", return_value=109.0):
             self.assertFalse(controller._live_silence_tick())
-        with patch("live_host.time.monotonic", return_value=131.0):
+        with patch("live_host.time.monotonic", return_value=111.0):
             self.assertTrue(controller._live_silence_tick())
             self.assertFalse(controller._live_silence_tick())
         self.assertEqual(len(submitted), 1)
