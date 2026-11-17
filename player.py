@@ -141,12 +141,13 @@ def _skip_ordinary_speech(token, reason="chat_priority"):
 def wait_for_speech_start(token, plan_timeout=2.0, audio_timeout=4.0,
                           cancelled=None, deadline=None, finish_timeout=40.0):
     """Require matching audio start; verified finishers must finish before input."""
+    wait_started_at = time.monotonic()
     if token.endswith(":sandbox"):
         return False
     if not _speech_enabled():
         return False
-    deadline = deadline if deadline is not None else time.monotonic() + max(0.0, audio_timeout)
-    plan_deadline = min(deadline, time.monotonic() + max(0.0, plan_timeout))
+    deadline = deadline if deadline is not None else wait_started_at + max(0.0, audio_timeout)
+    plan_deadline = min(deadline, wait_started_at + max(0.0, plan_timeout))
     plan = {}
     while time.monotonic() < plan_deadline:
         if cancelled and cancelled():
@@ -171,7 +172,7 @@ def wait_for_speech_start(token, plan_timeout=2.0, audio_timeout=4.0,
     if not wait_finished:
         # The game loop passes a broader per-move deadline for sandbox and
         # recovery work. Ordinary TTS must never consume that whole window.
-        deadline = min(deadline, time.monotonic() + max(0.0, audio_timeout))
+        deadline = min(deadline, wait_started_at + max(0.0, audio_timeout))
     completion_deadline = None
     heartbeat_at = time.monotonic() + 1.0
     while True:
