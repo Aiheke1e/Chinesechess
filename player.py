@@ -122,12 +122,12 @@ def _chat_priority_active():
         return False
 
 
-def _skip_ordinary_speech(token):
+def _skip_ordinary_speech(token, reason="chat_priority"):
     temporary = f"{SPEECH_SKIPPED_PATH}.{os.getpid()}.tmp"
     try:
         os.makedirs(os.path.dirname(SPEECH_SKIPPED_PATH), exist_ok=True)
         with open(temporary, "w", encoding="utf-8") as stream:
-            json.dump({"token": token, "reason": "chat_priority", "created": time.time()}, stream)
+            json.dump({"token": token, "reason": reason, "created": time.time()}, stream)
         os.replace(temporary, SPEECH_SKIPPED_PATH)
     except OSError as error:
         raise SpeechSyncError("无法取消本手普通播报，未发送点击") from error
@@ -138,7 +138,7 @@ def _skip_ordinary_speech(token):
             pass
 
 
-def wait_for_speech_start(token, plan_timeout=2.0, audio_timeout=15.0,
+def wait_for_speech_start(token, plan_timeout=2.0, audio_timeout=4.0,
                           cancelled=None, deadline=None, finish_timeout=40.0):
     """Require matching audio start; verified finishers must finish before input."""
     if token.endswith(":sandbox"):
@@ -156,7 +156,9 @@ def wait_for_speech_start(token, plan_timeout=2.0, audio_timeout=15.0,
             break
         time.sleep(0.02)
     if plan.get("token") != token:
-        raise SpeechSyncError("未收到本手播报计划，未发送点击")
+        _skip_ordinary_speech(token, reason="plan_timeout")
+        print("[语音同步] 本手播报计划未及时到达，已跳过语音并继续落子。", flush=True)
+        return False
     if plan.get("deferred"):
         if token.endswith(":sandbox"):
             return False
@@ -196,9 +198,11 @@ def wait_for_speech_start(token, plan_timeout=2.0, audio_timeout=15.0,
                                  details={"speech_token": token})
             heartbeat_at = time.monotonic() + 1.0
         time.sleep(0.03)
-    if completion_deadline is not None:
+    if completion_deadline is not None or wait_finished:
         raise SpeechSyncError("绝杀解说未在时限内完整播完，已暂停且未发送点击")
-    raise SpeechSyncError("本手语音未在15秒内启动，已暂停且未发送点击")
+    _skip_ordinary_speech(token, reason="audio_start_timeout")
+    print("[语音同步] 本手语音未及时启动，已跳过语音并继续落子。", flush=True)
+    return False
 
 
 def read_squares(device, orientation="auto"):

@@ -52,15 +52,19 @@ class SpeechSyncTests(unittest.TestCase):
                 self.assertFalse(player.wait_for_speech_start(
                     "sand-1:sandbox", plan_timeout=0.01, audio_timeout=0.01))
 
-    def test_timeout_or_missing_plan_is_a_failure_instead_of_permission_to_click(self):
+    def test_ordinary_speech_timeout_is_skipped_without_holding_the_move(self):
         with patch.object(player, "_speech_enabled", return_value=True), patch.object(
-                player, "_read_speech_marker", return_value={}):
-            with self.assertRaises(player.SpeechSyncError):
-                player.wait_for_speech_start("move-1", plan_timeout=0, audio_timeout=0)
+                player, "_read_speech_marker", return_value={}), patch.object(
+                player, "_skip_ordinary_speech") as skipped:
+            self.assertFalse(player.wait_for_speech_start(
+                "move-1", plan_timeout=0, audio_timeout=0))
+            skipped.assert_called_once_with("move-1", reason="plan_timeout")
         with patch.object(player, "_speech_enabled", return_value=True), patch.object(
-                player, "_read_speech_marker", return_value={"token": "move-1", "enabled": True}):
-            with self.assertRaises(player.SpeechSyncError):
-                player.wait_for_speech_start("move-1", plan_timeout=0.01, audio_timeout=0.01)
+                player, "_read_speech_marker", return_value={"token": "move-1", "enabled": True}), patch.object(
+                player, "_skip_ordinary_speech") as skipped:
+            self.assertFalse(player.wait_for_speech_start(
+                "move-1", plan_timeout=0.01, audio_timeout=0.01))
+            skipped.assert_called_once_with("move-1", reason="audio_start_timeout")
 
     def test_audio_error_marker_cannot_be_mistaken_for_started_marker(self):
         with patch.object(player, "_speech_enabled", return_value=True), patch.object(

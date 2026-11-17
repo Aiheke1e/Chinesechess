@@ -460,11 +460,13 @@ class SpeechPipeline:
             priority = (0, int(cue) + 2 if cue.isdigit() else 1 if cue else 0)
         elif kind in INTERACTION_SPEECH_KINDS:
             priority = (1, 0)
+        elif kind in OWN_SPEECH_KINDS or kind == "新局开场":
+            priority = (0, 0)
         elif payload.get("_sandbox_cue"):
             cue = str(payload.get("沙盘步骤") or "")
             priority = (2, 0) if cue in ("intro", "question") else (3, int(cue) if cue.isdigit() else 99)
         else:
-            priority = (2, 0) if kind in OWN_SPEECH_KINDS or kind == "新局开场" else (4, 0)
+            priority = (4, 0)
         def valid():
             return (self.settings.speech_enabled and self._state_live(state)
                     and self._chat_valid(kind, payload)
