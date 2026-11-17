@@ -430,30 +430,41 @@ def _endpoint_confirmed(board, move, image, orientation):
 
 
 def _settle_endpoint(device, board, move, image, orientation, deadline, cancelled):
-    """Read an in-flight animation without submitting another board input."""
-    deadline = min(deadline, time.monotonic() + 4.0)
-    for _ in range(8):
+    """Wait for a simulated move to settle and require two matching frames."""
+    deadline = min(deadline, time.monotonic() + 2.8)
+    confirmed_frames = 0
+    for _ in range(14):
+        if _detect_sandbox_exit(image) is None or cancelled():
+            return image, False
         if _endpoint_confirmed(board, move, image, orientation):
-            return image, True
-        if (cancelled() or time.monotonic() + .15 >= deadline or
-                _detect_sandbox_exit(image) is None):
+            confirmed_frames += 1
+            if confirmed_frames >= 2:
+                return image, True
+        else:
+            confirmed_frames = 0
+        if time.monotonic() + .2 >= deadline:
             break
-        time.sleep(.15)
+        time.sleep(.2)
         image = screenshot(device)
-    return image, _endpoint_confirmed(board, move, image, orientation)
+    return image, False
 
 
 def _settle_sandbox_position(device, board, image, orientation, deadline, cancelled):
-    """Wait out a highlighted/moving frame, staying inside confirmed sandbox."""
+    """Wait for two stable frames of the expected board inside the sandbox."""
     deadline = min(deadline, time.monotonic() + 3.0)
-    for _ in range(6):
+    stable_hits = 0
+    for _ in range(14):
         if _detect_sandbox_exit(image) is None or cancelled():
             return image, False
         if _position_matches(board, image, orientation):
-            return image, True
-        if time.monotonic() + .15 >= deadline:
+            stable_hits += 1
+            if stable_hits >= 2:
+                return image, True
+        else:
+            stable_hits = 0
+        if time.monotonic() + .2 >= deadline:
             break
-        time.sleep(.15)
+        time.sleep(.2)
         image = screenshot(device)
     return image, False
 

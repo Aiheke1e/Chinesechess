@@ -25,7 +25,7 @@ class ContinuousSessionTests(unittest.TestCase):
         self.assertFalse(gs._position_matches(moved, frame, "red_bottom"))
 
     def test_an_in_flight_move_can_settle_without_a_second_input(self):
-        with patch.object(gs, "_endpoint_confirmed", side_effect=[False, True]), \
+        with patch.object(gs, "_endpoint_confirmed", side_effect=[False, True, True]), \
              patch.object(gs, "_detect_sandbox_exit", return_value=(240, 1850)), \
              patch.object(gs, "screenshot", return_value="settled"), \
              patch.object(gs.time, "sleep"), patch.object(gs.time, "monotonic", return_value=1), \

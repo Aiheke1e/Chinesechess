@@ -266,7 +266,7 @@ class GameSandboxTests(unittest.TestCase):
                           "notation": move_description(probe, move)})
             probe.apply(move)
         frame = np.zeros((1920, 1080, 3), dtype=np.uint8)
-        confirmations = [False, True, True, True]
+        confirmations = [False, True, True, True, True, True, True]
         with patch.object(game_sandbox, "_wait_for_position",
                           return_value=frame), \
              patch.object(game_sandbox, "screenshot", return_value=frame), \
