@@ -22,6 +22,40 @@ class LiveHostTests(unittest.TestCase):
         pipeline._ensure_worker = lambda: True
         return pipeline
 
+    def test_active_game_silence_gets_bounded_companion_line(self):
+        submitted = []
+
+        class Pipeline:
+            def activity_snapshot(self):
+                return {"queued": 0, "working": 0, "preparing": 0, "playing": 0}
+
+            def submit(self, priority, kind, payload, direct_text=None):
+                submitted.append((priority, kind, direct_text))
+
+        controller = object.__new__(LiveController)
+        controller.enabled = True
+        controller.game_active = True
+        controller.game_terminal = False
+        controller.game_dry = False
+        controller.suspended = controller.chess_suspended = False
+        controller.shutdown_mode = None
+        controller.settings = LiveSettings(commentary_enabled=True, speech_enabled=True)
+        controller.sandtable_active = False
+        controller.silence_filler_count = 0
+        controller.silence_filler_sequence = 0
+        controller.last_silence_filler_at = 0.0
+        controller.last_any_speech_at = 100.0
+        controller.last_spoken_until = 0.0
+        controller.pipeline = Pipeline()
+
+        with patch("live_host.time.monotonic", return_value=129.0):
+            self.assertFalse(controller._live_silence_tick())
+        with patch("live_host.time.monotonic", return_value=131.0):
+            self.assertTrue(controller._live_silence_tick())
+            self.assertFalse(controller._live_silence_tick())
+        self.assertEqual(len(submitted), 1)
+        self.assertEqual(submitted[0][1], "静场陪伴")
+
     def test_new_own_move_replaces_queued_old_chess_speech(self):
         pipeline = self._idle_pipeline()
         pipeline.submit(1, "对手走棋播报", {"走法": "卒7进1"}, "旧应手")

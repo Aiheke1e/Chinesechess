@@ -58,7 +58,7 @@ CHESS_SPEECH_KINDS = {
     "关键走棋解说", "关键应手解说", "等待期长讲解", "应手预判",
     "开局定式解说", "绝杀长解说",
     "沙盘推演解说", "QUEEN式等待期解说", "收官解说", "获胜收官", "结算收官", "对手状态解说",
-    "新局开场", GAP_KIND,
+    "新局开场", GAP_KIND, "静场陪伴",
 }
 INTERACTION_SPEECH_KINDS = {"弹幕回复", "欢迎观众", "礼物答谢", "点赞感谢", "关注感谢"}
 OWN_SPEECH_KINDS = {
@@ -1339,6 +1339,10 @@ class LiveController:
         self.opening_announced = set()
         self.opening_library = load_opening_library()
         self.last_chess_spoken_at = time.monotonic()
+        self.last_any_speech_at = time.monotonic()
+        self.last_silence_filler_at = 0.0
+        self.silence_filler_count = 0
+        self.silence_filler_sequence = 0
         self.pending_move_events = {}
         self.pending_prediction = None
         self.reply_context = None
@@ -1394,7 +1398,8 @@ class LiveController:
             pass
         spoken_kind = str((data or {}).get("kind") or "")
         if kind == "reply":
-            self.last_spoken_until = time.monotonic() + float((data or {}).get("_speech_seconds") or 2)
+            self.last_any_speech_at = time.monotonic()
+            self.last_spoken_until = self.last_any_speech_at + float((data or {}).get("_speech_seconds") or 2)
         if kind == "reply" and spoken_kind in CHESS_SPEECH_KINDS:
             self.last_chess_spoken_at = time.monotonic()
             self.quiet_move_count = 0
@@ -2002,6 +2007,8 @@ class LiveController:
             self.game_dry = bool(event.get("dry_run"))
             self.game_terminal = False
             self.game_active = not self.game_dry
+            self.silence_filler_count = 0
+            self.last_silence_filler_at = 0.0
         if not getattr(self, "game_dry", False):
             if name == "position":
                 self.game_active = True
@@ -2731,12 +2738,41 @@ class LiveController:
         while not self.chat_closed.wait(0.5):
             try:
                 self._select_chat()
+                self._live_silence_tick()
                 self._between_games_tick()
             except Exception as error:
                 now = time.monotonic()
                 if now - getattr(self, "chat_error_at", 0) >= 30:
                     self.chat_error_at = now
                     self._notify("error", "弹幕抽选异常：" + type(error).__name__)
+
+    def _live_silence_tick(self):
+        """Add a brief, bounded line during an otherwise silent active game."""
+        now = time.monotonic()
+        if (not self.enabled or not self.game_active or self.game_terminal or self.game_dry
+                or self.suspended or self.chess_suspended or self.shutdown_mode
+                or not self.settings.commentary_enabled or not self.settings.speech_enabled
+                or getattr(self, "sandtable_active", False)
+                or self.silence_filler_count >= 2
+                or now - self.last_any_speech_at < 30
+                or now - self.last_silence_filler_at < 35
+                or now < getattr(self, "last_spoken_until", 0)):
+            return False
+        activity = self.pipeline.activity_snapshot()
+        if any(activity.get(key) for key in ("queued", "working", "preparing", "playing")):
+            return False
+        lines = (
+            "棋友们先一起看着盘面，下一手落下来，咱们再接着聊。",
+            "这会儿我先陪大家安静看棋，等局面有变化再给大家讲重点。",
+            "直播间的棋友们别走开，咱们接着看这盘，精彩处我再和大家聊。",
+            "趁棋还在继续，大家也可以在弹幕说说平时最喜欢哪种开局。",
+        )
+        line = lines[self.silence_filler_sequence % len(lines)]
+        self.silence_filler_sequence += 1
+        self.last_silence_filler_at = now
+        self.silence_filler_count += 1
+        self.pipeline.submit(4, "静场陪伴", {}, direct_text=line)
+        return True
 
     def _between_games_tick(self):
         flow = getattr(self,"broadcast_flow",None)
