@@ -37,7 +37,8 @@ from sandbox_narration import (cue_token, receipt as sandbox_receipt, script as 
 from mate_patterns import build_finisher, confirmed_finisher_note, finisher_copy, MATE_OPENINGS
 from chat_selection import ChatSelector, viewer_key
 from speech_balance import SpeechBalance
-from interaction_text import welcome_line, spoken_reply, gift_reply, local_reply, viewer_address
+from interaction_text import (welcome_line, spoken_reply, gift_reply, local_reply,
+                              viewer_address, replace_audience_terms)
 from interaction_chess import ChessChatContext
 from commentary_style import CommentaryStyle, DEFAULT_PERSONA, LEGACY_PERSONAS, piece_amount, humor_enabled
 from stream_brand import (HOST_NAME, CHANNEL_NAME, DEFAULT_INTRODUCTION,
@@ -309,6 +310,9 @@ class SpeechPipeline:
     def submit(self, priority, kind, payload, direct_text=None):
         if not self._ensure_worker():
             return False
+        if direct_text:
+            direct_text = replace_audience_terms(
+                direct_text, preserve=(payload.get("观众"), viewer_address(payload.get("观众"))))
         if kind in CHESS_SPEECH_KINDS:
             payload = {**payload, "_chess_epoch": getattr(self, "chess_epoch", 0)}
         if kind == "新局开场":
@@ -802,7 +806,7 @@ class SpeechPipeline:
 
     @staticmethod
     def _clean_text(text):
-        return re.sub(r"[\r\n*_#`]+", "", str(text)).strip()
+        return replace_audience_terms(re.sub(r"[\r\n*_#`]+", "", str(text)).strip())
 
     @staticmethod
     def _own_side(payload):
@@ -1984,7 +1988,7 @@ class LiveController:
             ("戏台", "拿下！这盘的收尾戏演完，掌声现在可以放出来了。"),
             ("上班", "稳稳收下，棋子们辛苦了，这盘可以打卡下班。"),
             ("财务", "这盘拿下，账本合上，咱们接着下。"),
-            ("家门", "这盘拿下，棋盘收拾好，下一位棋友请进。"),
+            ("家门", "这盘拿下，棋盘收拾好，下一位兄弟请进。"),
             ("考试", "拿下！这道题做完了，下一盘咱们继续答卷。"),
         )
         return self._speech_flair().pick("获胜收官", variants, required=True)
@@ -2591,7 +2595,7 @@ class LiveController:
             variants = (
                 f"对手这手{actual}，走的是另一条路。",
                 f"嚯，{actual}，对手没按这条路来。",
-                f"对手走了{actual}，这位棋友有自己的剧本。",
+                f"对手走了{actual}，这位兄弟有自己的剧本。",
                 f"这手{actual}，对手另有安排，咱们接着拆招。",
             )
         return complete_note(variants[index % len(variants)])
@@ -2764,9 +2768,9 @@ class LiveController:
         if any(activity.get(key) for key in ("queued", "working", "preparing", "playing")):
             return False
         lines = (
-            "棋友们先一起看着盘面，下一手落下来，咱们再接着聊。",
+            "兄弟们先一起看着盘面，下一手落下来，咱们再接着聊。",
             "这会儿我先陪大家安静看棋，等局面有变化再给大家讲重点。",
-            "直播间的棋友们别走开，咱们接着看这盘，精彩处我再和大家聊。",
+            "直播间的兄弟们别走开，咱们接着看这盘，精彩处我再和大家聊。",
             "趁棋还在继续，大家也可以在弹幕说说平时最喜欢哪种开局。",
         )
         line = lines[self.silence_filler_sequence % len(lines)]

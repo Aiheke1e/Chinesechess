@@ -16,16 +16,16 @@ from live_host import LiveController, LiveSettings, SpeechPipeline
 class InteractionTextTests(unittest.TestCase):
     def test_welcome_has_only_the_name_and_entry_notice(self):
         self.assertEqual(welcome_line("小王"), "欢迎小王进入直播间。")
-        self.assertEqual(welcome_line("李***"), "欢迎李棋友进入直播间。")
+        self.assertEqual(welcome_line("李***"), "欢迎李兄弟进入直播间。")
         self.assertEqual(spoken_reply("这首挺合你胃口。[捂脸][鼓掌]😀"), "这首挺合你胃口。")
 
     def test_logged_criticism_and_listening_comments_cannot_turn_into_chess_praise(self):
         self.assertEqual(spoken_reply("李棋友，你夸得我不好意思，棋艺再好也不能气病。", payload={
             "观众": "李***", "弹幕": "主播棋下的，能把人气出病来。[捂脸]"}),
-            "李棋友，看得你着急了，意见收到，咱们少吹两句，把棋下明白。")
+            "李兄弟，看得你着急了，意见收到，咱们少吹两句，把棋下明白。")
         self.assertEqual(spoken_reply("李棋友，这首歌挺不错，您喜欢吗？", payload={
-            "观众": "李***", "弹幕": "出招吧真好听"}), "李棋友，合你胃口就好，耳朵这关先过了，咱们接着聊。")
-        self.assertEqual(spoken_reply("李棋友，晚上好。", payload={"观众": "李***"}), "李棋友，晚上好。")
+            "观众": "李***", "弹幕": "出招吧真好听"}), "李兄弟，合你胃口就好，耳朵这关先过了，咱们接着聊。")
+        self.assertEqual(spoken_reply("李棋友，晚上好。", payload={"观众": "李***"}), "李兄弟，晚上好。")
 
     def test_visible_nickname_is_used_once_without_guessing_masked_characters(self):
         self.assertEqual(viewer_address("睡懵的象棋小仙女🧜🏻‍♀️"), "睡懵的象棋小仙女")
@@ -42,7 +42,7 @@ class InteractionTextTests(unittest.TestCase):
     def test_replies_do_not_invent_giveaways_links_or_gift_conditions(self):
         answer = spoken_reply("棋谱在直播间页面有链接，点击就能领取啦！", payload={
             "观众": "原***", "弹幕": "哪里有棋谱领"})
-        self.assertEqual(answer, "原棋友，我这边没有棋谱领取入口，可不能瞎指路，把你领到隔壁去。")
+        self.assertEqual(answer, "原兄弟，我这边没有棋谱领取入口，可不能瞎指路，把你领到隔壁去。")
         self.assertEqual(spoken_reply("送我个礼物，我就能告诉你怎么领啦！", payload={
             "观众": "小王", "弹幕": "怎么领"}), "小王，你想领什么？说具体一点，主播还没学会读心术呢。")
         self.assertIn("不用送礼", spoken_reply("先刷礼物，我才回答。", payload={"观众": "小王", "弹幕": "怎么下？"}))

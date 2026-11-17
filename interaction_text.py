@@ -12,11 +12,29 @@ def viewer_address(user):
     name = re.sub(r"[^\w\u4e00-\u9fff]", "", name).strip("_")
     if not name or name in ("观众", "匿名用户", "用户"):
         return ""
-    return name + "棋友" if masked and not name.endswith("棋友") else name
+    return name + "兄弟" if masked and not name.endswith("兄弟") else name
+
+
+def replace_audience_terms(text, preserve=()):
+    """Use the requested casual address in speech while preserving real nicknames."""
+    text = str(text or "")
+    protected = {}
+    for index, value in enumerate(sorted({str(item) for item in preserve if item},
+                                         key=len, reverse=True)):
+        marker = f"\ue000{index}\ue001"
+        if value in text:
+            text = text.replace(value, marker)
+            protected[marker] = value
+    text = text.replace("棋友们", "兄弟们").replace("这位棋友", "这位兄弟")
+    text = text.replace("棋友", "兄弟")
+    for marker, value in protected.items():
+        text = text.replace(marker, value)
+    return text
 
 
 def welcome_line(user):
-    return f"欢迎{viewer_address(user) or '新朋友'}进入直播间。"
+    name = viewer_address(user) or "新朋友"
+    return replace_audience_terms(f"欢迎{name}进入直播间。", preserve=(name,))
 
 
 def reply_hint(comment):
@@ -51,6 +69,7 @@ def local_reply(comment, snapshot=None):
 def spoken_reply(text, limit=55, payload=None):
     payload = payload or {}
     comment = str(payload.get("弹幕") or "")
+    name = viewer_address(payload.get("观众"))
     if payload.get("_grounded_reply"):
         text = payload["_grounded_reply"]
     elif (answer := local_reply(comment)) is not None:
@@ -78,14 +97,14 @@ def spoken_reply(text, limit=55, payload=None):
     text = re.sub(r"\[[^\]\n]{1,12}\]|【[^】\n]{1,12}】", "", str(text))
     text = re.sub(r"[\U0001f000-\U0001faff\u2600-\u27ff\ufe0f\u200d]", "", text)
     text = re.sub(r"[\r\n*_#`]+", "", text).strip()
-    name = viewer_address(payload.get("观众"))
+    text = replace_audience_terms(text, preserve=(name,))
     if name and re.search(r"我叫(?:什么|啥)|我的(?:名字|昵称)|看[得不]到我的?(?:名字|昵称)", comment):
         text = "看到的是你直播间显示的昵称，真实姓名我可不乱猜。"
     address = ""
     if name and text:
         lead = r"(?:(?:哎|欸|嘿|嗨|好嘞|哈哈|好的)[，,:：、！!\s]*)*"
         address_pattern = re.compile(r"^" + lead + r"(?:" + re.escape(name) +
-            r"|这位棋友|这位朋友|这位观众|棋友|朋友|老师|老板|师兄|大哥|兄弟|老铁)(?:[，,:：、！!\s]+|$)")
+            r"|这位棋友|这位兄弟|这位朋友|这位观众|棋友|兄弟|朋友|老师|老板|师兄|大哥|老铁)(?:[，,:：、！!\s]+|$)")
         for _ in range(3):
             cleaned = address_pattern.sub("", text, count=1)
             if cleaned == text:
@@ -113,7 +132,7 @@ def spoken_reply(text, limit=55, payload=None):
 def gift_reply(text, payload, style=None):
     """Fixed thanks using the real sender and gift; no model or extra patter."""
     name = viewer_address(payload.get("观众"))
-    if "*" in str(payload.get("观众") or "") and name.endswith("棋友"):
+    if "*" in str(payload.get("观众") or "") and name.endswith("兄弟"):
         name = name[:-2]
     gift = " ".join(str(payload.get("礼物") or "心意").split())
     boss = name if name.endswith("老板") else name + "老板"
