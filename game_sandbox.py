@@ -180,6 +180,21 @@ def build_plan(notation, analysis, pv_line, executed_ucci, board=None):
     if not any(item.get("capture") or item.get("check") or item.get("escape") for item in demo_route):
         return None  # A capture followed only by quiet shuffling needs no demo.
     # Judge the portion actually shown, not a later exchange outside its end.
+    route_captures = [item.get("capture") for item in demo_route
+                      if item.get("capture")]
+    route_has_major_capture = any(str(piece).upper() in "RNC"
+                                  for piece in route_captures)
+    if route_captures and not route_has_major_capture:
+        return None  # A pawn-only capture/trade is not worth opening the sandbox.
+    first_capture = next((index for index, item in enumerate(demo_route)
+                          if item.get("capture")), None)
+    first_major_capture = next((index for index, item in enumerate(demo_route)
+                                if item.get("capture") and
+                                str(item["capture"]).upper() in "RNC"), None)
+    if (first_capture is not None and first_major_capture is not None and
+            str(demo_route[first_capture]["capture"]).upper() == "P" and
+            first_major_capture - first_capture > 3):
+        return None  # Do not open on a pawn capture when the real tactic is remote.
     future_big = any(item["side"] == own and item.get("capture")
                      and item["capture"].upper() in "RNC" for item in demo_route)
     forcing = (sum(bool(item.get("check")) for item in route[:end + 1]

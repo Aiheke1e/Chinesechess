@@ -38,6 +38,21 @@ class GameSandboxTests(unittest.TestCase):
         self.assertIsNotNone(plan)
         self.assertIn("解将", plan["reason"])
 
+    def test_a_pawn_capture_does_not_open_for_a_distant_major_piece_exchange(self):
+        board = Board.from_fen(
+            "rn1akabnr/9/2c1b2c1/p1p1p1p1p/9/2P6/P3P1P1P/1C2C1N2/9/RNBAKAB1R b - - 0 1")
+        line, probe = [], board.copy()
+        for ucci in ("c6c5", "b2c2", "c5c4", "i0h0", "b9d8", "h0h4",
+                     "c4c3", "c2c7", "h7c7"):
+            move = Board.from_ucci(ucci)
+            self.assertIn(move, probe.legal_moves())
+            line.append((ucci, move_description(probe, move)))
+            probe.apply(move)
+        plan = game_sandbox.build_plan(
+            line[0][1], {"score_type": "cp", "score": -13},
+            line, line[0][0], board)
+        self.assertIsNone(plan)
+
     def test_normal_sandbox_has_cooldown_but_mate_does_not_wait_for_it(self):
         now = [100.0]
         cadence = game_sandbox.SandboxCadence(clock=lambda: now[0])
