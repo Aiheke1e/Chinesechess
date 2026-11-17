@@ -168,6 +168,10 @@ def wait_for_speech_start(token, plan_timeout=2.0, audio_timeout=4.0,
             return False
         raise SpeechSyncError("本手语音没有启用，未发送点击")
     wait_finished = bool(plan.get("wait_finished"))
+    if not wait_finished:
+        # The game loop passes a broader per-move deadline for sandbox and
+        # recovery work. Ordinary TTS must never consume that whole window.
+        deadline = min(deadline, time.monotonic() + max(0.0, audio_timeout))
     completion_deadline = None
     heartbeat_at = time.monotonic() + 1.0
     while True:

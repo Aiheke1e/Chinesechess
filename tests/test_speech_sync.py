@@ -66,6 +66,21 @@ class SpeechSyncTests(unittest.TestCase):
                 "move-1", plan_timeout=0.01, audio_timeout=0.01))
             skipped.assert_called_once_with("move-1", reason="audio_start_timeout")
 
+    def test_long_move_deadline_cannot_extend_ordinary_tts_wait(self):
+        started = time.monotonic()
+        def marker(path):
+            if path == player.SPEECH_PREPARING_PATH:
+                return {"token": "move-1", "enabled": True}
+            return {"token": "old"}
+        with patch.object(player, "_speech_enabled", return_value=True), patch.object(
+                player, "_read_speech_marker", side_effect=marker), patch.object(
+                player, "_skip_ordinary_speech") as skipped:
+            self.assertFalse(player.wait_for_speech_start(
+                "move-1", plan_timeout=0.1, audio_timeout=0.05,
+                deadline=started + 15))
+        self.assertLess(time.monotonic() - started, 0.5)
+        skipped.assert_called_once_with("move-1", reason="audio_start_timeout")
+
     def test_audio_error_marker_cannot_be_mistaken_for_started_marker(self):
         with patch.object(player, "_speech_enabled", return_value=True), patch.object(
                 player, "_read_speech_marker", side_effect=[
