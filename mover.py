@@ -76,6 +76,19 @@ def move_piece(frm: int, to: int, device, expected_before=None,
     detected = None
     while True:
         image = screenshot(device)
+        # JJ can place a long-session reminder over the live board. Close only
+        # its matched "知道了" control, then recapture and revalidate before
+        # sending either chess tap.
+        try:
+            from postgame import dismiss_rest_reminder
+            if dismiss_rest_reminder(device, image):
+                deadline = max(
+                    deadline,
+                    time.monotonic() + max(0.75, float(precondition_timeout)))
+                time.sleep(0.1)
+                continue
+        except Exception:
+            pass
         # A previous rejected attempt may leave its toast on screen briefly.
         # Never attribute that stale toast to a newly submitted alternative.
         if repetition_warning(image):

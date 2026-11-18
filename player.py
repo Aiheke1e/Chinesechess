@@ -366,10 +366,16 @@ def postgame_image_visible(image):
 def postgame_screen_visible(device, first_image=None, confirm_delay=0.08):
     """Require two consecutive result-screen frames before allowing clicks."""
     first = screenshot(device) if first_image is None else first_image
+    from postgame import dismiss_rest_reminder
+    if dismiss_rest_reminder(device, first):
+        return False
     if not postgame_image_visible(first):
         return False
     time.sleep(confirm_delay)
-    return postgame_image_visible(screenshot(device))
+    confirm = screenshot(device)
+    if dismiss_rest_reminder(device, confirm):
+        return False
+    return postgame_image_visible(confirm)
 
 
 def wait_for_postgame_screen(device, timeout=5.0, interval=0.5):

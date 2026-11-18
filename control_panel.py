@@ -2259,8 +2259,17 @@ class ControlPanel:
                 if image is not None:
                     from postgame import (detect_match_mode_button,
                                           detect_rules_overlay_dismiss,
+                                          dismiss_rest_reminder,
                                           handle_postgame,
                                           has_actionable_postgame)
+                    if not resume_only and dismiss_rest_reminder(device, image):
+                        publish(("status", "已关闭 JJ 在线时长提醒，继续识别棋盘"))
+                        waiting_started = time.monotonic()
+                        stable = 0
+                        last_signature = None
+                        image = screenshot(device)
+                        if image is None:
+                            continue
                     if has_actionable_postgame(image):
                         cancel.wait(0.08)
                         confirm = screenshot(device)

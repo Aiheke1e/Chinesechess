@@ -23,6 +23,7 @@ MATCH_MODE_X = {
     "15分钟": 0.60,
     "超快": 0.81,
 }
+REST_REMINDER_TEMPLATE = Path(__file__).resolve().parent / "assets" / "jj-rest-reminder-button.png"
 
 
 @lru_cache(maxsize=1)
@@ -119,6 +120,63 @@ def parse_close_nodes(xml_text):
             x1, y1, x2, y2 = map(int, bounds.groups())
             found.append((label, (x1 + x2) // 2, (y1 + y2) // 2))
     return found
+
+
+@lru_cache(maxsize=1)
+def _rest_reminder_button_template():
+    try:
+        return cv2.imread(str(REST_REMINDER_TEMPLATE), cv2.IMREAD_COLOR)
+    except (OSError, cv2.error):
+        return None
+
+
+def detect_rest_reminder_button(image):
+    """Find JJ's specific three-hour rest reminder and its visible button.
+
+    A cropped template includes the button label and styling. Restrict matching
+    to the central lower modal area so ordinary board controls cannot qualify.
+    """
+    if image is None or getattr(image, "ndim", 0) != 3:
+        return None
+    height, width = image.shape[:2]
+    if height < 800 or width < 450 or not .52 <= width / height <= .60:
+        return None
+    template = _rest_reminder_button_template()
+    if template is None:
+        return None
+    resized = cv2.resize(image, (1080, 1920))
+    x0, y0 = 100, 1000
+    roi = resized[y0:1350, x0:980]
+    if roi.shape[0] < template.shape[0] or roi.shape[1] < template.shape[1]:
+        return None
+    scores = cv2.matchTemplate(roi, template, cv2.TM_CCOEFF_NORMED)
+    _, score, _, point = cv2.minMaxLoc(scores)
+    if score < .88:
+        return None
+    x = x0 + point[0] + template.shape[1] // 2
+    y = y0 + point[1] + template.shape[0] // 2
+    return round(x * width / 1080), round(y * height / 1920)
+
+
+def dismiss_rest_reminder(device, image):
+    """Tap the visually confirmed reminder button and verify the modal closed."""
+    point = detect_rest_reminder_button(image)
+    if point is None:
+        return False
+    time.sleep(0.08)
+    confirm = screenshot(device)
+    confirmed_point = detect_rest_reminder_button(confirm)
+    if (confirmed_point is None or abs(confirmed_point[0] - point[0]) > 16 or
+            abs(confirmed_point[1] - point[1]) > 16):
+        return False
+    tap(*confirmed_point, device=device)
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        time.sleep(0.12)
+        after = screenshot(device)
+        if after is not None and detect_rest_reminder_button(after) is None:
+            return True
+    return False
 
 
 def read_ui_xml(device):
@@ -345,6 +403,10 @@ def detect_modal_close(image):
 
 def postgame_action(image):
     """Return one visual action, with modal controls ahead of replay."""
+    # The rest reminder's cyan "知道了" button also matches JJ's green result
+    # button colour range. Exclude it before any result-page action is offered.
+    if detect_rest_reminder_button(image):
+        return None
     for label, detect in (("关闭奖励弹窗", detect_modal_close),
                           ("结算确认", detect_confirmation_button),
                           ("结算页主按钮", detect_large_action_button),
