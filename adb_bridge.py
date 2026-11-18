@@ -99,7 +99,14 @@ def screenshot(device=None, out_path=None):
     """截图并返回 numpy 数组(BGR)。用 exec-out 直出 png 避免临时文件。"""
     import cv2
     import numpy as np
-    r = adb(["exec-out", "screencap", "-p"], timeout=20, device=device)
+    try:
+        r = adb(["exec-out", "screencap", "-p"], timeout=20, device=device)
+    except subprocess.TimeoutExpired:
+        # A single stalled ADB screencap is a missing frame, not a terminal
+        # chess state. Callers already retry/reconcile None observations; let
+        # the session keep its trusted position instead of unwinding the game
+        # loop and killing the automatic next-game watcher.
+        return None
     if r.returncode != 0:
         return None
     raw = r.stdout
