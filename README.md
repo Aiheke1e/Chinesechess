@@ -48,9 +48,15 @@
 
 项目目前实际使用的是 `control_panel.py` / `player.py`。它连接已经启动的安卓模拟器，支持红方或黑方在下方，并使用 `adb_geom.json` 保存当前棋盘几何。
 
-最方便的启动方式是双击 `start.cmd`。首次使用时：
+在 Windows 上双击项目根目录的 `一键启动JJ象棋助手.cmd`，或在 PowerShell 中运行：
 
-> 换电脑、重新下载或需要补齐 Pikafish/ADB 时，请先看 [运行文件清单](运行文件清单.md)，里面有直接下载链接、放置路径和完整启动步骤。
+```powershell
+py -3 assistant_bootstrap.py
+```
+
+首次下载后先按 [运行文件清单](运行文件清单.md) 安装依赖并补齐 Pikafish 和 ADB。应用启动后，在设置/工具中执行体检与棋盘标定；确认设备、棋盘和只读识别无误后，再启用自动下棋。
+
+> 新电脑完整安装步骤和大文件下载链接见 [运行文件清单](运行文件清单.md)。
 
 1. 在 JJ 象棋中打开标准初始棋盘。
 2. 点击“自动标定”。换分辨率、缩放或皮肤后也要重新标定。
@@ -308,7 +314,7 @@ py -3 setup_opening_book.py
 | engine.py | 旧入口的 Pikafish 兼容桥接（不含内置搜索） |
 | vision.py | 截图/几何/识别 |
 | player.py | 当前 ADB 自动对弈主控 |
-| control_panel.py / start.cmd | Windows 控制面板与启动入口 |
+| control_panel.py / 一键启动JJ象棋助手.cmd | Windows 控制面板与启动入口 |
 | recognizer.py / geometry.py | 棋盘识别、朝向与自动几何检测 |
 | mover.py | 一次性点击与落子后完整局面确认 |
 | pikafish.py | Pikafish UCCI 进程封装 |
