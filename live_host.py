@@ -751,7 +751,7 @@ class SpeechPipeline:
         # Keep short speech intact at ordinary scheduling boundaries. Pending
         # chat stays ahead of UNSTARTED chess; mate and manual stop still win.
         state["finish_sentence"] = (0 < duration <= 9 and not payload.get("_sandbox_cue")
-            and kind in ("关键走棋解说", "我方走棋播报", "我方走棋解说", GAP_KIND,
+            and kind in ("关键走棋解说", "我方走棋播报", "我方走棋解说", "开局定式解说", GAP_KIND,
                          *TRANSITION_KINDS, *INTERACTION_SPEECH_KINDS))
         with self.playback_state_lock:
             self.audio_active = True

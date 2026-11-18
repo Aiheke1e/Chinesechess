@@ -136,19 +136,30 @@ def _chat_priority_active():
 
 
 def _skip_ordinary_speech(token, reason="chat_priority"):
-    temporary = f"{SPEECH_SKIPPED_PATH}.{os.getpid()}.tmp"
-    try:
-        os.makedirs(os.path.dirname(SPEECH_SKIPPED_PATH), exist_ok=True)
-        with open(temporary, "w", encoding="utf-8") as stream:
-            json.dump({"token": token, "reason": reason, "created": time.time()}, stream)
-        os.replace(temporary, SPEECH_SKIPPED_PATH)
-    except OSError as error:
-        raise SpeechSyncError("无法取消本手普通播报，未发送点击") from error
-    finally:
+    # This marker is shared with the UI/TTS process. Windows scanners and a
+    # concurrent reader can briefly deny replacement; retry with a unique
+    # per-attempt temp file so an ordinary TTS timeout does not stop chess.
+    last_error = None
+    for attempt in range(5):
+        temporary = (f"{SPEECH_SKIPPED_PATH}.{os.getpid()}."
+                     f"{threading.get_ident()}.{time.time_ns()}.tmp")
         try:
-            os.unlink(temporary)
-        except OSError:
-            pass
+            os.makedirs(os.path.dirname(SPEECH_SKIPPED_PATH), exist_ok=True)
+            with open(temporary, "w", encoding="utf-8") as stream:
+                json.dump({"token": token, "reason": reason, "created": time.time()}, stream)
+            os.replace(temporary, SPEECH_SKIPPED_PATH)
+            return
+        except OSError as error:
+            last_error = error
+            if attempt < 4:
+                time.sleep(0.025 * (attempt + 1))
+        finally:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+    detail = f"（{type(last_error).__name__}: {last_error}）" if last_error else ""
+    raise SpeechSyncError(f"无法取消本手普通播报，未发送点击{detail}") from last_error
 
 
 def wait_for_speech_start(token, plan_timeout=2.0, audio_timeout=4.0,
