@@ -38,6 +38,7 @@ from console_format import styled_player_line
 from room_feed import room_message_entry
 from soft_ui import SoftCard, install_button_styles, ui_scale, blend
 from desktop_display import enable_high_dpi
+from board import Board
 from stream_brand import APP_TITLE, AREA_A_TITLE
 from game_control import CONTROL_PATH as GAME_CONTROL_PATH, write_auto_continue
 from stream_shutdown import StreamShutdown
@@ -2411,6 +2412,8 @@ class ControlPanel:
                             "pieces": pieces,
                             "standard": squares == expected,
                             "resume": False,
+                            "fen": Board(squares, turn=turns[0]).to_fen(),
+                            "orientation": orientation,
                         }))
                         return
                 else:
@@ -2485,7 +2488,8 @@ class ControlPanel:
         self.append("[控制指令] 开始自动标定\n")
         self._launch(["calibrate_live.py"], "正在从标准开局自动标定…")
 
-    def start(self, once, initial_turn=None, min_pieces=None, resume_shutdown=False):
+    def start(self, once, initial_turn=None, min_pieces=None, resume_shutdown=False,
+              startup_position=None):
         if self._shutdown_active() and not (resume_shutdown and self.stream_shutdown.state == "waiting_game"):
             self.status.set("已安排下播；只恢复当前棋局，不开启新局")
             return
@@ -2514,6 +2518,9 @@ class ControlPanel:
         args += ["--initial-turn", chosen_turn,
                  "--min-pieces", str(min_pieces if min_pieces is not None else
                                      self._assistant_cfg().get("endgame_min_pieces", 4))]
+        if startup_position and startup_position.get("fen") and startup_position.get("orientation"):
+            args += ["--startup-fen", startup_position["fen"],
+                     "--startup-orientation", startup_position["orientation"]]
         if once:
             args.append("--once")
         if self.dry.get():
@@ -2685,7 +2692,8 @@ class ControlPanel:
                     self.start(False, initial_turn=details["turn"],
                                min_pieces=self._assistant_cfg().get(
                                    "endgame_min_pieces", 4),
-                               resume_shutdown=bool(details.get("resume") and self._shutdown_active()))
+                               resume_shutdown=bool(details.get("resume") and self._shutdown_active()),
+                               startup_position=(details if not details.get("resume") else None))
                 elif isinstance(item, tuple) and item[0] == "assistant_error":
                     self.waiting_for_board = False
                     self.status.set("一键助手失败：" + item[1])

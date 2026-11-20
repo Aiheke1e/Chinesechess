@@ -632,6 +632,10 @@ def main():
     ap.add_argument("--max-moves", type=int, default=None)
     ap.add_argument("--initial-turn", choices=["r", "b"], default=None,
                     help="接管残局时当前轮到红方(r)或黑方(b)")
+    ap.add_argument("--startup-fen", default=None,
+                    help="棋盘监视器已连续确认的局面，启动时仍需新截图精确复核")
+    ap.add_argument("--startup-orientation", choices=["red_bottom", "black_bottom"],
+                    default=None, help="已确认棋盘的红黑方向")
     ap.add_argument("--min-pieces", type=int, default=None,
                     help="允许接管的最低棋子数")
     ap.add_argument("--stop-file", default=None,
@@ -698,12 +702,31 @@ def main():
         print("[断点续局] 已恢复上次保存的可信棋局。")
     else:
         initial_turn = cfg.get("initial_turn", "r")
-        # The prepare watcher can confirm the opening just before JJ runs its
-        # start/result animation. Keep rereading for five seconds so a brief
-        # transition does not become a dead board-recognition state.
-        startup_state, b, orientation = monitor_startup_board(
-            device, initial_turn, cfg["min_pieces"], cfg["stable_delay"],
-            requested_orientation, stop_requested, timeout=5.0)
+        # The continuous-game watcher already accepted two identical legal
+        # frames. Reuse that position only if a fresh child-process screenshot
+        # still matches it exactly; otherwise fall back to the full stable scan.
+        startup_state, b, orientation = "timeout", None, None
+        if args.startup_fen and args.startup_orientation:
+            try:
+                hinted = Board.from_fen(args.startup_fen)
+                image = screenshot(device)
+                hinted_squares, hinted_orientation = ((None, None) if image is None else
+                    recognize_position(image, args.startup_orientation))
+                if (image is not None and not postgame_image_visible(image) and
+                        not validate_board(hinted) and
+                        hinted_orientation == args.startup_orientation and
+                        same_position(hinted.sq, hinted_squares)):
+                    startup_state, b, orientation = "board", hinted, hinted_orientation
+                    print("[识别衔接] 已复核监视线程确认的新局面，跳过重复双帧识别。",
+                          flush=True)
+            except (ValueError, TypeError):
+                pass
+        if b is None:
+            # A brief transition or stale handoff must not become a dead
+            # board-recognition state; reread and require a stable pair.
+            startup_state, b, orientation = monitor_startup_board(
+                device, initial_turn, cfg["min_pieces"], cfg["stable_delay"],
+                requested_orientation, stop_requested, timeout=5.0)
         if b is None:
             # A very fast resignation can replace the opening board with JJ's
             # result page between the launcher's check and our first stable

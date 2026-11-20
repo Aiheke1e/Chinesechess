@@ -99,6 +99,46 @@ def still_waiting(device, fen, orientation, my_color):
         return False
 
 
+def _wait_for_cloud_panel(device, board, orientation, my_color, stop_requested,
+                          timeout=1.2):
+    """Wait through JJ's emoji-panel animation without repeating a tap."""
+    deadline = time.monotonic() + timeout
+    saw_panel = False
+    while time.monotonic() < deadline:
+        if stop_requested():
+            return None, None, "已暂停"
+        image = screenshot(device)
+        if image is None:
+            time.sleep(.08)
+            continue
+        if emoji_panel_visible(image):
+            saw_panel = True
+            if _match(image, "jj-emoji-coin", (85, 1765, 280, 1830), .86):
+                return image, None, "首格检测到付费标记，不发送表情"
+            cloud = _match(image, "jj-emoji-cloud", (90, 1650, 275, 1815), .90)
+            if cloud is not None:
+                if (countdown_side(image) != "opponent" or
+                        not _unchanged(board, image, orientation)):
+                    return image, None, "打开表情时对手已落子或棋盘变化"
+                return image, cloud, None
+        time.sleep(.08)
+    reason = "表情面板已打开但未识别到首格乌云" if saw_panel else "未确认乌云面板"
+    return None, None, reason
+
+
+def _wait_for_picker_close(device, stop_requested, timeout=.9):
+    """Confirm the picker closed after one selection; never tap a second time."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if stop_requested():
+            return False
+        image = screenshot(device)
+        if image is not None and not emoji_panel_visible(image) and emoji_button(image):
+            return True
+        time.sleep(.08)
+    return False
+
+
 def send_wait_cloud(device, board, orientation, my_color, stop_requested=lambda: False):
     """One bounded attempt; the caller owns the wait/cooldown and dry-run gate.
 
@@ -124,26 +164,21 @@ def send_wait_cloud(device, board, orientation, my_color, stop_requested=lambda:
             return result(reason="已暂停")
         opened = True
         tap(*button, device=device)
-        time.sleep(.12)
-        panel = screenshot(device)
-        cloud = cloud_button(panel)
+        panel, cloud, panel_error = _wait_for_cloud_panel(
+            device, board, orientation, my_color, stop_requested)
         if cloud is None:
-            return result(reason="未确认乌云面板，不再点击")
-        if stop_requested():
+            changed = bool(panel_error and any(
+                marker in panel_error for marker in ("落子", "棋盘变化")))
+            return result(reason=panel_error or "未确认乌云面板，不再点击",
+                          changed=changed)
+        if stop_requested() or panel is None:
             return result(reason="已暂停")
-        if countdown_side(panel) != "opponent" or not _unchanged(board, panel, orientation):
-            return result(reason="对手已落子或棋盘有变化", changed=True)
-        # Catch a move arriving during picker animation/recognition.
-        panel = screenshot(device)
-        cloud = cloud_button(panel)
-        if cloud is None or countdown_side(panel) != "opponent" or not _unchanged(board, panel, orientation):
-            return result(reason="发送前棋盘或面板有变化", changed=True)
+        # The panel frame was recognized after the tap animation and the board
+        # and opponent clock were rechecked from that same fresh screenshot.
         if stop_requested():
             return result(reason="已暂停")
         tap(*cloud, device=device)
-        time.sleep(.12)
-        after = screenshot(device)
-        accepted = not emoji_panel_visible(after) and emoji_button(after) is not None
+        accepted = _wait_for_picker_close(device, stop_requested)
         opened = not accepted
         return result(sent=accepted, reason="已选择乌云表情" if accepted else "未确认发送，不重试")
     except io_errors:
